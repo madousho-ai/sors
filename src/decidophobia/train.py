@@ -16,8 +16,8 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import gather_slot_logits
-from decidophobia.metrics import binary_summary, summarize
+from decidophobia.loss import answer_mass, gather_slot_logits
+from decidophobia.metrics import answer_mass_summary, binary_summary, summarize
 from decidophobia.model import last_logits, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
@@ -52,23 +52,30 @@ class EvalSet:
 
 @torch.no_grad()
 def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False) -> dict:
-    """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一."""
+    """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一.
+    另报格式遵从 (answer_mass_summary): 全词表下有多少概率落在菜单的槽上, 与 baseline 脚本的 m_answer 同一个量."""
     was_training = m.training
     m.eval()
-    Q, Y = [], []
+    dev = next(m.parameters()).device
+    Q, Y, MA, OFF, TOP = [], [], [], [], []
     for s in range(0, len(es.examples), es.batch_size):
         chunk = es.examples[s : s + es.batch_size]
         b = collate(chunk, tok, d_ids, k_max, layout, max_length, type_marker)
-        b = {k: v.to("cuda") for k, v in b.items()}
+        b = {k: v.to(dev) for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
         Q.extend(q.cpu().tolist())
         Y.extend(b["gold"].tolist())
+        ma, off, top1 = answer_mass(logits, b["slot_ids"], d_ids)
+        MA.extend(ma.cpu().tolist())
+        OFF.extend(off.cpu().tolist())
+        TOP.extend(top1.cpu().tolist())
     if was_training:
         m.train()
     out = summarize(Q, Y)
     if es.pos_class is not None:
         out.update(binary_summary(Q, es.examples, es.pos_class))
+    out.update(answer_mass_summary(MA, OFF, TOP))
     out["n"] = len(Y)
     return out
 
