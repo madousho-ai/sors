@@ -10,8 +10,8 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import slot_cross_entropy
-from decidophobia.metrics import brier_multiclass, ece_multiclass, nll_multiclass, topk_accuracy
+from decidophobia.loss import answer_mass, slot_cross_entropy
+from decidophobia.metrics import answer_mass_summary, brier_multiclass, ece_multiclass, nll_multiclass, topk_accuracy
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
@@ -135,6 +135,34 @@ def test_slot_cross_entropy_masks_padding_and_averages():
     gold = torch.tensor([2, 0])
     got = slot_cross_entropy(logits, slot_ids, gold).item()
     assert abs(got - 0.55037657) < 1e-6, got
+
+
+def test_answer_mass_splits_full_vocab_into_menu_offmenu_and_rest():
+    """V=10, 4 个 D-token 在 id 5..8. 全词表 softmax 分三块: 菜单里的 k 个槽 / 菜单外的 D 槽 / 其余.
+    行 0: 菜单 [5,6,pad], 其余 logit 0, id 3 = 2 -> Z = 9+e², 菜单 2/Z, 菜单外 (7,8) 2/Z, top1 = 3 不在菜单.
+          pad 若没 mask 会 clamp 到 id 0 多算 1/Z.
+    行 1: 菜单 [5,6,7], id 6 = 2 -> 菜单 (2+e²)/Z, 菜单外只剩 8: 1/Z, top1 = 6 在菜单里.
+    """
+    e2 = math.e**2
+    z = 9 + e2
+    logits = torch.zeros(2, 10)
+    logits[0, 3] = 2.0
+    logits[1, 6] = 2.0
+    slot_ids = torch.tensor([[5, 6, -1], [5, 6, 7]])
+    m, off, top1 = answer_mass(logits, slot_ids, d_ids=[5, 6, 7, 8])
+    assert torch.allclose(m, torch.tensor([2 / z, (2 + e2) / z])), m
+    assert torch.allclose(off, torch.tensor([2 / z, 1 / z])), off
+    assert top1.tolist() == [False, True], top1
+
+
+def test_answer_mass_summary_uses_baseline_names_and_numpy_percentiles():
+    """键名与 baseline 脚本的 m_answer_* 一致, 基模与训练后可以并排比. 分位数用 numpy 默认的线性插值:
+    [.1 .2 .3 .4 .5] 的 p05 在下标 0.2 -> 0.12, p95 在下标 3.8 -> 0.48."""
+    got = answer_mass_summary([0.3, 0.1, 0.5, 0.2, 0.4], [0.0, 0.1, 0.0, 0.0, 0.4], [True, False, True, True, False])
+    want = {"m_answer_mean": 0.3, "m_answer_p05": 0.12, "m_answer_p95": 0.48,
+            "m_offmenu_mean": 0.1, "top1_in_menu_rate": 0.6}
+    assert got.keys() == want.keys(), got
+    assert all(abs(got[k] - v) < 1e-12 for k, v in want.items()), got
 
 
 # --------------------------------------------------------------------------

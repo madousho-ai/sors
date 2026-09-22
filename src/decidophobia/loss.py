@@ -19,3 +19,19 @@ def gather_slot_logits(logits: torch.Tensor, slot_ids: torch.Tensor) -> torch.Te
 
 def slot_cross_entropy(logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(gather_slot_logits(logits, slot_ids), gold)
+
+
+def answer_mass(
+    logits: torch.Tensor, slot_ids: torch.Tensor, d_ids: list[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """格式遵从的三个读数, 都在全词表 softmax 下量. 训练目标只在 k 个槽上归一, 管不到这里.
+
+    m_answer   这条样本菜单里 k 个槽的概率之和 —— 与 baseline 脚本的 m_answer 同一个量
+    m_offmenu  其余 D 槽的概率之和: 说了 D-token 但指向菜单里没有的位置
+    top1_in    全词表 argmax 是不是菜单里的槽, 即自由贪心解码会不会吐出合法答案
+    """
+    p = torch.softmax(logits.float(), dim=-1)
+    m = (p.gather(1, slot_ids.clamp_min(0)) * (slot_ids >= 0)).sum(1)
+    all_d = p[:, torch.tensor(d_ids, device=logits.device)].sum(1)
+    top1_in = (logits.argmax(-1, keepdim=True) == slot_ids).any(1)
+    return m, all_d - m, top1_in

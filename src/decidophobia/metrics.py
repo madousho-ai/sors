@@ -69,6 +69,27 @@ def summarize(q: list[list[float]], y: list[int], n_bins: int = 10) -> dict[str,
     }
 
 
+def _percentile(xs: list[float], pct: float) -> float:
+    """线性插值, 与 numpy.percentile 的默认方法相同 (baseline 脚本用的是它)."""
+    s = sorted(xs)
+    pos = pct / 100 * (len(s) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
+
+def answer_mass_summary(m: list[float], off: list[float], top1_in: list[bool]) -> dict[str, float]:
+    """loss.answer_mass 三个逐条读数的汇总. m_answer_* 与 baseline 脚本同名同算法, 基模与训练后并排比."""
+    n = len(m)
+    return {
+        "m_answer_mean": sum(m) / n,
+        "m_answer_p05": _percentile(m, 5),
+        "m_answer_p95": _percentile(m, 95),
+        "m_offmenu_mean": sum(off) / n,
+        "top1_in_menu_rate": sum(top1_in) / n,
+    }
+
+
 # --------------------------------------------------------------------------
 # 二元 (BoolQ): 位置空间的 q 映回类空间, 报 AUROC / 正类率 / 二元 Brier
 # --------------------------------------------------------------------------
