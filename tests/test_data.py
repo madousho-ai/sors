@@ -6,7 +6,7 @@
 import random
 
 from _runner import run
-from decidophobia.data import LabeledSet, MenuExample, class_split, compose_menu
+from decidophobia.data import LabeledSet, MenuExample, class_split, compose_menu, merge_sets
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -93,6 +93,55 @@ def test_labeled_set_carries_per_item_question():
     s = _set(n=3, n_cls=2, questions=["is it a?", "is it b?", "is it c?"])
     ex = s.build_examples(classes=[0, 1], k_range=(2, 2), rng=random.Random(0))
     assert [e.question for e in ex] == ["is it a?", "is it b?", "is it c?"]
+
+
+def test_build_examples_draws_menu_from_pool_but_queries_from_classes():
+    """留出类的题目, 菜单从留出类 + 合成意图里抽: 题只出自 classes, 干扰项可以来自 pool 的任何类."""
+    s = _set(n=8, n_cls=8)
+    ex = s.build_examples(classes=[1, 3], k_range=(6, 6), rng=random.Random(0), pool=[1, 3, 4, 5, 6, 7])
+    assert [e.query for e in ex] == ["q1", "q3"]
+    for e in ex:
+        assert len(e.options) == 6 and set(e.options) <= {1, 3, 4, 5, 6, 7} and e.options[e.gold_idx] == e.label
+    assert any(set(e.options) & {4, 5, 6, 7} for e in ex), "pool 里的类要真的出现在菜单里"
+
+
+def test_sample_examples_k_log_favours_short_menus_but_reaches_the_top():
+    """k 按对数均匀取: 2..256 之间一半的题落在 ~23 以内, 少数拉到两百多."""
+    s = _set(n=300, n_cls=300)
+    ex = s.sample_examples(classes=list(range(300)), k_range=(2, 256), n=250, rng=random.Random(0), k_log=True)
+    ks = sorted(len(e.options) for e in ex)
+    assert ks[len(ks) // 2] < 40, ks[len(ks) // 2]
+    assert ks[0] == 2 and ks[-1] > 200, (ks[0], ks[-1])
+    ex_u = s.sample_examples(classes=list(range(300)), k_range=(2, 256), n=250, rng=random.Random(0))
+    ku = sorted(len(e.options) for e in ex_u)
+    assert ku[len(ku) // 2] > 100, "默认仍是均匀"
+
+
+def test_merge_sets_puts_both_in_one_id_space_and_reports_offsets():
+    a = LabeledSet(queries=["a0", "a1", "a2"], labels=[0, 1, 0], names={0: "x", 1: "y"})
+    b = LabeledSet(queries=["b0"], labels=[0], names={0: "z"})
+    m, offsets = merge_sets(a, b)
+    assert offsets == [0, 2]
+    assert m.queries == ["a0", "a1", "a2", "b0"] and m.labels == [0, 1, 0, 2]
+    assert m.names == {0: "x", 1: "y", 2: "z"}
+    assert m.context_label == a.context_label and m.questions is None and m.qtype == "choice"
+
+
+def test_merge_sets_refuses_different_context_labels_or_per_item_questions():
+    a = LabeledSet(queries=["a"], labels=[0], names={0: "x"}, context_label="Customer message")
+    b = LabeledSet(queries=["b"], labels=[0], names={0: "z"}, context_label="Passage")
+    try:
+        merge_sets(a, b)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("上下文标签不同却合并了")
+    c = LabeledSet(queries=["c"], labels=[0], names={0: "w"}, questions=["q?"])
+    try:
+        merge_sets(a, c)
+    except ValueError:
+        return
+    raise AssertionError("带逐条问句的集合却合并了")
 
 
 # --------------------------------------------------------------------------

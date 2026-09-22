@@ -10,6 +10,7 @@ LabeledSet 是数据集适配层交上来的统一形状: 一列上下文、一�
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -40,6 +41,15 @@ class MenuExample:
     qtype: str = "choice"  # choice | bool | score, 见 tokens.QTYPES
 
 
+def draw_k(k_range: tuple[int, int], rng: random.Random, log: bool = False) -> int:
+    """菜单长度. log=True 按对数均匀取: 2..256 之间一半落在 ~23 以内, 少数拉到两百多,
+    每个槽都轮得到而平均提示长度不爆."""
+    lo, hi = k_range
+    if not log or lo >= hi:
+        return rng.randint(lo, hi)
+    return min(hi, max(lo, round(math.exp(rng.uniform(math.log(lo), math.log(hi))))))
+
+
 def compose_menu(gold: int, pool: list[int], k: int, rng: random.Random) -> tuple[list[int], int]:
     """从 pool 里抽 k-1 个干扰项加上 gold, 打乱. 返回 (options, gold 的位置).
     k 大于 pool 大小时取整个 pool."""
@@ -68,25 +78,55 @@ class LabeledSet:
             qtype=self.qtype,
         )
 
-    def build_examples(self, classes: list[int], k_range: tuple[int, int], rng: random.Random) -> list[MenuExample]:
-        """给 label 落在 classes 里的每条各组一个菜单, 菜单选项只从 classes 里取. 用于固定的评估集."""
+    def build_examples(
+        self, classes: list[int], k_range: tuple[int, int], rng: random.Random, pool: list[int] | None = None,
+    ) -> list[MenuExample]:
+        """给 label 落在 classes 里的每条各组一个菜单. 用于固定的评估集.
+        菜单干扰项从 pool 里抽 (默认就是 classes); 给 pool 可以把合成意图掺进留出类的菜单."""
         allowed = set(classes)
+        menu_pool = classes if pool is None else pool
         out = []
         for i, lab in enumerate(self.labels):
             if lab not in allowed:
                 continue
-            k = rng.randint(k_range[0], k_range[1])
-            opts, gi = compose_menu(lab, classes, k, rng)
+            opts, gi = compose_menu(lab, menu_pool, draw_k(k_range, rng), rng)
             out.append(self.make_example(i, opts, gi))
         return out
 
-    def sample_examples(self, classes: list[int], k_range: tuple[int, int], n: int, rng: random.Random) -> list[MenuExample]:
-        """随机抽 n 条 label 落在 classes 内的, 各配一个现组的菜单. 用于训练批."""
+    def sample_examples(
+        self, classes: list[int], k_range: tuple[int, int], n: int, rng: random.Random,
+        pool: list[int] | None = None, k_log: bool = False,
+    ) -> list[MenuExample]:
+        """随机抽 n 条 label 落在 classes 内的, 各配一个现组的菜单. 用于训练批.
+        pool / k_log 见 build_examples / draw_k."""
         allowed = set(classes)
-        pool = [i for i, lab in enumerate(self.labels) if lab in allowed]
+        menu_pool = classes if pool is None else pool
+        idx = [i for i, lab in enumerate(self.labels) if lab in allowed]
         out = []
-        for i in rng.sample(pool, n):
-            k = rng.randint(k_range[0], k_range[1])
-            opts, gi = compose_menu(self.labels[i], classes, k, rng)
+        for i in rng.sample(idx, n):
+            opts, gi = compose_menu(self.labels[i], menu_pool, draw_k(k_range, rng, k_log), rng)
             out.append(self.make_example(i, opts, gi))
         return out
+
+
+def merge_sets(*sets: LabeledSet) -> tuple[LabeledSet, list[int]]:
+    """把几个同形状的集合并进一个类 id 空间 (后面的集合类 id 整体平移). 返回 (合并集, 每个集合的偏移).
+    只接受同一个上下文标签、没有逐条问句的集合 —— 那才是「同一种题、菜单可以混着抽」."""
+    first = sets[0]
+    for s in sets:
+        if s.context_label != first.context_label:
+            raise ValueError(f"context_label differs: {s.context_label!r} vs {first.context_label!r}")
+        if s.questions is not None:
+            raise ValueError("per-item questions cannot be merged")
+        if s.qtype != first.qtype or s.question_default != first.question_default:
+            raise ValueError("qtype / question_default differ")
+    queries, labels, names, offsets = [], [], {}, []
+    off = 0
+    for s in sets:
+        offsets.append(off)
+        queries += s.queries
+        labels += [lab + off for lab in s.labels]
+        names.update({c + off: n for c, n in s.names.items()})
+        off += len(s.names)
+    return LabeledSet(queries=queries, labels=labels, names=names, context_label=first.context_label,
+                      question_default=first.question_default, qtype=first.qtype), offsets
