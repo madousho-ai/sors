@@ -88,33 +88,36 @@ class RandomCodes:
     """训练抽题的最后一步: 每条选择题 (qtype choice) 以概率 rate 换一套码, 其余保持 D0, D1, ... 连续编号;
     二元题 (BoolQ) 永远连续编号. 菜单第 i 项写成这套里的第 i 个, 答案是正确那一项旁边写的码, 与它排第几行无关.
 
-    换码时正确答案的码不是均匀抽的, 而是挑到目前为止当答案最少的那个 (并列时随机), 其余 k-1 个码从剩下的
-    里面随机挑、顺序随机. 计数覆盖所有选择题, 连续编号那部分也算: 那部分的答案只落在 D0..D(k-1),
-    换码的题就把别的码补上来, 整场下来 D0..D255 当答案的次数一样多. 计数跨调用保留 —— 一个 run 用一个实例.
+    设计目的是光看编号推不出答案: 一个码出现在 k 项菜单上时, 它是答案的概率必须是 1/k, 对哪个码都一样.
+    所以换码时不单独给答案挑码, 而是整套一起挑: 取到目前为止上菜单次数最少的 k 个码 (并列时随机),
+    再随机排进菜单 —— 答案落在这套里的哪一个完全随机. 均衡的是上菜单的次数, 当答案的次数随之期望相同.
+    计数覆盖所有选择题, 连续编号那部分也算 (它们只占 D0..D(k-1)), 跨调用保留 —— 一个 run 用一个实例.
+    连续编号的菜单太多时补不齐: 60 项菜单下 rate 低于 0.77, D0..D59 光靠连续编号上菜单的次数就超过均分,
+    换码的菜单全用 D60 以后的码, D0..D59 仍然偏多, 但每个码是答案的概率依旧是 1/k.
 
     rate 0 时原样返回, 不从 rng 取数 —— 不开这个功能的 run 抽题序列与以前逐条相同."""
 
     def __init__(self, rate: float):
         self.rate = rate
-        self.gold_counts = [0] * N_SLOTS
+        self.on_menu = [0] * N_SLOTS
 
     def __call__(self, examples: list[MenuExample], rng: random.Random) -> list[MenuExample]:
         if self.rate <= 0:
             return examples
         out = []
         for ex in examples:
-            if ex.qtype == "choice" and rng.random() < self.rate:
-                ex = replace(ex, codes=self._codes(len(ex.options), ex.gold_idx, rng))
             if ex.qtype == "choice":
-                self.gold_counts[ex.slot_codes[ex.gold_idx]] += 1
+                if rng.random() < self.rate:
+                    ex = replace(ex, codes=self._codes(len(ex.options), rng))
+                for c in ex.slot_codes:
+                    self.on_menu[c] += 1
             out.append(ex)
         return out
 
-    def _codes(self, k: int, gold_idx: int, rng: random.Random) -> list[int]:
-        low = min(self.gold_counts)
-        gold = rng.choice([c for c, n in enumerate(self.gold_counts) if n == low])
-        others = rng.sample([c for c in range(N_SLOTS) if c != gold], k - 1)
-        return others[:gold_idx] + [gold] + others[gold_idx:]
+    def _codes(self, k: int, rng: random.Random) -> list[int]:
+        least = sorted(range(N_SLOTS), key=lambda c: (self.on_menu[c], rng.random()))[:k]
+        rng.shuffle(least)
+        return least
 
 
 @dataclass(frozen=True)

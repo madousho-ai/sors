@@ -79,20 +79,23 @@ def test_random_codes_lets_60_item_menus_train_every_code_and_leaves_eval_contig
     assert all(e.codes is None for es in eval_sets.values() for e in es.examples)
 
 
-def test_random_codes_even_out_choice_gold_codes_over_the_whole_run():
-    """--random-codes 0.8 跑满 3000 步 (18000 道选择题): 两成连续编号, 答案只落在 D0..D59;
-    换码的那八成补给当得少的码. 整场下来每个码当答案的次数都在均值 (约 70) 附近,
-    D0..D59 与 D60..D255 两段均值差不到 5% (均匀挑码时差 1.8 倍). 计数要跨 batch 保留, 每批重新计数就补不齐."""
+def test_random_codes_over_the_whole_run_answer_evenly_without_favouring_any_code():
+    """--random-codes 0.8 跑满 3000 步 (18000 道选择题, 两成连续编号):
+    换码菜单上每个码出现时是答案的概率都是 1/60, D0..D59 与 D60..D255 一样 (旧的均衡法差 5 倍);
+    整场下来两段每个码当答案的平均次数差不到 6% (均匀挑码时差 1.8 倍). 计数要跨 batch 保留, 每批重新计数就补不齐."""
     sample_fn, _, _ = _mod.build_data(_args("banking77+boolq+massive", random_codes=0.8))
     rng = random.Random(0)
+    choice = [e for _ in range(3000) for e in sample_fn(8, rng) if e.qtype == "choice"]
+    rand = [e for e in choice if e.codes is not None]
+    for lo, hi in ((0, 60), (60, 256)):
+        on = sum(lo <= c < hi for e in rand for c in e.slot_codes)
+        gold = sum(lo <= e.slot_codes[e.gold_idx] < hi for e in rand)
+        assert abs(gold / on * 60 - 1) < 0.15, (lo, hi, gold, on)
     counts = [0] * 256
-    for _ in range(3000):
-        for e in sample_fn(8, rng):
-            if e.qtype == "choice":
-                counts[e.slot_codes[e.gold_idx]] += 1
-    assert min(counts) >= 60 and max(counts) <= 90, (min(counts), max(counts))
+    for e in choice:
+        counts[e.slot_codes[e.gold_idx]] += 1
     lo, hi = sum(counts[:60]) / 60, sum(counts[60:]) / 196
-    assert abs(lo / hi - 1) < 0.05, (lo, hi)
+    assert abs(lo / hi - 1) < 0.06, (lo, hi)
 
 
 def test_random_codes_rejects_a_rate_outside_zero_to_one():

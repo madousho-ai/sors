@@ -135,7 +135,7 @@ def build_data(args):
             random.Random(args.seed + 2).shuffle(exs)
             eval_sets[k] = EvalSet(exs[: args.eval_limit], es.batch_size, es.pos_class)
 
-    random_codes = RandomCodes(args.random_codes)  # 一个 run 一个: 它记着每个码当过几次答案
+    random_codes = RandomCodes(args.random_codes)  # 一个 run 一个: 它记着每个码上过几次菜单
 
     def sample_fn(n, rng):
         """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱. --random-codes 只作用在这里:
@@ -188,8 +188,8 @@ def main() -> None:
     ap.add_argument("--eval-synth", action="store_true",
                     help="把 synth 当留出评估集: synth60 / synth256 两档, 只含合成意图. 与 --dataset 里的 synth 互斥")
     ap.add_argument("--random-codes", type=float, default=0.0,
-                    help="选择题里换成随机码的比例 (0..1): 正确答案补给当得最少的码, 其余从 256 个 D 码里随机挑、顺序随机, "
-                         "整场下来 D0..D255 当答案一样多. BoolQ 永远 D0 / D1. "
+                    help="选择题里换成随机码的比例 (0..1): 挑上菜单次数最少的 k 个 D 码、顺序随机, 每个码上菜单时是答案的概率都是 1/k, "
+                         "整场下来 D0..D255 当答案的次数期望相同 (60 项菜单下 rate >= 0.77 才补得齐). BoolQ 永远 D0 / D1. "
                          "0 = 全部按位置 D0, D1, ... (旧行为). 评估集不受影响")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")

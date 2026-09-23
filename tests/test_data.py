@@ -254,20 +254,36 @@ def _menu60(gold_idx):
     return MenuExample(query="q", options=opts, gold_idx=gold_idx, label=gold_idx, option_names=[str(c) for c in opts])
 
 
-def test_random_codes_even_out_gold_codes_across_calls_counting_the_contiguous_menus_too():
-    """60 项选择题, 两成连续编号 -> D0..D59 光靠连续编号就各当约 85 次答案 (共 25600 题, 均分是每码 100).
-    换码的那八成要把答案优先放到当得最少的码上, 补齐之后每个码都在 100 上下.
-    连续编号那部分加上去就撤不回, D0..D59 补齐后还会再多出几次, 所以两段均值允许差 5%;
-    同样 0.8 的比例若均匀挑码, 两段要差 1.8 倍.
-    计数跨调用保留: 训练里每批只有 8 条, 一批一调."""
+def _run_menu60(rate, calls=3200):
+    """60 项选择题, 8 条一批调 calls 次 (训练里每批 8 条, 一批一调), 正确答案的位置均匀."""
     rng, grng = random.Random(0), random.Random(1)
-    rc = RandomCodes(0.8)
-    counts = [0] * 256
-    for _ in range(3200):
-        for e in rc([_menu60(grng.randrange(60)) for _ in range(8)], rng):
-            counts[e.slot_codes[e.gold_idx]] += 1
-    assert min(counts) >= 95 and max(counts) <= 125, (min(counts), max(counts))
-    lo, hi = sum(counts[:60]) / 60, sum(counts[60:]) / 196
+    rc = RandomCodes(rate)
+    return [e for _ in range(calls) for e in rc([_menu60(grng.randrange(60)) for _ in range(8)], rng)]
+
+
+def test_random_codes_give_every_code_on_a_random_menu_the_same_chance_of_being_the_answer():
+    """设计目的: 光看编号推不出答案. 换码的菜单上, 不论码是 D0..D59 还是 D60..D255,
+    它出现在菜单上时是正确答案的概率都是 1/k (这里 1/60). 连续编号的菜单天然如此.
+    旧的均衡法把答案补给当得少的码, 换码菜单上 D0..D59 只有 0.0039, D60 以后 0.0205, 差 5 倍."""
+    exs = [e for e in _run_menu60(0.8) if e.codes is not None]
+    for lo, hi in ((0, 60), (60, 256)):
+        on = sum(lo <= c < hi for e in exs for c in e.slot_codes)
+        gold = sum(lo <= e.slot_codes[e.gold_idx] < hi for e in exs)
+        assert abs(gold / on * 60 - 1) < 0.15, (lo, hi, gold, on)
+
+
+def test_random_codes_balance_how_often_each_code_is_on_a_menu_and_so_how_often_it_answers():
+    """两成连续编号 -> D0..D59 光靠连续编号就各上菜单约 5120 次 (25600 题 × 60 项, 均分每码 6000).
+    换码的菜单挑上菜单次数最少的码, 补齐之后每个码上菜单的次数几乎相同.
+    答案在菜单里的位置是均匀的, 所以每个码当答案的次数期望相同 (约 100), 两段均值差不到 5%;
+    同样 0.8 的比例若均匀挑码, 两段要差 1.8 倍. 计数跨调用保留."""
+    on, gold = [0] * 256, [0] * 256
+    for e in _run_menu60(0.8):
+        for c in e.slot_codes:
+            on[c] += 1
+        gold[e.slot_codes[e.gold_idx]] += 1
+    assert max(on) - min(on) <= 10, (min(on), max(on))
+    lo, hi = sum(gold[:60]) / 60, sum(gold[60:]) / 196
     assert abs(lo / hi - 1) < 0.05, (lo, hi)
 
 
