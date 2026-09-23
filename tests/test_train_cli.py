@@ -19,7 +19,7 @@ _spec.loader.exec_module(_mod)
 
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
-                eval_batch_size=16, eval_limit=0, data_dir="data/banking77")
+                eval_batch_size=16, eval_limit=0, eval_synth=False, data_dir="data/banking77")
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -43,6 +43,26 @@ def test_banking77_boolq_massive_trains_only_on_slots_d0_to_d59():
     assert gold_max == 59, gold_max
     assert set(sizes) == {("Customer message", 60), ("Voice command", 60), ("Passage", 2)}, sizes
     assert set(per_batch) == {(("Customer message", 4), ("Passage", 2), ("Voice command", 2))}, per_batch
+
+
+def test_eval_synth_adds_full_60_and_256_menus_over_all_512_synth_intents():
+    """--eval-synth: 1024 条合成意图消息各配一个菜单, 选项全来自 512 个合成意图.
+    synth60 的正确答案都在训练覆盖的 D0..D59 里, synth256 的散到 D0..D255."""
+    _, eval_sets, _ = _mod.build_data(_args("banking77+boolq+massive", eval_synth=True))
+    s60, s256 = eval_sets["synth60"], eval_sets["synth256"]
+    assert len(s60.examples) == len(s256.examples) == 1024
+    assert {len(e.options) for e in s60.examples} == {60}
+    assert {len(e.options) for e in s256.examples} == {256}
+    assert max(e.gold_idx for e in s256.examples) >= 250
+    assert sum(e.gold_idx >= 60 for e in s256.examples) > 700, "约 196/256 的题正确答案落在训练没覆盖的码上"
+
+
+def test_eval_synth_refuses_when_synth_is_in_training():
+    try:
+        _mod.build_data(_args("banking77+synth", eval_synth=True))
+    except SystemExit:
+        return
+    raise AssertionError("synth 在训练里时 --eval-synth 不是留出评估, 应当拒绝")
 
 
 if __name__ == "__main__":

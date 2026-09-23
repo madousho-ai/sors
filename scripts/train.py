@@ -4,7 +4,7 @@
 --dataset 是用加号连起来的数据集列表, 一个 batch 里各占一份:
   banking77   Banking77, 按类留出 17 个测泛化 (seen / unseen)
   boolq       BoolQ, k=2, 逐条问句
-  synth       datasets/synth-intents, 512 个合成意图, 只做训练 (评估集里没有它)
+  synth       datasets/synth-intents, 512 个合成意图 (不在训练里时可用 --eval-synth 当留出评估)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图; test 分区留给 scripts/eval-massive.py
 banking77 与 synth 同时在时, 两者的类并进一个 id 空间, 菜单干扰项从并集里抽 —— 这就是 k 能拉到 256 的来源.
 massive 的上下文标签不同, 自成一池.
@@ -57,6 +57,8 @@ def build_data(args):
     """每个数据集给一个 sampler 和若干评估集. 返回 (sample_fn, eval_sets, split_info).
     只读数据, 不碰模型 —— tests/test_train_cli.py 直接调它."""
     datasets = parse_datasets(args.dataset)
+    if args.eval_synth and "synth" in datasets:
+        raise SystemExit("--eval-synth: synth is in training, so it would not be a held-out evaluation")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -114,6 +116,17 @@ def build_data(args):
         btr, bva = load_boolq()
         eval_sets["boolq"] = EvalSet(bva.build_examples([0, 1], (2, 2), erng), max(1, args.eval_batch_size // 2), pos_class=1)
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
+    if args.eval_synth:
+        # 留出评估: 512 个合成意图的 1024 条消息, 菜单只含合成意图. 60 项那档的正确答案都在 D0..D59,
+        # 256 项那档散到 D0..D255 —— 训练菜单不到 256 时, 看没当过答案的码能不能用.
+        from decidophobia.synth import load_synth
+
+        ste, _ = load_synth()
+        s_all = list(range(len(ste.names)))
+        eval_sets["synth60"] = EvalSet(ste.build_examples(s_all, (60, 60), random.Random(args.seed + 60)),
+                                       args.eval_batch_size)
+        eval_sets["synth256"] = EvalSet(ste.build_examples(s_all, (256, 256), random.Random(args.seed + 256)),
+                                        max(1, args.eval_batch_size // 4))
     if args.eval_limit:
         for k, es in eval_sets.items():
             exs = list(es.examples)
@@ -167,6 +180,8 @@ def main() -> None:
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--eval-batch-size", type=int, default=16)
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
+    ap.add_argument("--eval-synth", action="store_true",
+                    help="把 synth 当留出评估集: synth60 / synth256 两档, 只含合成意图. 与 --dataset 里的 synth 互斥")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")
     ap.add_argument("--seed", type=int, default=0)
