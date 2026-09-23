@@ -19,7 +19,7 @@ _spec.loader.exec_module(_mod)
 
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
-                eval_batch_size=16, eval_limit=0, eval_synth=False, data_dir="data/banking77")
+                eval_batch_size=16, eval_limit=0, eval_synth=False, data_dir="data/banking77", random_codes=0.0)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -63,6 +63,26 @@ def test_eval_synth_refuses_when_synth_is_in_training():
     except SystemExit:
         return
     raise AssertionError("synth 在训练里时 --eval-synth 不是留出评估, 应当拒绝")
+
+
+def test_random_codes_lets_60_item_menus_train_every_code_and_leaves_eval_contiguous():
+    """--random-codes 0.5 配 train3 的数据 (菜单 60 项 / BoolQ 2 项): 约一半训练题换成随机码,
+    正确答案的码铺满 D0..D255. 评估集照旧按位置编号, 与部署时的菜单同形."""
+    sample_fn, eval_sets, _ = _mod.build_data(_args("banking77+boolq+massive", random_codes=0.5))
+    rng = random.Random(0)
+    exs = [e for _ in range(500) for e in sample_fn(8, rng)]
+    share = sum(e.codes is not None for e in exs) / len(exs)
+    assert abs(share - 0.5) < 0.05, share
+    assert {e.slot_codes[e.gold_idx] for e in exs} == set(range(256))
+    assert all(e.codes is None for es in eval_sets.values() for e in es.examples)
+
+
+def test_random_codes_rejects_a_rate_outside_zero_to_one():
+    try:
+        _mod.build_data(_args("boolq", random_codes=1.5))
+    except SystemExit:
+        return
+    raise AssertionError("--random-codes 1.5 accepted")
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.data import class_split, menu_k_range, merge_sets
+from decidophobia.data import assign_random_codes, class_split, menu_k_range, merge_sets
 from decidophobia.loss import LOSSES
 from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
@@ -59,6 +59,8 @@ def build_data(args):
     datasets = parse_datasets(args.dataset)
     if args.eval_synth and "synth" in datasets:
         raise SystemExit("--eval-synth: synth is in training, so it would not be a held-out evaluation")
+    if not 0.0 <= args.random_codes <= 1.0:
+        raise SystemExit(f"--random-codes is a share of training menus, 0..1; got {args.random_codes}")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -134,12 +136,13 @@ def build_data(args):
             eval_sets[k] = EvalSet(exs[: args.eval_limit], es.batch_size, es.pos_class)
 
     def sample_fn(n, rng):
-        """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱."""
+        """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱. --random-codes 只作用在这里:
+        评估集始终按位置编号 D0, D1, ..., 与部署时调用方写的菜单同形."""
         parts = [n // len(samplers)] * len(samplers)
         parts[0] += n - sum(parts)
         out = [ex for s, c in zip(samplers, parts) for ex in s(c, rng)]
         rng.shuffle(out)
-        return out
+        return assign_random_codes(out, args.random_codes, rng)
 
     return sample_fn, eval_sets, split_info
 
@@ -182,6 +185,9 @@ def main() -> None:
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
     ap.add_argument("--eval-synth", action="store_true",
                     help="把 synth 当留出评估集: synth60 / synth256 两档, 只含合成意图. 与 --dataset 里的 synth 互斥")
+    ap.add_argument("--random-codes", type=float, default=0.0,
+                    help="训练题里换成随机码的比例 (0..1): 从 256 个 D 码里随机挑 k 个、顺序随机, 答案是正确描述旁边的码. "
+                         "0 = 全部按位置 D0, D1, ... (旧行为). 评估集不受影响")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")
     ap.add_argument("--seed", type=int, default=0)
@@ -193,6 +199,7 @@ def main() -> None:
     tag = ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
+        + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
         + ("-allslots" if args.loss == "all-slots" else "")
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
@@ -220,6 +227,7 @@ def main() -> None:
     writer.add_text("args", json.dumps(vars(args), indent=2), 0)
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
     print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} loss={args.loss} "
+          f"random_codes={args.random_codes:g} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)
