@@ -52,31 +52,42 @@ class EvalSet:
 
 
 @torch.no_grad()
-def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False) -> dict:
-    """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一.
-    另报格式遵从 (answer_mass_summary): 全词表下有多少概率落在菜单的槽上, 与 baseline 脚本的 m_answer 同一个量."""
+def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, k_max: int, max_length: int,
+                   layout: str, type_marker: bool = False) -> dict[str, list]:
+    """逐题打分, 不汇总.
+      q          每道题在自己菜单 k 个槽上的概率 (位置空间, 长 k_max, 菜单之外补 0)
+      gold       正确选项的位置
+      m_answer / m_offmenu / top1_in   全词表下的三个格式读数, 见 loss.answer_mass
+    """
     was_training = m.training
     m.eval()
     dev = next(m.parameters()).device
-    Q, Y, MA, OFF, TOP = [], [], [], [], []
-    for s in range(0, len(es.examples), es.batch_size):
-        chunk = es.examples[s : s + es.batch_size]
-        b = collate(chunk, tok, d_ids, k_max, layout, max_length, type_marker)
+    out = {"q": [], "gold": [], "m_answer": [], "m_offmenu": [], "top1_in": []}
+    for s in range(0, len(examples), batch_size):
+        b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker)
         b = {k: v.to(dev) for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
-        Q.extend(q.cpu().tolist())
-        Y.extend(b["gold"].tolist())
         ma, off, top1 = answer_mass(logits, b["slot_ids"], d_ids)
-        MA.extend(ma.cpu().tolist())
-        OFF.extend(off.cpu().tolist())
-        TOP.extend(top1.cpu().tolist())
+        out["q"].extend(q.cpu().tolist())
+        out["gold"].extend(b["gold"].tolist())
+        out["m_answer"].extend(ma.cpu().tolist())
+        out["m_offmenu"].extend(off.cpu().tolist())
+        out["top1_in"].extend(top1.cpu().tolist())
     if was_training:
         m.train()
+    return out
+
+
+def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False) -> dict:
+    """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一.
+    另报格式遵从 (answer_mass_summary): 全词表下有多少概率落在菜单的槽上, 与 baseline 脚本的 m_answer 同一个量."""
+    s = score_examples(m, tok, d_ids, es.examples, es.batch_size, k_max, max_length, layout, type_marker)
+    Q, Y = s["q"], s["gold"]
     out = summarize(Q, Y)
     if es.pos_class is not None:
         out.update(binary_summary(Q, es.examples, es.pos_class))
-    out.update(answer_mass_summary(MA, OFF, TOP))
+    out.update(answer_mass_summary(s["m_answer"], s["m_offmenu"], s["top1_in"]))
     out.update(menu_size_summary([len(ex.options) for ex in es.examples]))
     out["n"] = len(Y)
     out["by_gold_slot"] = by_gold_slot(Q, Y)
