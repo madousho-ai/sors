@@ -17,7 +17,7 @@ import torch
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import answer_mass, gather_slot_logits, training_loss
-from decidophobia.metrics import answer_mass_summary, binary_summary, summarize
+from decidophobia.metrics import answer_mass_summary, binary_summary, by_gold_slot, menu_size_summary, summarize
 from decidophobia.model import last_logits, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
@@ -77,7 +77,20 @@ def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: st
     if es.pos_class is not None:
         out.update(binary_summary(Q, es.examples, es.pos_class))
     out.update(answer_mass_summary(MA, OFF, TOP))
+    out.update(menu_size_summary([len(ex.options) for ex in es.examples]))
     out["n"] = len(Y)
+    out["by_gold_slot"] = by_gold_slot(Q, Y)
+    return out
+
+
+def scalar_items(prefix: str, d: dict) -> list[tuple[str, float]]:
+    """把 evaluate() 的结果拍平成 TensorBoard 标量: 嵌套 dict 接成 a/b/c, None 丢掉."""
+    out = []
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out += scalar_items(f"{prefix}/{k}", v)
+        elif v is not None:
+            out.append((f"{prefix}/{k}", v))
     return out
 
 
@@ -111,9 +124,8 @@ def train(
         for name, es in eval_sets.items():
             rec[name] = evaluate(m, tok, d_ids, es, cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker)
             if writer:
-                for k, v in rec[name].items():
-                    if v is not None:
-                        writer.add_scalar(f"eval/{name}/{k}", v, step)
+                for tag, v in scalar_items(f"eval/{name}", rec[name]):
+                    writer.add_scalar(tag, v, step)
         if writer:
             if rec["tctl_c"] is not None:
                 writer.add_scalar("sys/tctl_c", rec["tctl_c"], step)

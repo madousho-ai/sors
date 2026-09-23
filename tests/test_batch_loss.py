@@ -11,8 +11,10 @@ import torch
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss
-from decidophobia.metrics import answer_mass_summary, brier_multiclass, ece_multiclass, nll_multiclass, topk_accuracy
+from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, ece_multiclass, menu_size_summary,
+                                  nll_multiclass, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
+from decidophobia.train import scalar_items
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -236,6 +238,38 @@ def test_brier_multiclass():
 def test_ece_multiclass():
     q = [[0.6, 0.4], [0.3, 0.7], [0.8, 0.2], [0.1, 0.9]]
     assert abs(ece_multiclass(q, [0, 0, 0, 1], n_bins=4) - 0.15) < 1e-12
+
+
+def _onehot_row(n, hot, p=0.9):
+    """长度 n, 第 hot 位 p, 其余均分剩下的."""
+    rest = (1 - p) / (n - 1)
+    return [p if i == hot else rest for i in range(n)]
+
+
+def test_by_gold_slot_bins_every_ten_slots_and_skips_empty_bins():
+    """正确答案在 D0 / D3 / D12 / D25 / D27. 模型答: D0 对, D3 错 (答 D1), D12 对, D25 错 (答 D0), D27 对.
+    0-9: n 2 acc 0.5; 10-19: n 1 acc 1.0; 20-29: n 2 acc 0.5. 30 以后没有题, 不出现."""
+    n = 30
+    q = [_onehot_row(n, 0), _onehot_row(n, 1), _onehot_row(n, 12), _onehot_row(n, 0), _onehot_row(n, 27)]
+    y = [0, 3, 12, 25, 27]
+    got = by_gold_slot(q, y, width=10)
+    assert list(got) == ["0-9", "10-19", "20-29"], list(got)
+    assert [got[b]["n"] for b in got] == [2, 1, 2], got
+    assert [got[b]["accuracy"] for b in got] == [0.5, 1.0, 0.5], got
+    assert abs(got["10-19"]["nll"] - (-math.log(0.9))) < 1e-12, got["10-19"]
+    assert set(got["0-9"]) == {"n", "accuracy", "top5_accuracy", "nll", "conf_mean"}, got["0-9"]
+
+
+def test_menu_size_summary_reports_min_max_mean():
+    assert menu_size_summary([10, 60, 60, 2]) == {"k_min": 2, "k_max": 60, "k_mean": 33.0}
+
+
+def test_scalar_items_flattens_nested_dicts_and_skips_none():
+    """TensorBoard 只收标量: 嵌套的 by_gold_slot 拍平成 a/b/c, None 丢掉."""
+    got = scalar_items("eval/seen", {"accuracy": 0.5, "auroc": None,
+                                     "by_gold_slot": {"0-9": {"n": 2, "accuracy": 1.0}}})
+    assert got == [("eval/seen/accuracy", 0.5), ("eval/seen/by_gold_slot/0-9/n", 2),
+                   ("eval/seen/by_gold_slot/0-9/accuracy", 1.0)], got
 
 
 if __name__ == "__main__":

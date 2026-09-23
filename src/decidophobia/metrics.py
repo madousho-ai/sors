@@ -69,6 +69,31 @@ def summarize(q: list[list[float]], y: list[int], n_bins: int = 10) -> dict[str,
     }
 
 
+def by_gold_slot(q: list[list[float]], y: list[int], width: int = 10) -> dict[str, dict[str, float]]:
+    """按正确答案所在的槽 (D0, D1, ...) 每 width 个分一档, 各档单独报 n / accuracy / top5 / nll / conf_mean.
+    看得出哪一段码训到了、哪一段是死的. 没有题的档不出现. 档内比较要在同一菜单长度下才公平."""
+    groups: dict[int, list[int]] = {}
+    for i, t in enumerate(y):
+        groups.setdefault(t // width, []).append(i)
+    out = {}
+    for b in sorted(groups):
+        qs = [q[i] for i in groups[b]]
+        ys = [y[i] for i in groups[b]]
+        out[f"{b * width}-{b * width + width - 1}"] = {
+            "n": len(ys),
+            "accuracy": topk_accuracy(qs, ys, k=1),
+            "top5_accuracy": topk_accuracy(qs, ys, k=5),
+            "nll": nll_multiclass(qs, ys),
+            "conf_mean": sum(max(r) for r in qs) / len(qs),
+        }
+    return out
+
+
+def menu_size_summary(ks: list[int]) -> dict[str, float]:
+    """评估集里每道题的菜单长度."""
+    return {"k_min": min(ks), "k_max": max(ks), "k_mean": sum(ks) / len(ks)}
+
+
 def _percentile(xs: list[float], pct: float) -> float:
     """线性插值, 与 numpy.percentile 的默认方法相同 (baseline 脚本用的是它)."""
     s = sorted(xs)
