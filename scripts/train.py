@@ -33,6 +33,7 @@ from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from decidophobia.data import class_split, merge_sets
+from decidophobia.loss import LOSSES
 from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
@@ -61,6 +62,8 @@ def main() -> None:
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
     ap.add_argument("--type-marker", action="store_true",
                     help="问句标签写成 'Question (<|bool|>):', 类型 token 随 D 行一起训")
+    ap.add_argument("--loss", default="all-slots", choices=LOSSES,
+                    help="all-slots: 分母是全部 256 个 D 槽, 菜单外的码被压低; menu: 只在菜单 k 个槽上归一 (旧版)")
     ap.add_argument("--lora-r", type=int, default=8)
     ap.add_argument("--lora-alpha", type=int, default=16)
     ap.add_argument("--lora-dropout", type=float, default=0.05)
@@ -90,7 +93,8 @@ def main() -> None:
     datasets = parse_datasets(args.dataset)
 
     tag = ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
-        + (f"-k{args.k_max}" if args.k_max != 10 else "") + ("-klog" if args.k_log else "")
+        + (f"-k{args.k_max}" if args.k_max != 10 else "") + ("-klog" if args.k_log else "") \
+        + ("-allslots" if args.loss == "all-slots" else "")
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
 
@@ -171,13 +175,14 @@ def main() -> None:
         steps=args.steps, batch_size=args.batch_size, k_max=k_pad, max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
-        eval_every=args.eval_every, seed=args.seed,
+        loss=args.loss, eval_every=args.eval_every, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
     writer.add_text("args", json.dumps(vars(args), indent=2), 0)
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
-    print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} k={ktr}{' log' if args.k_log else ''} params {n_train:,}  "
+    print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} loss={args.loss} "
+          f"k={ktr}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)
     history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard)

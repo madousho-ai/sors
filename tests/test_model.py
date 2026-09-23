@@ -144,5 +144,29 @@ def test_grad_checkpointing_gives_same_loss_and_gradients():
     assert got[True][1].abs().max() > 0, "checkpointing 下 LoRA 梯度不得为零"
 
 
+def test_train_loss_all_slots_moves_offmenu_d_rows_and_menu_leaves_them():
+    """train() 跑一步, 菜单只有 D0/D1. cfg.loss='all-slots' 时 D2..D255 在分母里, 这些行必须动;
+    cfg.loss='menu' 时它们不在提示里也不在分母里, 梯度为零、weight_decay=0, 必须原样不动."""
+    import random
+
+    from decidophobia.train import TrainConfig, train
+
+    ex = MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0,
+                     option_names=["card lost", "change pin"])
+    moved = {}
+    for kind in ("menu", "all-slots"):
+        tok, ids, lm = _load()
+        m = prepare_model(lm, ids, lora_r=4, lora_alpha=8, lora_dropout=0.0)
+        rows = m.get_input_embeddings().rows
+        before = rows.detach()[2:256].clone()
+        cfg = TrainConfig(steps=1, batch_size=1, k_max=2, loss=kind, eval_every=1, log_every=1)
+        train(m, tok, ids[:256], lambda n, rng: [ex] * n, {}, cfg)
+        moved[kind] = (rows.detach()[2:256] - before).abs().max().item()
+        del m, lm
+        torch.cuda.empty_cache()
+    assert moved["menu"] == 0, moved
+    assert moved["all-slots"] > 0, moved
+
+
 if __name__ == "__main__":
     run(globals())

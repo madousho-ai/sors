@@ -16,7 +16,7 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import answer_mass, gather_slot_logits
+from decidophobia.loss import answer_mass, gather_slot_logits, training_loss
 from decidophobia.metrics import answer_mass_summary, binary_summary, summarize
 from decidophobia.model import last_logits, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
@@ -38,6 +38,7 @@ class TrainConfig:
     warmup_steps: int = 0
     layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
+    loss: str = "all-slots"  # loss.LOSSES: all-slots 分母是全部 D 槽; menu 只有菜单 k 个槽
     eval_every: int = 100
     log_every: int = 20
     seed: int = 0
@@ -147,7 +148,7 @@ def train(
         b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
-        loss = torch.nn.functional.cross_entropy(gather_slot_logits(logits, b["slot_ids"]), b["gold"])
+        loss = training_loss(cfg.loss, logits, b["slot_ids"], b["gold"], d_ids)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
