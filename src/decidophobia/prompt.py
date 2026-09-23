@@ -25,7 +25,7 @@ DEFAULT_QUESTION = "Which option best describes the message?"
 
 
 def _menu(ex: MenuExample) -> str:
-    return "\n".join(f"{D_TOKENS[i]}. {name}" for i, name in enumerate(ex.option_names))
+    return "\n".join(f"{D_TOKENS[c]}. {name}" for c, name in zip(ex.slot_codes, ex.option_names))
 
 
 def _question_block(ex: MenuExample, type_marker: bool) -> str:
@@ -47,6 +47,7 @@ def split_prompt(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: boo
 
 
 def render_menu(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: bool = False) -> str:
-    """整条提示. 第 i 行 '<|Di|>. <名字>'; 以 'Answer:' 收尾, 答案 token 紧跟冒号之后, 中间无空格."""
+    """整条提示. 第 i 行 '<|D{slot_codes[i]}|>. <名字>' (不给 codes 时就是 D{i});
+    以 'Answer:' 收尾, 答案 token 紧跟冒号之后, 中间无空格."""
     ctx, q = split_prompt(ex, layout, type_marker)
     return ctx + q

@@ -192,6 +192,27 @@ def test_render_menu_lists_options_with_d_tokens_in_order_and_ends_at_answer():
     assert s.endswith("Answer:") and "<|D2|>" not in s, repr(s)
 
 
+def test_render_menu_writes_each_options_own_code_when_codes_are_given():
+    """codes 给出每一项绑的 D 码: 第一项 D10、第二项 D233, 菜单照写, 不再按位置写 D0 / D1."""
+    s = render_menu(_ex("I lost my card", options=(7, 2), gold_idx=1, codes=[10, 233]))
+    assert "\n<|D10|>. n7\n<|D233|>. n2\n" in s, repr(s)
+    assert "<|D0|>" not in s and "<|D1|>" not in s, repr(s)
+
+
+def test_slot_codes_default_to_d0_upwards_and_follow_codes_when_given():
+    assert _ex(options=(7, 2, 4)).slot_codes == [0, 1, 2]
+    assert _ex(options=(7, 2), codes=[10, 233]).slot_codes == [10, 233]
+
+
+def test_menu_example_rejects_codes_that_are_misaligned_repeated_or_out_of_range():
+    for bad in ([10], [10, 10], [10, 256], [-1, 3]):
+        try:
+            _ex(options=(7, 2), codes=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"codes {bad} accepted")
+
+
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():
     ex = _ex("I lost my card", options=(7, 2), gold_idx=1)
     s = render_menu(ex, layout="context-first")

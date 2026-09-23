@@ -34,19 +34,29 @@ def class_split(n_classes: int, n_held_out: int, seed: int) -> ClassSplit:
 @dataclass(frozen=True)
 class MenuExample:
     query: str  # 上下文: 用户句 / passage
-    options: list[int]  # 类 id, 顺序就是菜单顺序, 第 i 个绑 <|Di|>
+    options: list[int]  # 类 id, 顺序就是菜单顺序
     gold_idx: int  # 正确选项在 options 里的位置
     label: int  # 正确选项的类 id (== options[gold_idx])
     option_names: list[str]  # 与 options 平行, 菜单里显示的名字
     context_label: str = "Customer message"  # 上下文前面的标签
     question: str | None = None  # 这条样本的问句; None 表示数据集用固定的默认问句
     qtype: str = "choice"  # choice | bool | score, 见 tokens.QTYPES
+    codes: list[int] | None = None  # 与 options 平行, 第 i 项绑 <|D{codes[i]}|>; None = 按位置 D0, D1, ...
 
     def __post_init__(self):
         # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.
         if len(self.options) > N_SLOTS:
             raise ValueError(f"menu has {len(self.options)} options, only {N_SLOTS} D slots; "
                              "the dataset pipeline must cap it")
+        if self.codes is not None:
+            c = self.codes
+            if len(c) != len(self.options) or len(set(c)) != len(c) or not all(0 <= x < N_SLOTS for x in c):
+                raise ValueError(f"codes must be {len(self.options)} distinct slots in 0..{N_SLOTS - 1}, got {c}")
+
+    @property
+    def slot_codes(self) -> list[int]:
+        """菜单第 i 项绑的 D 码. 正确答案是 slot_codes[gold_idx]."""
+        return list(range(len(self.options))) if self.codes is None else list(self.codes)
 
 
 def menu_k_range(k_min: int | None, k_max: int) -> tuple[int, int]:
