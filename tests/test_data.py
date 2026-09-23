@@ -7,7 +7,7 @@ import random
 
 from _runner import run
 from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range,
-                               merge_sets)
+                               merge_sets, random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows)
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -285,6 +285,78 @@ def test_random_codes_balance_how_often_each_code_is_on_a_menu_and_so_how_often_
     assert max(on) - min(on) <= 10, (min(on), max(on))
     lo, hi = sum(gold[:60]) / 60, sum(gold[60:]) / 196
     assert abs(lo / hi - 1) < 0.05, (lo, hi)
+
+
+# --------------------------------------------------------------------------
+# 不变性诊断的菜单变体: 同一道题只改一个变量 (行 / 码 / 长度)
+# --------------------------------------------------------------------------
+
+
+def _menu5():
+    """5 项菜单, 类 id 10..14, 正确的是第 3 行 (类 12), 连续编号."""
+    opts = [10, 11, 12, 13, 14]
+    return MenuExample(query="q", options=opts, gold_idx=2, label=12, option_names=[f"n{c}" for c in opts])
+
+
+def _code_of(e):
+    return dict(zip(e.options, e.slot_codes))
+
+
+def test_reorder_menu_moves_each_description_with_its_name_and_the_gold_follows():
+    e = reorder_menu(_menu5(), [4, 2, 0, 1, 3])
+    assert e.options == [14, 12, 10, 11, 13] and e.option_names == ["n14", "n12", "n10", "n11", "n13"]
+    assert e.gold_idx == 1 and e.label == 12 and e.options[e.gold_idx] == e.label
+    assert e.codes is None and e.slot_codes == [0, 1, 2, 3, 4], "不给 codes 就连续编号"
+
+
+def test_reorder_menu_keeps_a_subset_and_binds_the_given_codes():
+    e = reorder_menu(_menu5(), [1, 2, 4], codes=[200, 7, 31])
+    assert e.options == [11, 12, 14] and e.gold_idx == 1 and e.slot_codes == [200, 7, 31]
+
+
+def test_reorder_menu_refuses_to_drop_the_gold_row_or_repeat_a_row():
+    for rows in ([0, 1, 3], [2, 2, 0], [2, 5]):
+        try:
+            reorder_menu(_menu5(), rows)
+        except ValueError:
+            continue
+        raise AssertionError(f"rows {rows} accepted")
+
+
+def test_shuffled_rows_renumbered_keeps_the_options_and_numbers_d0_upwards():
+    """部署形态: 行打乱, 仍然连续编号 —— 行和码一起变."""
+    rng = random.Random(0)
+    got = [shuffled_rows(_menu5(), rng, keep_codes=False) for _ in range(50)]
+    assert all(sorted(e.options) == [10, 11, 12, 13, 14] and e.codes is None for e in got)
+    assert len({e.gold_idx for e in got}) == 5
+
+
+def test_shuffled_rows_keeping_codes_moves_only_the_rows():
+    """每条描述保留原来的码, 只换行: 码因此不再按顺序排列."""
+    rng = random.Random(0)
+    got = [shuffled_rows(_menu5(), rng, keep_codes=True) for _ in range(50)]
+    assert all(_code_of(e) == {10: 0, 11: 1, 12: 2, 13: 3, 14: 4} for e in got)
+    assert len({tuple(e.options) for e in got}) > 1, "行真的打乱了"
+
+
+def test_reassigned_codes_keep_the_row_order_and_draw_new_codes_from_all_256():
+    rng = random.Random(0)
+    got = [reassigned_codes(_menu5(), rng) for _ in range(200)]
+    assert all(e.options == [10, 11, 12, 13, 14] and e.gold_idx == 2 for e in got)
+    assert all(len(set(e.slot_codes)) == 5 for e in got)
+    assert max(c for e in got for c in e.slot_codes) > 200
+
+
+def test_random_rows_keep_the_gold_and_the_original_order():
+    rng = random.Random(0)
+    rows = random_rows(_menu60(17), 10, rng)
+    assert len(rows) == 10 and 17 in rows and rows == sorted(rows)
+
+
+def test_top_rows_keep_the_gold_and_the_highest_scoring_other_rows():
+    """分数 [.1 .5 .05 .3 .05], 正确的是第 2 行: 留它加分数最高的两个其它行 (1、3), 按原顺序."""
+    assert top_rows([0.1, 0.5, 0.05, 0.3, 0.05], gold_idx=2, n=3) == [1, 2, 3]
+    assert top_rows([0.1, 0.5, 0.05, 0.3, 0.05], gold_idx=1, n=2) == [1, 3], "正确那行分最高时不重复计入"
 
 
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():

@@ -120,6 +120,46 @@ class RandomCodes:
         return least
 
 
+# 不变性诊断的菜单变体 (scripts/eval-invariance.py): 同一道题只改一个变量, 看选中的描述变不变.
+# 描述带着自己的名字和类 id 走, 比较时按类 id 对齐, 与它落在哪一行、写成哪个码无关.
+
+
+def reorder_menu(ex: MenuExample, rows: list[int], codes: list[int] | None = None) -> MenuExample:
+    """按 rows (原菜单的行号, 顺序即新顺序) 重排或取子集; 正确那一行必须在其中, gold_idx 跟到它的新位置.
+    codes 给新菜单每一行绑的码, None = 连续编号 D0, D1, ..."""
+    if len(set(rows)) != len(rows) or not all(0 <= r < len(ex.options) for r in rows):
+        raise ValueError(f"rows must be distinct rows of a {len(ex.options)}-option menu, got {rows}")
+    if ex.gold_idx not in rows:
+        raise ValueError(f"the gold row {ex.gold_idx} must stay on the menu")
+    return replace(ex, options=[ex.options[r] for r in rows], option_names=[ex.option_names[r] for r in rows],
+                   gold_idx=rows.index(ex.gold_idx), codes=codes)
+
+
+def shuffled_rows(ex: MenuExample, rng: random.Random, keep_codes: bool) -> MenuExample:
+    """行打乱. keep_codes=False: 仍连续编号, 行和码一起变 (部署形态);
+    True: 每条描述保留原来的码, 只有行变 —— 码因此不再按顺序排列."""
+    rows = rng.sample(range(len(ex.options)), len(ex.options))
+    return reorder_menu(ex, rows, [ex.slot_codes[r] for r in rows] if keep_codes else None)
+
+
+def reassigned_codes(ex: MenuExample, rng: random.Random) -> MenuExample:
+    """行顺序不变, 从 N_SLOTS 个码里随机挑 k 个重新分给各行 —— 只有码变."""
+    return reorder_menu(ex, list(range(len(ex.options))), rng.sample(range(N_SLOTS), len(ex.options)))
+
+
+def random_rows(ex: MenuExample, n: int, rng: random.Random) -> list[int]:
+    """短菜单的行: 正确那一行加 n-1 个随机的其它行, 按原顺序."""
+    others = [r for r in range(len(ex.options)) if r != ex.gold_idx]
+    return sorted(rng.sample(others, n - 1) + [ex.gold_idx])
+
+
+def top_rows(scores: list[float], gold_idx: int, n: int) -> list[int]:
+    """短菜单的行: 正确那一行加分数最高的 n-1 个其它行, 按原顺序. scores 是模型给这道题各行的概率,
+    留下的就是模型自己最容易混淆的那些."""
+    others = sorted((r for r in range(len(scores)) if r != gold_idx), key=lambda r: -scores[r])
+    return sorted(others[: n - 1] + [gold_idx])
+
+
 @dataclass(frozen=True)
 class LabeledSet:
     queries: list[str]
