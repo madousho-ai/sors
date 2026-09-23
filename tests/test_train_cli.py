@@ -115,5 +115,18 @@ def test_random_codes_rejects_a_rate_outside_zero_to_one():
     raise AssertionError("--random-codes 1.5 accepted")
 
 
+def test_loss_defaults_to_the_whole_vocabulary():
+    assert _mod.build_parser().parse_args([]).loss == "vocab"
+
+
+def test_run_tag_names_the_loss_and_keeps_the_old_names_for_old_losses():
+    """vocab 加 -vocab; all-slots 仍是 -allslots, menu 仍不加 —— 旧 run 的目录名照旧能复现."""
+    p = _mod.build_parser()
+    tag = lambda *argv: _mod.run_tag(p.parse_args(list(argv)))  # noqa: E731
+    assert tag() == "-kfull256-vocab"
+    assert tag("--loss", "all-slots", "--random-codes", "0.8") == "-kfull256-rcodes0.8-allslots"
+    assert tag("--loss", "menu", "--k-min", "2", "--k-max", "10") == "-k2-10"
+
+
 if __name__ == "__main__":
     run(globals())

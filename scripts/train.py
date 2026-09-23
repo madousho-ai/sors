@@ -145,7 +145,7 @@ def build_data(args):
     return sample_fn, eval_sets, split_info
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="banking77", help="banking77 / boolq / synth 用 + 连接; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
@@ -156,8 +156,9 @@ def main() -> None:
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
     ap.add_argument("--type-marker", action="store_true",
                     help="问句标签写成 'Question (<|bool|>):', 类型 token 随 D 行一起训")
-    ap.add_argument("--loss", default="all-slots", choices=LOSSES,
-                    help="all-slots: 分母是全部 256 个 D 槽, 菜单外的码被压低; menu: 只在菜单 k 个槽上归一 (旧版)")
+    ap.add_argument("--loss", default="vocab", choices=LOSSES,
+                    help="vocab: 分母是整个词表, 普通 token 每步被压低, 答题位置只说 D 码; "
+                         "all-slots: 分母是全部 256 个 D 槽; menu: 只在菜单 k 个槽上归一 (后两种是旧版)")
     ap.add_argument("--lora-r", type=int, default=8)
     ap.add_argument("--lora-alpha", type=int, default=16)
     ap.add_argument("--lora-dropout", type=float, default=0.05)
@@ -192,14 +193,23 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--data-dir", default="data/banking77")
     ap.add_argument("--out", default=None, help="默认 runs/<时间戳>-<dataset>-<trainable>-<schedule>-<layout>")
-    args = ap.parse_args()
-    datasets = parse_datasets(args.dataset)
+    return ap
 
-    tag = ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
+
+def run_tag(args) -> str:
+    """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现."""
+    return ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
-        + ("-allslots" if args.loss == "all-slots" else "")
+        + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    datasets = parse_datasets(args.dataset)
+
+    tag = run_tag(args)
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
     sample_fn, eval_sets, split_info = build_data(args)

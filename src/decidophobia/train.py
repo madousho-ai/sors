@@ -38,7 +38,7 @@ class TrainConfig:
     warmup_steps: int = 0
     layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
-    loss: str = "all-slots"  # loss.LOSSES: all-slots 分母是全部 D 槽; menu 只有菜单 k 个槽
+    loss: str = "all-slots"  # loss.LOSSES: vocab 整个词表; all-slots 全部 D 槽; menu 菜单 k 个槽. scripts/train.py 总是显式传, 默认 vocab
     eval_every: int = 100
     log_every: int = 20
     seed: int = 0
