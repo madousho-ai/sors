@@ -84,20 +84,37 @@ def compose_menu(gold: int, pool: list[int], k: int, rng: random.Random) -> tupl
     return opts, opts.index(gold)
 
 
-def assign_random_codes(examples: list[MenuExample], rate: float, rng: random.Random) -> list[MenuExample]:
-    """每条选择题 (qtype choice) 以概率 rate 换一套码: 从 N_SLOTS 个 D 码里随机挑 k 个互不相同的, 顺序随机,
-    菜单第 i 项写成这套里的第 i 个. 其余样本保持 D0, D1, ... 连续编号; 二元题 (BoolQ) 永远连续编号.
+class RandomCodes:
+    """训练抽题的最后一步: 每条选择题 (qtype choice) 以概率 rate 换一套码, 其余保持 D0, D1, ... 连续编号;
+    二元题 (BoolQ) 永远连续编号. 菜单第 i 项写成这套里的第 i 个, 答案是正确那一项旁边写的码, 与它排第几行无关.
 
-    答案跟着描述走: 正确的是正确那一项旁边写的码, 与它排第几行无关. 短菜单也能让 D0..D255 每个都当上答案.
+    换码时正确答案的码不是均匀抽的, 而是挑到目前为止当答案最少的那个 (并列时随机), 其余 k-1 个码从剩下的
+    里面随机挑、顺序随机. 计数覆盖所有选择题, 连续编号那部分也算: 那部分的答案只落在 D0..D(k-1),
+    换码的题就把别的码补上来, 整场下来 D0..D255 当答案的次数一样多. 计数跨调用保留 —— 一个 run 用一个实例.
+
     rate 0 时原样返回, 不从 rng 取数 —— 不开这个功能的 run 抽题序列与以前逐条相同."""
-    if rate <= 0:
-        return examples
-    out = []
-    for ex in examples:
-        if ex.qtype == "choice" and rng.random() < rate:
-            ex = replace(ex, codes=rng.sample(range(N_SLOTS), len(ex.options)))
-        out.append(ex)
-    return out
+
+    def __init__(self, rate: float):
+        self.rate = rate
+        self.gold_counts = [0] * N_SLOTS
+
+    def __call__(self, examples: list[MenuExample], rng: random.Random) -> list[MenuExample]:
+        if self.rate <= 0:
+            return examples
+        out = []
+        for ex in examples:
+            if ex.qtype == "choice" and rng.random() < self.rate:
+                ex = replace(ex, codes=self._codes(len(ex.options), ex.gold_idx, rng))
+            if ex.qtype == "choice":
+                self.gold_counts[ex.slot_codes[ex.gold_idx]] += 1
+            out.append(ex)
+        return out
+
+    def _codes(self, k: int, gold_idx: int, rng: random.Random) -> list[int]:
+        low = min(self.gold_counts)
+        gold = rng.choice([c for c, n in enumerate(self.gold_counts) if n == low])
+        others = rng.sample([c for c in range(N_SLOTS) if c != gold], k - 1)
+        return others[:gold_idx] + [gold] + others[gold_idx:]
 
 
 @dataclass(frozen=True)

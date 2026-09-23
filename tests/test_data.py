@@ -6,7 +6,7 @@
 import random
 
 from _runner import run
-from decidophobia.data import (LabeledSet, MenuExample, assign_random_codes, class_split, compose_menu, menu_k_range,
+from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range,
                                merge_sets)
 from decidophobia.prompt import render_menu, split_prompt
 
@@ -218,16 +218,16 @@ def test_random_codes_at_rate_zero_changes_nothing_and_leaves_rng_alone():
     """rate 0 = 旧行为: 样本原样, rng 一个数都不取, 旧 run 的抽题序列不变."""
     exs = [_ex(options=(7, 2)), _ex(options=(1, 2, 3), gold_idx=2)]
     rng = random.Random(0)
-    assert assign_random_codes(exs, 0.0, rng) == exs
+    assert RandomCodes(0.0)(exs, rng) == exs
     assert rng.random() == random.Random(0).random()
 
 
 def test_random_codes_at_rate_one_scatters_even_two_option_menus_over_all_256_codes():
-    """rate 1: 每题都换成从 256 个码里随机挑的 k 个, 互不相同、顺序随机.
+    """rate 1: 每题都换成 256 个码里的 k 个, 互不相同、顺序随机.
     2 项菜单的正确答案也会落到 D0..D255 的任何一个上."""
     rng = random.Random(0)
     exs = [_ex(options=(7, 2), gold_idx=i % 2) for i in range(3000)]
-    got = assign_random_codes(exs, 1.0, rng)
+    got = RandomCodes(1.0)(exs, rng)
     assert all(e.codes is not None and len(set(e.codes)) == 2 for e in got)
     assert [(e.options, e.gold_idx, e.label) for e in got] == [(e.options, e.gold_idx, e.label) for e in exs]
     gold_codes = {e.slot_codes[e.gold_idx] for e in got}
@@ -237,7 +237,7 @@ def test_random_codes_at_rate_one_scatters_even_two_option_menus_over_all_256_co
 
 def test_random_codes_rate_is_the_share_of_examples_that_get_them():
     rng = random.Random(0)
-    got = assign_random_codes([_ex(options=(7, 2, 4)) for _ in range(2000)], 0.3, rng)
+    got = RandomCodes(0.3)([_ex(options=(7, 2, 4)) for _ in range(2000)], rng)
     share = sum(e.codes is not None for e in got) / len(got)
     assert abs(share - 0.3) < 0.03, share
 
@@ -245,8 +245,30 @@ def test_random_codes_rate_is_the_share_of_examples_that_get_them():
 def test_random_codes_leave_binary_questions_numbered_d0_d1():
     """二元题 (BoolQ, qtype bool) 永远连续编号, 只有选择题换码."""
     rng = random.Random(0)
-    got = assign_random_codes([_ex(options=(1, 0), qtype="bool") for _ in range(200)], 1.0, rng)
+    got = RandomCodes(1.0)([_ex(options=(1, 0), qtype="bool") for _ in range(200)], rng)
     assert all(e.codes is None for e in got)
+
+
+def _menu60(gold_idx):
+    opts = list(range(60))
+    return MenuExample(query="q", options=opts, gold_idx=gold_idx, label=gold_idx, option_names=[str(c) for c in opts])
+
+
+def test_random_codes_even_out_gold_codes_across_calls_counting_the_contiguous_menus_too():
+    """60 项选择题, 两成连续编号 -> D0..D59 光靠连续编号就各当约 85 次答案 (共 25600 题, 均分是每码 100).
+    换码的那八成要把答案优先放到当得最少的码上, 补齐之后每个码都在 100 上下.
+    连续编号那部分加上去就撤不回, D0..D59 补齐后还会再多出几次, 所以两段均值允许差 5%;
+    同样 0.8 的比例若均匀挑码, 两段要差 1.8 倍.
+    计数跨调用保留: 训练里每批只有 8 条, 一批一调."""
+    rng, grng = random.Random(0), random.Random(1)
+    rc = RandomCodes(0.8)
+    counts = [0] * 256
+    for _ in range(3200):
+        for e in rc([_menu60(grng.randrange(60)) for _ in range(8)], rng):
+            counts[e.slot_codes[e.gold_idx]] += 1
+    assert min(counts) >= 95 and max(counts) <= 125, (min(counts), max(counts))
+    lo, hi = sum(counts[:60]) / 60, sum(counts[60:]) / 196
+    assert abs(lo / hi - 1) < 0.05, (lo, hi)
 
 
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():
