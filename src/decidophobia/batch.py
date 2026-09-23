@@ -20,7 +20,8 @@ def collate(
     """返回
       input_ids      (B, L)  左填充
       attention_mask (B, L)
-      slot_ids       (B, k_max)  第 j 列是 <|Dj|> 的 id, 超出该样本菜单长度的位置填 -1
+      slot_ids       (B, k_max)  第 j 列是菜单第 j 项绑的那个 D 的 id (默认 <|Dj|>, 见 MenuExample.codes),
+                                 超出该样本菜单长度的位置填 -1
       gold           (B,)        正确选项在菜单里的位置
     """
     texts = [render_menu(ex, layout, type_marker) for ex in examples]
@@ -35,7 +36,6 @@ def collate(
         attn[i, L - len(e) :] = 1
     slot_ids = torch.full((len(examples), k_max), -1, dtype=torch.long)
     for i, ex in enumerate(examples):
-        k = len(ex.options)
-        slot_ids[i, :k] = torch.tensor(d_ids[:k])
+        slot_ids[i, : len(ex.options)] = torch.tensor([d_ids[c] for c in ex.slot_codes])
     gold = torch.tensor([ex.gold_idx for ex in examples], dtype=torch.long)
     return {"input_ids": input_ids, "attention_mask": attn, "slot_ids": slot_ids, "gold": gold}

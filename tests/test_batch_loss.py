@@ -118,6 +118,18 @@ def test_collate_builds_slot_ids_by_position_and_pads_with_minus_one():
     assert b["gold"].tolist() == [1, 0]
 
 
+def test_collate_slot_ids_follow_each_examples_codes():
+    """菜单绑的是 D10 / D233 时, slot_ids 那一行就是 [D10, D233], gold 仍是位置 ->
+    loss 的目标是 D233 这个 token, 与 all-slots 的分母对得上."""
+    tok = _tok()
+    d_ids = install_d_tokens(tok)
+    ex = MenuExample(query="x", options=[5, 9], gold_idx=1, label=9, option_names=["n5", "n9"], codes=[10, 233])
+    b = collate([ex], tok, d_ids, k_max=3)
+    assert b["slot_ids"].tolist() == [[d_ids[10], d_ids[233], -1]], b["slot_ids"]
+    assert b["gold"].tolist() == [1]
+    assert all_slot_cross_entropy(torch.zeros(1, 151936), b["slot_ids"], b["gold"], d_ids).item() > 0
+
+
 # --------------------------------------------------------------------------
 # loss
 # --------------------------------------------------------------------------
