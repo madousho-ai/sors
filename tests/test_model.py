@@ -168,5 +168,38 @@ def test_train_loss_all_slots_moves_offmenu_d_rows_and_menu_leaves_them():
     assert moved["all-slots"] > 0, moved
 
 
+def test_vocab_loss_step_lowers_the_answer_positions_non_d_mass_without_touching_frozen_rows():
+    """vocab loss 跑几步: 普通 token 的嵌入行一行不动 (冻结), 压低它们只能靠 LoRA 改 h 和 D 行抬高;
+    同一道题上, 全词表下非 D token 的概率合计必须下降."""
+    from decidophobia.batch import collate
+    from decidophobia.model import last_logits
+    from decidophobia.train import TrainConfig, train
+
+    ex = MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0,
+                     option_names=["card lost", "change pin"])
+    tok, ids, lm = _load()
+    m = prepare_model(lm, ids, lora_r=4, lora_alpha=8, lora_dropout=0.0)
+    d = ids[:256]
+    frozen = m.get_input_embeddings().base.weight
+    before_rows = frozen.detach()[:1000].clone()
+
+    def non_d_mass():
+        b = collate([ex], tok, d, k_max=2)
+        with torch.no_grad():
+            p = torch.softmax(last_logits(m, b["input_ids"].cuda(), b["attention_mask"].cuda()), -1)[0]
+        return 1 - p[torch.tensor(d, device=p.device)].sum().item()
+
+    m.eval()
+    start = non_d_mass()
+    cfg = TrainConfig(steps=5, batch_size=1, k_max=2, loss="vocab", eval_every=100, log_every=100, lr_lora=1e-3)
+    train(m, tok, d, lambda n, rng: [ex] * n, {}, cfg)
+    m.eval()
+    end = non_d_mass()
+    assert torch.equal(frozen.detach()[:1000], before_rows), "普通 token 的行动了"
+    assert end < start - 0.1, (start, end)
+    del m, lm
+    torch.cuda.empty_cache()
+
+
 if __name__ == "__main__":
     run(globals())
