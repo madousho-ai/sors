@@ -10,7 +10,8 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss
+from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss,
+                               vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
                                   menu_size_summary, nll_multiclass, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
@@ -178,8 +179,48 @@ def test_all_slot_cross_entropy_rejects_a_gold_slot_outside_d_ids():
     raise AssertionError("gold slot 9 is not a D id, expected ValueError")
 
 
+def test_vocab_cross_entropy_puts_the_whole_vocabulary_in_the_denominator():
+    """V=10, D-token 在 id 5..8. 分母是全部 10 个 token, 非 D 的也在里面.
+    行 0: 菜单 [5,6,pad], gold=1 -> 目标 id 6. logit id5..7 = [1,2,3], 非 D 的 id 0 = 4, 其余 0.
+          Z = 6 + e⁴ + e + e² + e³, loss = -2 + ln Z = 2.50856044
+    行 1: 菜单 [5,6,7], gold=2 -> 目标 id 7, logit 全 0 -> ln 10 = 2.30258509
+    mean = 2.40557276"""
+    logits = torch.zeros(2, 10)
+    logits[0, 5], logits[0, 6], logits[0, 7], logits[0, 0] = 1.0, 2.0, 3.0, 4.0
+    slot_ids = torch.tensor([[5, 6, -1], [5, 6, 7]])
+    gold = torch.tensor([1, 2])
+    got = vocab_cross_entropy(logits, slot_ids, gold).item()
+    assert abs(got - 2.4055727644114406) < 1e-6, got
+
+
+def test_raising_every_d_logit_together_lowers_vocab_loss_but_not_all_slots_loss():
+    """这正是换 loss 的理由: 给全部 D 码的 logit 同时加 5, all-slots 的分子分母一起变, loss 不动;
+    全词表 softmax 下 D 码整体压过了普通 token, loss 下降.
+    V=10, D 在 5..8, 目标 id 6 的 logit 1, 其余 0.
+    vocab 加之前: -1 + ln(9 + e) = 1.46115017; 加之后: -6 + ln(6 + 3e⁵ + e⁶) = 0.75071335."""
+    d_ids = [5, 6, 7, 8]
+    logits = torch.zeros(1, 10)
+    logits[0, 6] = 1.0
+    slot_ids, gold = torch.tensor([[5, 6, 7]]), torch.tensor([1])
+    lifted = logits.clone()
+    lifted[:, d_ids] += 5.0
+    a0, a1 = (all_slot_cross_entropy(x, slot_ids, gold, d_ids).item() for x in (logits, lifted))
+    v0, v1 = (vocab_cross_entropy(x, slot_ids, gold).item() for x in (logits, lifted))
+    assert abs(a0 - a1) < 1e-6, (a0, a1)
+    assert abs(v0 - 1.46115017) < 1e-6 and abs(v1 - 0.75071335) < 1e-6, (v0, v1)
+
+
+def test_vocab_cross_entropy_rejects_a_gold_on_a_padding_slot():
+    """gold 指到菜单之外的 pad 位 (-1) 时报错, 不能拿 -1 当 token id."""
+    try:
+        vocab_cross_entropy(torch.zeros(1, 10), torch.tensor([[5, -1]]), torch.tensor([1]))
+    except ValueError:
+        return
+    raise AssertionError("gold on a padding slot, expected ValueError")
+
+
 def test_training_loss_dispatches_on_kind():
-    """'menu' 是只在菜单 k 个槽上归一的老损失, 'all-slots' 是全部 D 槽; 其他名字报错."""
+    """'menu' 是只在菜单 k 个槽上归一的老损失, 'all-slots' 是全部 D 槽, 'vocab' 是整个词表; 其他名字报错."""
     logits = torch.zeros(2, 10)
     logits[0, 5], logits[0, 6], logits[0, 7] = 1.0, 2.0, 3.0
     slot_ids = torch.tensor([[5, 6, -1], [5, 6, 7]])
@@ -187,12 +228,14 @@ def test_training_loss_dispatches_on_kind():
     d_ids = [5, 6, 7, 8]
     menu = training_loss("menu", logits, slot_ids, gold, d_ids).item()
     full = training_loss("all-slots", logits, slot_ids, gold, d_ids).item()
+    vocab = training_loss("vocab", logits, slot_ids, gold, d_ids).item()
     assert menu == slot_cross_entropy(logits, slot_ids, gold).item(), menu
     assert full == all_slot_cross_entropy(logits, slot_ids, gold, d_ids).item(), full
-    assert menu != full
-    assert LOSSES == ("menu", "all-slots")
+    assert vocab == vocab_cross_entropy(logits, slot_ids, gold).item(), vocab
+    assert len({menu, full, vocab}) == 3
+    assert LOSSES == ("menu", "all-slots", "vocab")
     try:
-        training_loss("vocab", logits, slot_ids, gold, d_ids)
+        training_loss("hinge", logits, slot_ids, gold, d_ids)
     except ValueError:
         return
     raise AssertionError("unknown loss kind, expected ValueError")

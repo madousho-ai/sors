@@ -1,10 +1,13 @@
-"""训练目标: 交叉熵到正确槽, 分母有两种 (training_loss 的 kind).
+"""训练目标: 交叉熵到正确的 D 码, 分母有三种 (training_loss 的 kind).
 
 menu       只在这条样本给出的 k 个槽上做 softmax. 与推理形状一致, 但菜单外的 D 从不进分母,
            超出训练菜单长度的 D 永远不吃梯度.
 all-slots  分母是全部 256 个 D 槽. 菜单外的 D 每一步都被压低, 训的是「只说菜单上有的码」.
+vocab      分母是整个词表 (151936 个 token). 前两种给全部 D 码的 logit 同时加一个常数时 loss 不变,
+           没有任何东西把 D 码整体推到 15 万个普通 token 之上; 这一种每一步都压低普通 token,
+           训的是「答题位置只说 D 码」. 普通 token 的输出行冻结, 压低它们要靠 LoRA 改 h、以及 D 行自己抬高.
 
-两种都不含词表里其余 15 万个 token.
+目标都是菜单第 gold 位绑的那个 D 码 (slot_ids 里的 id).
 """
 
 from __future__ import annotations
@@ -40,17 +43,28 @@ def all_slot_cross_entropy(
     return F.cross_entropy(logits[:, d], hit.int().argmax(1))
 
 
-LOSSES = ("menu", "all-slots")
+def vocab_cross_entropy(logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor) -> torch.Tensor:
+    """分母是整个词表; 目标是菜单第 gold 位绑的那个 D 的 token id. 普通 token 的梯度就是它的概率,
+    概率越高压得越狠."""
+    target = slot_ids.gather(1, gold[:, None]).squeeze(1)
+    if bool((target < 0).any()):
+        raise ValueError("gold points at a padding slot")
+    return F.cross_entropy(logits, target)
+
+
+LOSSES = ("menu", "all-slots", "vocab")
 
 
 def training_loss(
     kind: str, logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor, d_ids: list[int],
 ) -> torch.Tensor:
-    """训练循环用的损失. menu = 分母只有菜单 k 个槽; all-slots = 分母是全部 D 槽."""
+    """训练循环用的损失. menu = 分母只有菜单 k 个槽; all-slots = 全部 D 槽; vocab = 整个词表."""
     if kind == "menu":
         return slot_cross_entropy(logits, slot_ids, gold)
     if kind == "all-slots":
         return all_slot_cross_entropy(logits, slot_ids, gold, d_ids)
+    if kind == "vocab":
+        return vocab_cross_entropy(logits, slot_ids, gold)
     raise ValueError(f"unknown loss {kind!r}; expected one of {LOSSES}")
 
 
