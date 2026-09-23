@@ -131,3 +131,75 @@ def length_profile(q: np.ndarray, y: np.ndarray, name_len: np.ndarray) -> list[d
             "pred_share": float(members[pred].mean()),
         })
     return out
+
+
+# --------------------------------------------------------------------------
+# GPU: 前缀一次前向, 选项分块 teacher-forced (tests/test_choice_loglik_gpu.py 覆盖)
+# --------------------------------------------------------------------------
+
+
+def stop_token_ids(tok) -> list[int]:
+    """「答案到这里说完了」的 token: 换行、双换行、EOS. 终止符位置取这几个 token 的概率之和."""
+    ids = {tok.encode("\n", add_special_tokens=False)[0], tok.encode("\n\n", add_special_tokens=False)[0]}
+    ids.add(tok.eos_token_id)
+    return sorted(ids)
+
+
+def score_continuations(lm, prefix_ids: list[int], conts: list[list[int]], stop_ids: list[int], chunk: int):
+    """前缀前向一次得 KV cache; 选项每 chunk 个一组, 组内首尾相接排成一条序列接在 cache 后面前向.
+
+    打包 (tree attention): 组内每个续写只看得到前缀和它自己已经出现的 token —— 用 (1, 1, T, n_ctx+T)
+    的布尔 4D 掩码表达, 位置编号各自从 n_ctx 起算. 于是前缀的 KV 只存一份, 无填充.
+    每个续写 c 喂进去的是 c[:-1]: 序列里第 j 个 token 的 logits 预测 c[j+1]; c[0] 由前缀最后位置预测.
+    c 的最后一个 token 是终止符, 那一位取 stop_ids 上的 logsumexp.
+    返回 (lp, first): lp 是 (K, Lmax) 的 np.float32, 填充位 NaN; first 是前缀最后位置的全词表 logits.
+    """
+    import copy
+
+    import torch
+    from transformers import DynamicCache
+
+    dev = lm.device
+    with torch.no_grad():
+        cache = DynamicCache()
+        out = lm(input_ids=torch.tensor([prefix_ids], device=dev), past_key_values=cache, use_cache=True,
+                 logits_to_keep=1)
+        first = out.logits[0, -1].float()
+        first_lp = torch.log_softmax(first, -1)
+        n_ctx = len(prefix_ids)
+        stop = torch.tensor(stop_ids, device=dev)
+        lp = np.full((len(conts), max(len(c) for c in conts)), np.nan, dtype=np.float32)
+        for s in range(0, len(conts), chunk):
+            block = conts[s : s + chunk]
+            fed = [c[:-1] for c in block]
+            starts = np.cumsum([0] + [len(f) for f in fed])
+            T = int(starts[-1])
+            inp = torch.tensor([t for f in fed for t in f], device=dev)[None]
+            pos = torch.tensor([n_ctx + j for f in fed for j in range(len(f))], device=dev)[None]
+            mask = torch.zeros(T, n_ctx + T, dtype=torch.bool, device=dev)
+            mask[:, :n_ctx] = True
+            for a, b in zip(starts[:-1], starts[1:]):
+                mask[a:b, n_ctx + a : n_ctx + b] = torch.ones(b - a, b - a, dtype=torch.bool, device=dev).tril()
+            branch = copy.deepcopy(cache) if len(conts) > chunk else cache
+            logp = torch.log_softmax(
+                lm(input_ids=inp, position_ids=pos, attention_mask=mask[None, None], past_key_values=branch,
+                   use_cache=True).logits[0].float(), -1)
+            # 续写 k 的第 j 个 token (j>=1) 由序列位置 starts[k]+j-1 预测
+            tgt_pos, tgt_tok = [], []
+            for k, c in enumerate(block):
+                for j in range(1, len(c) - 1):
+                    tgt_pos.append(starts[k] + j - 1)
+                    tgt_tok.append(c[j])
+            tok_lp = logp[torch.tensor(tgt_pos, device=dev), torch.tensor(tgt_tok, device=dev)].cpu().numpy()
+            end_pos = torch.tensor([starts[k] + len(c) - 2 for k, c in enumerate(block)], device=dev)
+            stop_lp = torch.logsumexp(logp[end_pos][:, stop], -1).cpu().numpy()
+            c0 = first_lp[torch.tensor([c[0] for c in block], device=dev)].cpu().numpy()
+            w = 0
+            for k, c in enumerate(block):
+                n = len(c)
+                lp[s + k, 0] = c0[k]
+                lp[s + k, 1 : n - 1] = tok_lp[w : w + n - 2]
+                lp[s + k, n - 1] = stop_lp[k]
+                w += n - 2
+            del branch, logp
+    return lp, first
