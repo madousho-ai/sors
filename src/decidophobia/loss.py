@@ -1,7 +1,10 @@
-"""训练目标: 只在这条样本给出的 k 个槽上做 softmax, 交叉熵到正确槽.
+"""训练目标: 交叉熵到正确槽, 分母有两种 (training_loss 的 kind).
 
-与推理形状一致 —— 调用方给几个选项就在几个上归一. 词表里其余 15 万个 token
-不进分母: 这里训的是「选哪个」, 「要不要说 D-token 而非别的」由嵌入行的更新顺带解决.
+menu       只在这条样本给出的 k 个槽上做 softmax. 与推理形状一致, 但菜单外的 D 从不进分母,
+           超出训练菜单长度的 D 永远不吃梯度.
+all-slots  分母是全部 256 个 D 槽. 菜单外的 D 每一步都被压低, 训的是「只说菜单上有的码」.
+
+两种都不含词表里其余 15 万个 token.
 """
 
 from __future__ import annotations
@@ -19,6 +22,36 @@ def gather_slot_logits(logits: torch.Tensor, slot_ids: torch.Tensor) -> torch.Te
 
 def slot_cross_entropy(logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(gather_slot_logits(logits, slot_ids), gold)
+
+
+def all_slot_cross_entropy(
+    logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor, d_ids: list[int],
+) -> torch.Tensor:
+    """分母是全部 D 槽 (256 个), 不论菜单几项; 目标是菜单第 gold 位的那个 D.
+
+    菜单外的 D 也在分母里, 于是每一步都会被压低 —— 训练的是「只说菜单上有的码」.
+    词表里其余的 token 仍不进分母.
+    """
+    d = torch.tensor(d_ids, device=logits.device)
+    target_id = slot_ids.gather(1, gold[:, None])  # (B, 1)
+    hit = target_id == d[None, :]  # (B, n_d)
+    if not bool(hit.any(1).all()):
+        raise ValueError("gold slot is not one of d_ids")
+    return F.cross_entropy(logits[:, d], hit.int().argmax(1))
+
+
+LOSSES = ("menu", "all-slots")
+
+
+def training_loss(
+    kind: str, logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor, d_ids: list[int],
+) -> torch.Tensor:
+    """训练循环用的损失. menu = 分母只有菜单 k 个槽; all-slots = 分母是全部 D 槽."""
+    if kind == "menu":
+        return slot_cross_entropy(logits, slot_ids, gold)
+    if kind == "all-slots":
+        return all_slot_cross_entropy(logits, slot_ids, gold, d_ids)
+    raise ValueError(f"unknown loss {kind!r}; expected one of {LOSSES}")
 
 
 def answer_mass(

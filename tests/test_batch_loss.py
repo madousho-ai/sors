@@ -10,7 +10,7 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import answer_mass, slot_cross_entropy
+from decidophobia.loss import LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss
 from decidophobia.metrics import answer_mass_summary, brier_multiclass, ece_multiclass, nll_multiclass, topk_accuracy
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
 
@@ -135,6 +135,53 @@ def test_slot_cross_entropy_masks_padding_and_averages():
     gold = torch.tensor([2, 0])
     got = slot_cross_entropy(logits, slot_ids, gold).item()
     assert abs(got - 0.55037657) < 1e-6, got
+
+
+def test_all_slot_cross_entropy_puts_every_d_slot_in_the_denominator():
+    """V=10, 4 个 D-token 在 id 5..8. 分母是这 4 个, 不论菜单几项; 非 D 的 token 不进分母.
+    行 0: 菜单 [5,6,pad] (k=2), gold=1 -> 目标 id 6. logit id5..8 = [1,2,3,0], 菜单外的 id 7 也进分母;
+          id 0 = 99 不是 D, 不得参与. -ln(e²/(e+e²+e³+1)) = 1.44018970
+    行 1: 菜单 [5,6,7], gold=2 -> 目标 id 7, D 上 logit 全 0 -> ln 4 = 1.38629436
+    mean = 1.41324203
+    """
+    logits = torch.zeros(2, 10)
+    logits[0, 5], logits[0, 6], logits[0, 7] = 1.0, 2.0, 3.0
+    logits[:, 0] = 99.0
+    slot_ids = torch.tensor([[5, 6, -1], [5, 6, 7]])
+    gold = torch.tensor([1, 2])
+    got = all_slot_cross_entropy(logits, slot_ids, gold, d_ids=[5, 6, 7, 8]).item()
+    assert abs(got - 1.41324203) < 1e-6, got
+
+
+def test_all_slot_cross_entropy_rejects_a_gold_slot_outside_d_ids():
+    """菜单第 gold 位的 token 不在 d_ids 里时报错, 不能静默把目标当成第 0 个 D."""
+    logits = torch.zeros(1, 10)
+    slot_ids = torch.tensor([[5, 9]])
+    try:
+        all_slot_cross_entropy(logits, slot_ids, torch.tensor([1]), d_ids=[5, 6, 7, 8])
+    except ValueError:
+        return
+    raise AssertionError("gold slot 9 is not a D id, expected ValueError")
+
+
+def test_training_loss_dispatches_on_kind():
+    """'menu' 是只在菜单 k 个槽上归一的老损失, 'all-slots' 是全部 D 槽; 其他名字报错."""
+    logits = torch.zeros(2, 10)
+    logits[0, 5], logits[0, 6], logits[0, 7] = 1.0, 2.0, 3.0
+    slot_ids = torch.tensor([[5, 6, -1], [5, 6, 7]])
+    gold = torch.tensor([1, 2])
+    d_ids = [5, 6, 7, 8]
+    menu = training_loss("menu", logits, slot_ids, gold, d_ids).item()
+    full = training_loss("all-slots", logits, slot_ids, gold, d_ids).item()
+    assert menu == slot_cross_entropy(logits, slot_ids, gold).item(), menu
+    assert full == all_slot_cross_entropy(logits, slot_ids, gold, d_ids).item(), full
+    assert menu != full
+    assert LOSSES == ("menu", "all-slots")
+    try:
+        training_loss("vocab", logits, slot_ids, gold, d_ids)
+    except ValueError:
+        return
+    raise AssertionError("unknown loss kind, expected ValueError")
 
 
 def test_answer_mass_splits_full_vocab_into_menu_offmenu_and_rest():
