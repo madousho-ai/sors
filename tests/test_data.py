@@ -6,7 +6,7 @@
 import random
 
 from _runner import run
-from decidophobia.data import LabeledSet, MenuExample, class_split, compose_menu, merge_sets
+from decidophobia.data import LabeledSet, MenuExample, class_split, compose_menu, menu_k_range, merge_sets
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -50,6 +50,21 @@ def test_compose_menu_clamps_k_to_pool_size():
     outs = [compose_menu(1, [0, 1], 10, rng) for _ in range(20)]
     assert all(sorted(o) == [0, 1] for o, _ in outs)
     assert {gi for _, gi in outs} == {0, 1}
+
+
+def test_menu_k_range_without_k_min_means_full_menu_up_to_k_max():
+    """k_min 不给 = 全量: 每个菜单都取 k_max, compose_menu 再夹到池子大小 (池子 60 就是 60 项).
+    给了 k_min 才是旧的随机长度."""
+    assert menu_k_range(None, 256) == (256, 256)
+    assert menu_k_range(2, 10) == (2, 10)
+
+
+def test_full_menu_puts_every_pool_class_in_when_pool_is_below_k_max():
+    """池子 6 个类、k_max 256: 每个菜单 6 项且就是整个池子, gold 在 6 个位置都出现过."""
+    s = _set(n=60, n_cls=6)
+    ex = s.sample_examples(list(range(6)), menu_k_range(None, 256), 60, random.Random(0))
+    assert all(sorted(e.options) == list(range(6)) for e in ex)
+    assert {e.gold_idx for e in ex} == set(range(6))
 
 
 # --------------------------------------------------------------------------

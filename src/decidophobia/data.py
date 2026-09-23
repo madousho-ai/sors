@@ -41,6 +41,12 @@ class MenuExample:
     qtype: str = "choice"  # choice | bool | score, 见 tokens.QTYPES
 
 
+def menu_k_range(k_min: int | None, k_max: int) -> tuple[int, int]:
+    """k_max 是菜单最多几项. k_min 不给 = 全量: 每个菜单都取 k_max, 池子不够 k_max 就整个池子放进去
+    (compose_menu 负责夹). 给了 k_min 才在 k_min..k_max 之间随机抽长度."""
+    return (k_max, k_max) if k_min is None else (k_min, k_max)
+
+
 def draw_k(k_range: tuple[int, int], rng: random.Random, log: bool = False) -> int:
     """菜单长度. log=True 按对数均匀取: 2..256 之间一半落在 ~23 以内, 少数拉到两百多,
     每个槽都轮得到而平均提示长度不爆."""
