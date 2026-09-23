@@ -66,14 +66,16 @@ def test_eval_synth_refuses_when_synth_is_in_training():
 
 
 def test_random_codes_lets_60_item_menus_train_every_code_and_leaves_eval_contiguous():
-    """--random-codes 0.5 配 train3 的数据 (菜单 60 项 / BoolQ 2 项): 约一半训练题换成随机码,
-    正确答案的码铺满 D0..D255. 评估集照旧按位置编号, 与部署时的菜单同形."""
+    """--random-codes 0.5 配 train3 的数据 (菜单 60 项 / BoolQ 2 项): 约一半选择题换成随机码,
+    正确答案的码铺满 D0..D255; BoolQ 永远 D0 / D1. 评估集照旧按位置编号, 与部署时的菜单同形."""
     sample_fn, eval_sets, _ = _mod.build_data(_args("banking77+boolq+massive", random_codes=0.5))
     rng = random.Random(0)
     exs = [e for _ in range(500) for e in sample_fn(8, rng)]
-    share = sum(e.codes is not None for e in exs) / len(exs)
+    choice = [e for e in exs if e.qtype == "choice"]
+    share = sum(e.codes is not None for e in choice) / len(choice)
     assert abs(share - 0.5) < 0.05, share
-    assert {e.slot_codes[e.gold_idx] for e in exs} == set(range(256))
+    assert all(e.codes is None for e in exs if e.qtype == "bool")
+    assert {e.slot_codes[e.gold_idx] for e in choice} == set(range(256))
     assert all(e.codes is None for es in eval_sets.values() for e in es.examples)
 
 

@@ -85,8 +85,8 @@ def compose_menu(gold: int, pool: list[int], k: int, rng: random.Random) -> tupl
 
 
 def assign_random_codes(examples: list[MenuExample], rate: float, rng: random.Random) -> list[MenuExample]:
-    """每条样本以概率 rate 换一套码: 从 N_SLOTS 个 D 码里随机挑 k 个互不相同的, 顺序随机,
-    菜单第 i 项写成这套里的第 i 个. 其余样本保持 D0, D1, ... 连续编号.
+    """每条选择题 (qtype choice) 以概率 rate 换一套码: 从 N_SLOTS 个 D 码里随机挑 k 个互不相同的, 顺序随机,
+    菜单第 i 项写成这套里的第 i 个. 其余样本保持 D0, D1, ... 连续编号; 二元题 (BoolQ) 永远连续编号.
 
     答案跟着描述走: 正确的是正确那一项旁边写的码, 与它排第几行无关. 短菜单也能让 D0..D255 每个都当上答案.
     rate 0 时原样返回, 不从 rng 取数 —— 不开这个功能的 run 抽题序列与以前逐条相同."""
@@ -94,7 +94,7 @@ def assign_random_codes(examples: list[MenuExample], rate: float, rng: random.Ra
         return examples
     out = []
     for ex in examples:
-        if rng.random() < rate:
+        if ex.qtype == "choice" and rng.random() < rate:
             ex = replace(ex, codes=rng.sample(range(N_SLOTS), len(ex.options)))
         out.append(ex)
     return out

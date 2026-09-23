@@ -242,6 +242,13 @@ def test_random_codes_rate_is_the_share_of_examples_that_get_them():
     assert abs(share - 0.3) < 0.03, share
 
 
+def test_random_codes_leave_binary_questions_numbered_d0_d1():
+    """二元题 (BoolQ, qtype bool) 永远连续编号, 只有选择题换码."""
+    rng = random.Random(0)
+    got = assign_random_codes([_ex(options=(1, 0), qtype="bool") for _ in range(200)], 1.0, rng)
+    assert all(e.codes is None for e in got)
+
+
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():
     ex = _ex("I lost my card", options=(7, 2), gold_idx=1)
     s = render_menu(ex, layout="context-first")
