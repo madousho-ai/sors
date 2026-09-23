@@ -11,8 +11,8 @@ import torch
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss
-from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, ece_multiclass, menu_size_summary,
-                                  nll_multiclass, topk_accuracy)
+from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
+                                  menu_size_summary, nll_multiclass, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
 from decidophobia.train import scalar_items
 
@@ -274,6 +274,46 @@ def test_by_gold_slot_bins_every_ten_slots_and_skips_empty_bins():
 
 def test_menu_size_summary_reports_min_max_mean():
     assert menu_size_summary([10, 60, 60, 2]) == {"k_min": 2, "k_max": 60, "k_mean": 33.0}
+
+
+def _mex(options, label):
+    return MenuExample(query="q", options=list(options), gold_idx=list(options).index(label), label=label,
+                       option_names=[str(c) for c in options])
+
+
+def test_consistency_compares_variants_by_description_on_the_variant_menu():
+    """三道题, 变体与原菜单按类 id 对齐, 原菜单的分布限制到变体菜单上的描述再归一.
+    题 1: 原 [10 11 12] = [.5 .3 .2], 变体换了行 [12 10 11] = [.1 .3 .6] -> 选中从 10 翻到 11.
+          TV = (.2+.3+.1)/2 = .3; 正确的 11: |ln .6 - ln .3| = ln 2.
+    题 2: 原 [20 21 22 23] = [.1 .4 .3 .2], 变体删掉 21 等, 剩 [20 22] = [.2 .8]. 原来选中的 21 不在变体上,
+          不算翻转也不进分母. 原分布限制到 {20, 22} = [.25 .75]: TV .05; 正确的 22: |ln .8 - ln .75|.
+    题 3: 原 [30 31] = [.7 .3], 变体 [31 30] = [.2 .8] -> 仍选 30. TV .1; |ln .8 - ln .7|.
+    flip_rate 1/2, tv_mean .15, gold_logp_drift (ln 2 + ln 16/15 + ln 8/7) / 3."""
+    base = [_mex([10, 11, 12], 11), _mex([20, 21, 22, 23], 22), _mex([30, 31], 30)]
+    var = [_mex([12, 10, 11], 11), _mex([20, 22], 22), _mex([31, 30], 30)]
+    got = consistency([[0.5, 0.3, 0.2], [0.1, 0.4, 0.3, 0.2], [0.7, 0.3]], base,
+                      [[0.1, 0.3, 0.6], [0.2, 0.8], [0.2, 0.8]], var)
+    want = {"n": 3, "n_comparable": 2, "flip_rate": 0.5, "tv_mean": 0.15, "gold_logp_drift": 0.2970723647740131}
+    assert got.keys() == want.keys(), got
+    assert all(abs(got[k] - v) < 1e-9 for k, v in want.items()), got
+
+
+def test_consistency_ignores_padding_columns_past_each_menu():
+    """评估给的每行长 k_max, 菜单之外补 0. 只看各自菜单的 k 列."""
+    base, var = [_mex([10, 11], 10)], [_mex([11, 10], 10)]
+    got = consistency([[0.6, 0.4, 0.0, 0.0]], base, [[0.4, 0.6, 0.0]], var)
+    assert got["flip_rate"] == 0.0 and abs(got["tv_mean"]) < 1e-12, got
+
+
+def test_consistency_refuses_misaligned_questions():
+    """变体的正确描述不同, 或菜单上出现原菜单没有的描述, 就不是同一道题."""
+    base = [_mex([10, 11, 12], 11)]
+    for var in ([_mex([10, 12], 12)], [_mex([10, 11, 99], 11)]):
+        try:
+            consistency([[0.5, 0.3, 0.2]], base, [[0.5, 0.5, 0.0][: len(var[0].options)]], var)
+        except ValueError:
+            continue
+        raise AssertionError(f"{var[0].options} accepted as a variant of {base[0].options}")
 
 
 def test_scalar_items_flattens_nested_dicts_and_skips_none():

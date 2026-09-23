@@ -94,6 +94,37 @@ def menu_size_summary(ks: list[int]) -> dict[str, float]:
     return {"k_min": min(ks), "k_max": max(ks), "k_mean": sum(ks) / len(ks)}
 
 
+def consistency(base_q: list[list[float]], base_exs, var_q: list[list[float]], var_exs,
+                eps: float = NLL_EPS) -> dict[str, float]:
+    """同一批题的变体菜单 (换行 / 换码 / 删选项) 与原菜单比. 按类 id 对齐, 只在变体菜单上的那些描述上比:
+    原菜单的分布先限制到这些描述并重新归一 —— 读出与行、码、长度无关时, 删掉的又只是没选的选项, 两边应当相同.
+    q 的每行按位置排, 可以带菜单之外补的 0 列.
+
+      flip_rate        原菜单选中的描述还在变体菜单上的题里, 变体选了别的描述的比例
+      n_comparable     flip_rate 的分母; 只换行换码时等于 n
+      tv_mean          两个分布的总变差距离, 逐题平均
+      gold_logp_drift  正确描述的对数概率之差的绝对值, 逐题平均
+    """
+    flips = comparable = 0
+    tv = drift = 0.0
+    for bq, be, vq, ve in zip(base_q, base_exs, var_q, var_exs):
+        base = dict(zip(be.options, bq))
+        var = dict(zip(ve.options, vq))
+        if ve.label != be.label or not var.keys() <= base.keys():
+            raise ValueError(f"variant {ve.options} (gold {ve.label}) is not a subset of {be.options} (gold {be.label})")
+        z = sum(base[c] for c in var)
+        restricted = {c: base[c] / z for c in var}
+        pick = max(base, key=base.get)
+        if pick in var:
+            comparable += 1
+            flips += max(var, key=var.get) != pick
+        tv += 0.5 * sum(abs(var[c] - restricted[c]) for c in var)
+        drift += abs(math.log(max(var[ve.label], eps)) - math.log(max(restricted[ve.label], eps)))
+    n = len(base_exs)
+    return {"n": n, "n_comparable": comparable, "flip_rate": flips / comparable if comparable else None,
+            "tv_mean": tv / n, "gold_logp_drift": drift / n}
+
+
 def _percentile(xs: list[float], pct: float) -> float:
     """线性插值, 与 numpy.percentile 的默认方法相同 (baseline 脚本用的是它)."""
     s = sorted(xs)
