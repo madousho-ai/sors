@@ -67,6 +67,28 @@ def test_full_menu_puts_every_pool_class_in_when_pool_is_below_k_max():
     assert {e.gold_idx for e in ex} == set(range(6))
 
 
+def test_menu_example_accepts_256_options_and_rejects_257():
+    """D 槽只有 256 个. 一条样本的菜单超过 256 项就报错, 256 项正好可以."""
+    ok = list(range(256))
+    MenuExample(query="q", options=ok, gold_idx=0, label=0, option_names=[str(c) for c in ok])
+    bad = list(range(257))
+    try:
+        MenuExample(query="q", options=bad, gold_idx=0, label=0, option_names=[str(c) for c in bad])
+    except ValueError:
+        return
+    raise AssertionError("257 options, expected ValueError")
+
+
+def test_pipeline_that_emits_a_menu_over_256_fails_while_sampling():
+    """压缩菜单长度是数据管线的责任: 池子 300 类、k 要 300 时, 管线在抽样当下就报错, 到不了 collate."""
+    s = _set(n=300, n_cls=300)
+    try:
+        s.sample_examples(list(range(300)), (300, 300), 1, random.Random(0))
+    except ValueError:
+        return
+    raise AssertionError("pipeline emitted a 300-option menu, expected ValueError")
+
+
 # --------------------------------------------------------------------------
 # LabeledSet
 # --------------------------------------------------------------------------

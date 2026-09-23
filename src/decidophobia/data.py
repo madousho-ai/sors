@@ -14,6 +14,8 @@ import math
 import random
 from dataclasses import dataclass, field
 
+from decidophobia.tokens import N_SLOTS
+
 
 @dataclass(frozen=True)
 class ClassSplit:
@@ -39,6 +41,12 @@ class MenuExample:
     context_label: str = "Customer message"  # 上下文前面的标签
     question: str | None = None  # 这条样本的问句; None 表示数据集用固定的默认问句
     qtype: str = "choice"  # choice | bool | score, 见 tokens.QTYPES
+
+    def __post_init__(self):
+        # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.
+        if len(self.options) > N_SLOTS:
+            raise ValueError(f"menu has {len(self.options)} options, only {N_SLOTS} D slots; "
+                             "the dataset pipeline must cap it")
 
 
 def menu_k_range(k_min: int | None, k_max: int) -> tuple[int, int]:
