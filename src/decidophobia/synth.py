@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import pathlib
+import random
 
-from decidophobia.data import LabeledSet
+from decidophobia.data import LabeledSet, MenuExample
 
 DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-intents"
 
@@ -29,3 +30,10 @@ def load_synth(data_dir=DEFAULT_DIR) -> tuple[LabeledSet, list[str]]:
     s = LabeledSet(queries=queries, labels=labels, names={c: r["description"] for c, r in enumerate(rows)},
                    context_label="Customer message")
     return s, [r["domain"] for r in rows]
+
+
+def synth_eval_examples(k: int, seed: int, data_dir=DEFAULT_DIR) -> list[MenuExample]:
+    """留出评估: 1024 条合成意图消息各配一个 k 项菜单, 选项全来自 512 个合成意图, 连续编号.
+    train.py 的 --eval-synth (seed = --seed + k) 与 scripts/eval-invariance.py 都从这里取题, 同 seed 即同一批题."""
+    s, _ = load_synth(data_dir)
+    return s.build_examples(list(range(len(s.names))), (k, k), random.Random(seed))

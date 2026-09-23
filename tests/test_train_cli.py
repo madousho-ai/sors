@@ -10,6 +10,7 @@ import pathlib
 import random
 
 from _runner import run
+from decidophobia.synth import synth_eval_examples
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train.py"
 _spec = importlib.util.spec_from_file_location("train_cli", _SCRIPT)
@@ -55,6 +56,14 @@ def test_eval_synth_adds_full_60_and_256_menus_over_all_512_synth_intents():
     assert {len(e.options) for e in s256.examples} == {256}
     assert max(e.gold_idx for e in s256.examples) >= 250
     assert sum(e.gold_idx >= 60 for e in s256.examples) > 700, "约 196/256 的题正确答案落在训练没覆盖的码上"
+
+
+def test_eval_synth_sets_come_from_synth_eval_examples():
+    """训练中评估的 synth60 / synth256 与 synth_eval_examples(k, seed + k) 逐题相同,
+    scripts/eval-invariance.py 用同一个函数取题, 两边的 synth256 因此是同一批题."""
+    _, eval_sets, _ = _mod.build_data(_args("banking77+boolq+massive", eval_synth=True))
+    for k in (60, 256):
+        assert eval_sets[f"synth{k}"].examples == synth_eval_examples(k, seed=k), k
 
 
 def test_eval_synth_refuses_when_synth_is_in_training():

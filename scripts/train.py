@@ -121,14 +121,10 @@ def build_data(args):
     if args.eval_synth:
         # 留出评估: 512 个合成意图的 1024 条消息, 菜单只含合成意图. 60 项那档的正确答案都在 D0..D59,
         # 256 项那档散到 D0..D255 —— 训练菜单不到 256 时, 看没当过答案的码能不能用.
-        from decidophobia.synth import load_synth
+        from decidophobia.synth import synth_eval_examples
 
-        ste, _ = load_synth()
-        s_all = list(range(len(ste.names)))
-        eval_sets["synth60"] = EvalSet(ste.build_examples(s_all, (60, 60), random.Random(args.seed + 60)),
-                                       args.eval_batch_size)
-        eval_sets["synth256"] = EvalSet(ste.build_examples(s_all, (256, 256), random.Random(args.seed + 256)),
-                                        max(1, args.eval_batch_size // 4))
+        eval_sets["synth60"] = EvalSet(synth_eval_examples(60, args.seed + 60), args.eval_batch_size)
+        eval_sets["synth256"] = EvalSet(synth_eval_examples(256, args.seed + 256), max(1, args.eval_batch_size // 4))
     if args.eval_limit:
         for k, es in eval_sets.items():
             exs = list(es.examples)
