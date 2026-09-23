@@ -88,6 +88,8 @@ def main() -> None:
             records.append(rec)
             print(f"{tag:52s} k={k:2d}  acc {r['accuracy']:.4f}  nll {r['nll']:.3f}  ece {r['ece']:.3f}  "
                   f"conf {r['conf_mean']:.3f}  n {r['n']}  {rec['t']:.0f}s  tctl {guard.read()}", flush=True)
+            print("    by gold slot  " + "  ".join(f"{b}: {s['accuracy']:.3f} (n {s['n']})"
+                                                   for b, s in r["by_gold_slot"].items()), flush=True)
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
