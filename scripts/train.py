@@ -5,7 +5,9 @@
   banking77   Banking77, 按类留出 17 个测泛化 (seen / unseen)
   boolq       BoolQ, k=2, 逐条问句
   synth       datasets/synth-intents, 512 个合成意图, 只做训练 (评估集里没有它)
+  massive     MASSIVE 的 train 分区, 60 个语音助手意图; test 分区留给 scripts/eval-massive.py
 banking77 与 synth 同时在时, 两者的类并进一个 id 空间, 菜单干扰项从并集里抽 —— 这就是 k 能拉到 256 的来源.
+massive 的上下文标签不同, 自成一池.
 "both" 仍可用, 等于 banking77+boolq.
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset banking77 --steps 2000
@@ -40,7 +42,7 @@ from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, load_trained, save_trained, train
 
-KNOWN = ("banking77", "boolq", "synth")
+KNOWN = ("banking77", "boolq", "synth", "massive")
 
 
 def parse_datasets(spec: str) -> list[str]:
@@ -49,6 +51,84 @@ def parse_datasets(spec: str) -> list[str]:
     if bad or len(set(names)) != len(names):
         raise SystemExit(f"--dataset: unknown or repeated {bad or names}; use + to combine {KNOWN}")
     return names
+
+
+def build_data(args):
+    """每个数据集给一个 sampler 和若干评估集. 返回 (sample_fn, eval_sets, split_info).
+    只读数据, 不碰模型 —— tests/test_train_cli.py 直接调它."""
+    datasets = parse_datasets(args.dataset)
+    erng = random.Random(args.seed + 1)
+    samplers, eval_sets, split_info = [], {}, {}
+    ktr = menu_k_range(args.k_min, args.k_max)
+    # banking77 与 synth 共用一个类 id 空间: 菜单干扰项从两边的并集里抽
+    b77 = synth = None
+    if "banking77" in datasets:
+        from decidophobia.banking77 import load_banking77
+
+        b77 = load_banking77(args.data_dir)
+    if "synth" in datasets:
+        from decidophobia.synth import load_synth
+
+        synth, synth_domains = load_synth()
+    if b77 and synth:
+        tr, offs = merge_sets(b77[0], synth)
+        te = merge_sets(b77[1], synth)[0]  # synth 的 test 就是它自己的 1024 条, 只用来撑类 id 空间, 评估不抽它
+        synth_classes = list(range(offs[1], offs[1] + len(synth.names)))
+    elif b77:
+        tr, te = b77
+        synth_classes = []
+    elif synth:
+        tr = te = synth
+        synth_classes = list(range(len(synth.names)))
+    if b77:
+        split = class_split(len(b77[0].names), args.held_out, seed=args.seed)
+        kr = (args.k_eval, args.k_eval)
+        # 评估菜单只从 Banking77 自己的类里抽, 与历史 run 可比
+        eval_sets["seen"] = EvalSet(te.build_examples(split.train, kr, erng), args.eval_batch_size)
+        eval_sets["unseen"] = EvalSet(te.build_examples(split.held_out, kr, erng), args.eval_batch_size)
+        if synth_classes:
+            # 加一档: 留出类的题, 菜单用合成意图填到 k_eval (默认 256), 每个槽都当得上正确答案.
+            # 提示约 2600 token, batch 缩到 1/4: 评估时前向会建 KV cache, 16 条要 ~5 GiB
+            ex_far = te.build_examples(split.held_out, kr, erng, pool=split.held_out + synth_classes)
+            eval_sets[f"unseen{len(ex_far[0].options)}"] = EvalSet(ex_far, max(1, args.eval_batch_size // 4))
+        pool = split.train + synth_classes
+        samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, pool=pool, k_log=args.k_log))
+        split_info = {"train": split.train, "held_out": split.held_out,
+                      "held_out_names": [b77[0].names[c] for c in split.held_out]}
+    if synth:
+        s_pool = (split.train if b77 else []) + synth_classes
+        samplers.append(lambda n, rng: tr.sample_examples(synth_classes, ktr, n, rng, pool=s_pool, k_log=args.k_log))
+        split_info["synth_classes"] = len(synth_classes)
+    if "massive" in datasets:
+        # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
+        # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
+        from decidophobia.massive import load_massive
+
+        mtr = load_massive(partition="train")
+        m_classes = list(range(len(mtr.names)))
+        samplers.append(lambda n, rng: mtr.sample_examples(m_classes, ktr, n, rng))
+        split_info["massive_classes"] = len(m_classes)
+    if "boolq" in datasets:
+        from decidophobia.boolq import load_boolq
+
+        btr, bva = load_boolq()
+        eval_sets["boolq"] = EvalSet(bva.build_examples([0, 1], (2, 2), erng), max(1, args.eval_batch_size // 2), pos_class=1)
+        samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
+    if args.eval_limit:
+        for k, es in eval_sets.items():
+            exs = list(es.examples)
+            random.Random(args.seed + 2).shuffle(exs)
+            eval_sets[k] = EvalSet(exs[: args.eval_limit], es.batch_size, es.pos_class)
+
+    def sample_fn(n, rng):
+        """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱."""
+        parts = [n // len(samplers)] * len(samplers)
+        parts[0] += n - sum(parts)
+        out = [ex for s, c in zip(samplers, parts) for ex in s(c, rng)]
+        rng.shuffle(out)
+        return out
+
+    return sample_fn, eval_sets, split_info
 
 
 def main() -> None:
@@ -101,69 +181,7 @@ def main() -> None:
         + ("-allslots" if args.loss == "all-slots" else "")
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
-
-    # ---- 数据: 每个数据集给一个 sampler 和若干评估集 ------------------------------
-    erng = random.Random(args.seed + 1)
-    samplers, eval_sets, split_info = [], {}, {}
-    ktr = menu_k_range(args.k_min, args.k_max)
-    # banking77 与 synth 共用一个类 id 空间: 菜单干扰项从两边的并集里抽
-    b77 = synth = None
-    if "banking77" in datasets:
-        from decidophobia.banking77 import load_banking77
-
-        b77 = load_banking77(args.data_dir)
-    if "synth" in datasets:
-        from decidophobia.synth import load_synth
-
-        synth, synth_domains = load_synth()
-    if b77 and synth:
-        tr, offs = merge_sets(b77[0], synth)
-        te = merge_sets(b77[1], synth)[0]  # synth 的 test 就是它自己的 1024 条, 只用来撑类 id 空间, 评估不抽它
-        synth_classes = list(range(offs[1], offs[1] + len(synth.names)))
-    elif b77:
-        tr, te = b77
-        synth_classes = []
-    elif synth:
-        tr = te = synth
-        synth_classes = list(range(len(synth.names)))
-    if b77:
-        split = class_split(len(b77[0].names), args.held_out, seed=args.seed)
-        kr = (args.k_eval, args.k_eval)
-        # 评估菜单只从 Banking77 自己的类里抽, 与历史 run 可比
-        eval_sets["seen"] = EvalSet(te.build_examples(split.train, kr, erng), args.eval_batch_size)
-        eval_sets["unseen"] = EvalSet(te.build_examples(split.held_out, kr, erng), args.eval_batch_size)
-        if synth_classes:
-            # 加一档: 留出类的题, 菜单用合成意图填到 k_eval (默认 256), 每个槽都当得上正确答案.
-            # 提示约 2600 token, batch 缩到 1/4: 评估时前向会建 KV cache, 16 条要 ~5 GiB
-            ex_far = te.build_examples(split.held_out, kr, erng, pool=split.held_out + synth_classes)
-            eval_sets[f"unseen{len(ex_far[0].options)}"] = EvalSet(ex_far, max(1, args.eval_batch_size // 4))
-        pool = split.train + synth_classes
-        samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, pool=pool, k_log=args.k_log))
-        split_info = {"train": split.train, "held_out": split.held_out,
-                      "held_out_names": [b77[0].names[c] for c in split.held_out]}
-    if synth:
-        s_pool = (split.train if b77 else []) + synth_classes
-        samplers.append(lambda n, rng: tr.sample_examples(synth_classes, ktr, n, rng, pool=s_pool, k_log=args.k_log))
-        split_info["synth_classes"] = len(synth_classes)
-    if "boolq" in datasets:
-        from decidophobia.boolq import load_boolq
-
-        btr, bva = load_boolq()
-        eval_sets["boolq"] = EvalSet(bva.build_examples([0, 1], (2, 2), erng), max(1, args.eval_batch_size // 2), pos_class=1)
-        samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
-    if args.eval_limit:
-        for k, es in eval_sets.items():
-            exs = list(es.examples)
-            random.Random(args.seed + 2).shuffle(exs)
-            eval_sets[k] = EvalSet(exs[: args.eval_limit], es.batch_size, es.pos_class)
-
-    def sample_fn(n, rng):
-        """both 时一批里一半一半 (第一个 sampler 拿零头), 再打乱."""
-        parts = [n // len(samplers)] * len(samplers)
-        parts[0] += n - sum(parts)
-        out = [ex for s, c in zip(samplers, parts) for ex in s(c, rng)]
-        rng.shuffle(out)
-        return out
+    sample_fn, eval_sets, split_info = build_data(args)
 
     # ---- 模型 ---------------------------------------------------------------------
     tok = AutoTokenizer.from_pretrained(args.model)
@@ -187,7 +205,7 @@ def main() -> None:
     writer.add_text("args", json.dumps(vars(args), indent=2), 0)
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
     print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} loss={args.loss} "
-          f"k={ktr}{' log' if args.k_log else ''} params {n_train:,}  "
+          f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)
     history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard)

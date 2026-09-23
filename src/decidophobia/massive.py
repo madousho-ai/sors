@@ -1,10 +1,10 @@
-"""MASSIVE (Amazon, en-US) 适配: 只做评估的留出数据集, 任何训练里一条都不出现.
+"""MASSIVE (Amazon, en-US) 适配. test 分区是留出评估 (scripts/eval-massive.py), train 分区可进训练 (--dataset massive).
 
 60 个 intent、18 个 scenario, 语音助手指令 (闹钟 / 灯 / 音乐 / 天气 ...), 与 Banking77 零重叠.
-它回答的问题是: 在 Banking77 + BoolQ 上训的 LoRA, 换一个领域的意图分类还会不会读菜单.
+不训它时回答: 在 Banking77 + BoolQ 上训的 LoRA, 换一个领域的意图分类还会不会读菜单.
 
 数据: https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.0.tar.gz (39.5MB, 51 locale)
-只取 1.0/data/en-US.jsonl 的 test 分区, 2974 条. tarball 不自动下载, md5 钉死.
+取 1.0/data/en-US.jsonl, 分区 test 2974 条 / train 11514 条. tarball 不自动下载, md5 钉死.
 类 id 按原始 intent 名字母序编, 与 banking77 同一约定.
 """
 
