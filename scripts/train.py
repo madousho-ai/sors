@@ -81,7 +81,8 @@ def main() -> None:
                     help="不给 = 全量菜单: 池子里的选项全放进去, 最多 --k-max 项. 给了才在 k-min..k-max 随机抽长度 (旧行为)")
     ap.add_argument("--k-max", type=int, default=256, help="菜单最多几项 (D 槽只有 256 个)")
     ap.add_argument("--k-log", action="store_true", help="配 --k-min: 长度按对数均匀取, 默认均匀")
-    ap.add_argument("--k-eval", type=int, default=10, help="Banking77 评估菜单长度 (固定); BoolQ 恒为 2")
+    ap.add_argument("--k-eval", type=int, default=256,
+                    help="评估菜单最多几项, 池子不够就全放: seen 60, unseen 17, 带 synth 时留出类 + 合成意图 256; BoolQ 恒为 2")
     ap.add_argument("--held-out", type=int, default=17, help="Banking77 留出的类数, 训练里完全不出现")
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--eval-batch-size", type=int, default=16)
@@ -132,9 +133,10 @@ def main() -> None:
         eval_sets["seen"] = EvalSet(te.build_examples(split.train, kr, erng), args.eval_batch_size)
         eval_sets["unseen"] = EvalSet(te.build_examples(split.held_out, kr, erng), args.eval_batch_size)
         if synth_classes:
-            # 加一档: 留出类的题, 菜单 k_eval 真 + 合成意图填到 64, 看远处的槽用不用得上
-            eval_sets["unseen64"] = EvalSet(
-                te.build_examples(split.held_out, (64, 64), erng, pool=split.held_out + synth_classes), args.eval_batch_size)
+            # 加一档: 留出类的题, 菜单用合成意图填到 k_eval (默认 256), 每个槽都当得上正确答案.
+            # 提示约 2600 token, batch 缩到 1/4: 评估时前向会建 KV cache, 16 条要 ~5 GiB
+            ex_far = te.build_examples(split.held_out, kr, erng, pool=split.held_out + synth_classes)
+            eval_sets[f"unseen{len(ex_far[0].options)}"] = EvalSet(ex_far, max(1, args.eval_batch_size // 4))
         pool = split.train + synth_classes
         samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, pool=pool, k_log=args.k_log))
         split_info = {"train": split.train, "held_out": split.held_out,
