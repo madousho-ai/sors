@@ -32,7 +32,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.data import class_split, merge_sets
+from decidophobia.data import class_split, menu_k_range, merge_sets
 from decidophobia.loss import LOSSES
 from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
@@ -74,11 +74,13 @@ def main() -> None:
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=300, help="0 = 只评估")
     ap.add_argument("--batch-size", type=int, default=8)
-    ap.add_argument("--max-length", type=int, default=512, help="超长提示从左截, BoolQ passage p95 约 256 token")
+    ap.add_argument("--max-length", type=int, default=4096,
+                    help="超长提示从左截. 实测最长: 256 项菜单 2685, BoolQ 1277, Banking77 全 60 项 444")
     ap.add_argument("--grad-ckpt", action="store_true", help="梯度 checkpointing: 激活 5 GiB -> 0.6 GiB, 时间 +30%%")
-    ap.add_argument("--k-min", type=int, default=2)
-    ap.add_argument("--k-max", type=int, default=10)
-    ap.add_argument("--k-log", action="store_true", help="训练时 k 按对数均匀取 (2..256 中位 23), 默认均匀")
+    ap.add_argument("--k-min", type=int, default=None,
+                    help="不给 = 全量菜单: 池子里的选项全放进去, 最多 --k-max 项. 给了才在 k-min..k-max 随机抽长度 (旧行为)")
+    ap.add_argument("--k-max", type=int, default=256, help="菜单最多几项 (D 槽只有 256 个)")
+    ap.add_argument("--k-log", action="store_true", help="配 --k-min: 长度按对数均匀取, 默认均匀")
     ap.add_argument("--k-eval", type=int, default=10, help="Banking77 评估菜单长度 (固定); BoolQ 恒为 2")
     ap.add_argument("--held-out", type=int, default=17, help="Banking77 留出的类数, 训练里完全不出现")
     ap.add_argument("--eval-every", type=int, default=100)
@@ -93,7 +95,8 @@ def main() -> None:
     datasets = parse_datasets(args.dataset)
 
     tag = ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
-        + (f"-k{args.k_max}" if args.k_max != 10 else "") + ("-klog" if args.k_log else "") \
+        + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
+        + ("-klog" if args.k_log else "") \
         + ("-allslots" if args.loss == "all-slots" else "")
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
@@ -101,7 +104,7 @@ def main() -> None:
     # ---- 数据: 每个数据集给一个 sampler 和若干评估集 ------------------------------
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
-    ktr = (args.k_min, args.k_max)
+    ktr = menu_k_range(args.k_min, args.k_max)
     # banking77 与 synth 共用一个类 id 空间: 菜单干扰项从两边的并集里抽
     b77 = synth = None
     if "banking77" in datasets:
