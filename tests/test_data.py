@@ -6,7 +6,8 @@
 import random
 
 from _runner import run
-from decidophobia.data import LabeledSet, MenuExample, class_split, compose_menu, menu_k_range, merge_sets
+from decidophobia.data import (LabeledSet, MenuExample, assign_random_codes, class_split, compose_menu, menu_k_range,
+                               merge_sets)
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -211,6 +212,34 @@ def test_menu_example_rejects_codes_that_are_misaligned_repeated_or_out_of_range
         except ValueError:
             continue
         raise AssertionError(f"codes {bad} accepted")
+
+
+def test_random_codes_at_rate_zero_changes_nothing_and_leaves_rng_alone():
+    """rate 0 = 旧行为: 样本原样, rng 一个数都不取, 旧 run 的抽题序列不变."""
+    exs = [_ex(options=(7, 2)), _ex(options=(1, 2, 3), gold_idx=2)]
+    rng = random.Random(0)
+    assert assign_random_codes(exs, 0.0, rng) == exs
+    assert rng.random() == random.Random(0).random()
+
+
+def test_random_codes_at_rate_one_scatters_even_two_option_menus_over_all_256_codes():
+    """rate 1: 每题都换成从 256 个码里随机挑的 k 个, 互不相同、顺序随机.
+    2 项菜单的正确答案也会落到 D0..D255 的任何一个上."""
+    rng = random.Random(0)
+    exs = [_ex(options=(7, 2), gold_idx=i % 2) for i in range(3000)]
+    got = assign_random_codes(exs, 1.0, rng)
+    assert all(e.codes is not None and len(set(e.codes)) == 2 for e in got)
+    assert [(e.options, e.gold_idx, e.label) for e in got] == [(e.options, e.gold_idx, e.label) for e in exs]
+    gold_codes = {e.slot_codes[e.gold_idx] for e in got}
+    assert len(gold_codes) == 256, len(gold_codes)
+    assert any(e.codes[0] > e.codes[1] for e in got), "码的顺序也是随机的, 不只是升序"
+
+
+def test_random_codes_rate_is_the_share_of_examples_that_get_them():
+    rng = random.Random(0)
+    got = assign_random_codes([_ex(options=(7, 2, 4)) for _ in range(2000)], 0.3, rng)
+    share = sum(e.codes is not None for e in got) / len(got)
+    assert abs(share - 0.3) < 0.03, share
 
 
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():
