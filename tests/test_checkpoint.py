@@ -72,6 +72,17 @@ def test_checkpoint_without_an_adapter_record_reads_as_attention_r8_alpha16():
     assert checkpoint_adapter(path) == {"trainable": "attn", "lora_r": 8, "lora_alpha": 16}
 
 
+def test_load_trained_rejects_a_model_whose_alpha_differs_from_the_checkpoint():
+    """只差 alpha 时张量形状全对得上, 逐个拷贝不会出错, 但 peft 按 alpha / r 缩放 LoRA 的输出,
+    装进去的模型算出来的东西就不是训练时那个. 这种必须拦下."""
+    path = _save(_tiny(r=4, alpha=8), TINY_IDS)
+    try:
+        load_trained(_tiny(r=4, alpha=16), TINY_IDS, path)
+    except ValueError:
+        return
+    raise AssertionError("alpha 16 的模型装进了 alpha 8 的档")
+
+
 def test_load_trained_accepts_checkpoint_with_a_prefix_of_the_model_rows():
     """类型 token 加进来之前存的档只有 256 个 D 行. 那 3 行当时不在提示里、梯度为零,
     留在初始化就是那次训练的真实状态. 所以 ids 是前缀就该装得进去, 多出的行原样不动."""

@@ -222,8 +222,14 @@ def load_trained(m, train_ids: list[int], path) -> dict:
 
     档里的 ids 允许是模型 train_ids 的前缀: 类型 token 加进来之前的档只有 256 个 D 行,
     那 3 行当时不在提示里、梯度为零, 留在初始化就是那次训练的真实状态. 多出的行原样不动.
+
+    模型的 LoRA 形状必须与档里记的相同. 只差 alpha 时张量形状全对得上、拷贝不报错,
+    缩放却是错的, 所以在这里对一遍.
     """
     ck = torch.load(path, map_location="cpu")
+    want, got = ck.get("adapter", LEGACY_ADAPTER), adapter_config(m)
+    if want != got:
+        raise ValueError(f"checkpoint was trained with LoRA {want}, this model has {got}")
     n = len(ck["d_ids"])
     if ck["d_ids"] != train_ids[:n]:
         raise ValueError(f"checkpoint's {n} trainable embedding rows are not a prefix of this model's {len(train_ids)}")
