@@ -10,6 +10,7 @@ import pathlib
 import random
 
 from _runner import run
+from decidophobia.simple_eval import load_simple_eval
 from decidophobia.synth import load_synth
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train.py"
@@ -37,7 +38,7 @@ def test_dataset_defaults_to_synth():
 def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
     """默认评估集与训练集无关: Banking77 test 3080 条配全部 77 类, MASSIVE test 2974 条配全部 60 类,
     BoolQ validation 3270 条. 菜单都是全量、连续编号."""
-    assert _mod.build_parser().parse_args([]).eval == "banking77+massive+boolq"
+    assert _mod.build_parser().parse_args([]).eval == "banking77+massive+boolq+simple"
     _, eval_sets, _ = _mod.build_data(_args("massive"))
     assert set(eval_sets) == {"banking77", "massive", "boolq"}
     b77, mas, bq = eval_sets["banking77"], eval_sets["massive"], eval_sets["boolq"]
@@ -52,6 +53,15 @@ def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
 def test_eval_takes_a_subset():
     _, eval_sets, _ = _mod.build_data(_args("massive", eval="massive"))
     assert set(eval_sets) == {"massive"}
+
+
+def test_eval_simple_adds_one_set_per_menu_size_straight_from_the_file():
+    """simple 展开成 simple5 ... simple255 与 simple_bool, 题目与 load_simple_eval 逐题相同; 二元那档报 AUROC."""
+    _, eval_sets, _ = _mod.build_data(_args("massive", eval="simple"))
+    want = load_simple_eval()
+    assert list(eval_sets) == list(want)
+    assert all(eval_sets[k].examples == want[k] for k in want)
+    assert eval_sets["simple_bool"].pos_class == 1 and eval_sets["simple255"].pos_class is None
 
 
 def test_eval_rejects_an_unknown_set():

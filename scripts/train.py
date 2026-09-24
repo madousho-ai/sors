@@ -10,7 +10,7 @@
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
 
---eval 是评估集列表, 与训练集无关, 默认 banking77+massive+boolq, 全量菜单 (见 build_eval_sets).
+--eval 是评估集列表, 与训练集无关, 默认 banking77+massive+boolq+simple (见 build_eval_sets).
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
   PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.pt --steps 0   # 只评估
@@ -44,7 +44,7 @@ from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, load_trained, save_trained, train
 
 KNOWN = ("banking77", "boolq", "synth", "massive")
-KNOWN_EVAL = ("banking77", "massive", "boolq")
+KNOWN_EVAL = ("banking77", "massive", "boolq", "simple")
 
 
 def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
@@ -61,9 +61,17 @@ def parse_datasets(spec: str) -> list[str]:
 
 def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     """--eval 列的评估集, 与训练集无关. 菜单全量、连续编号; 每个集合的菜单用 Random(seed + 菜单长度) 组,
-    MASSIVE 那份因此与 scripts/eval-massive.py 的 k=60 逐题相同. 训练里已读过的 split 可以传进来复用."""
+    MASSIVE 那份因此与 scripts/eval-massive.py 的 k=60 逐题相同. 训练里已读过的 split 可以传进来复用.
+    simple 是 datasets/synth-simple-eval, 菜单写死在文件里 (不受 --k-eval / --seed 影响), 展开成每个菜单长度一个集合."""
     out = {}
     for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
+        if name == "simple":
+            from decidophobia.simple_eval import load_simple_eval
+
+            for sub, exs in load_simple_eval().items():
+                pos = 1 if sub == "simple_bool" else None
+                out[sub] = EvalSet(exs, args.eval_batch_size, pos_class=pos)
+            continue
         if name == "banking77":
             if b77_test is None:
                 from decidophobia.banking77 import load_banking77
@@ -191,9 +199,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--eval-batch-size", type=int, default=16)
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
-    ap.add_argument("--eval", default="banking77+massive+boolq",
+    ap.add_argument("--eval", default="banking77+massive+boolq+simple",
                     help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单) / "
-                         "massive (test 2974 条, 60 类全量菜单) / boolq (validation 3270 条)")
+                         "massive (test 2974 条, 60 类全量菜单) / boolq (validation 3270 条) / "
+                         "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes)")
     ap.add_argument("--random-codes", type=float, default=0.0,
                     help="选择题里换成随机码的比例 (0..1): 挑上菜单次数最少的 k 个 D 码、顺序随机, 每个码上菜单时是答案的概率都是 1/k, "
                          "整场下来 D0..D255 当答案的次数期望相同 (60 项菜单下 rate >= 0.77 才补得齐). BoolQ 永远 D0 / D1. "
