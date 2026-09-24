@@ -1,6 +1,6 @@
 """synth-intents 适配: datasets/synth-intents/*.jsonl -> LabeledSet. 只做训练.
 
-512 个虚构意图 × 2 条用户消息, 16 个领域. 菜单里显示的是 description.
+4096 个虚构意图 × 3 条用户消息, 16 个领域各 256 个. 菜单里显示的是 description.
 类 id 按 intent id 字母序 (与 banking77 / massive 同一约定). 同时返回每个类的领域, 供按领域留出.
 规格见 datasets/synth-intents/SPEC.md.
 """
