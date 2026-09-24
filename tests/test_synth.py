@@ -4,9 +4,10 @@
 """
 
 import collections
+import random
 
 from _runner import run
-from decidophobia.synth import load_synth, load_synth_binary
+from decidophobia.synth import load_synth, load_synth_binary, sample_domain_menus
 
 
 def test_synth_loads_4096_intents_with_three_utterances_each():
@@ -52,6 +53,26 @@ def test_synth_binary_labels_are_the_intents_answers_in_message_order():
     rows = [i for i, lab in enumerate(s.labels) if lab == c]
     assert [b.labels[i] for i in rows] == [0, 1, 0]
     assert {b.questions[i] for i in rows} == {"does the customer mention their signal strength?"}
+
+
+def test_domain_menus_are_the_whole_gold_domain_shuffled_into_d0_to_d255():
+    """菜单题: 正确意图所在领域的 256 个意图全部上菜单, 顺序随机; 别的领域一个都不进. 正确答案铺满 D0..D255."""
+    s, domains = load_synth()
+    exs = sample_domain_menus(s, domains, (256, 256), 4000, random.Random(0))
+    assert len(exs) == 4000
+    for e in exs:
+        assert e.options[e.gold_idx] == e.label
+        assert len(set(e.options)) == 256
+        assert {domains[c] for c in e.options} == {domains[e.label]}
+    assert {e.gold_idx for e in exs} == set(range(256))
+    assert len({tuple(e.options) for e in exs if domains[e.label] == "hotel"}) > 1, "每题重新打乱"
+
+
+def test_domain_menus_shorter_than_the_domain_still_stay_inside_it():
+    s, domains = load_synth()
+    exs = sample_domain_menus(s, domains, (10, 10), 200, random.Random(1))
+    assert {len(e.options) for e in exs} == {10}
+    assert all({domains[c] for c in e.options} == {domains[e.label]} for e in exs)
 
 
 if __name__ == "__main__":

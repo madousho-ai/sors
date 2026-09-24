@@ -12,7 +12,7 @@ import json
 import pathlib
 import random
 
-from decidophobia.data import LabeledSet, MenuExample
+from decidophobia.data import LabeledSet, MenuExample, compose_menu, draw_k
 
 DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-intents"
 CONTEXT_LABEL = "Customer message"
@@ -51,6 +51,22 @@ def load_synth_binary(data_dir=DEFAULT_DIR) -> LabeledSet:
             questions.append(r["question"])
     return LabeledSet(queries=queries, labels=labels, names={0: "no", 1: "yes"}, context_label=CONTEXT_LABEL,
                       questions=questions, qtype="bool")
+
+
+def sample_domain_menus(s: LabeledSet, domains: list[str], k_range: tuple[int, int], n: int,
+                        rng: random.Random) -> list[MenuExample]:
+    """训练批的菜单题: 随机抽 n 条消息, 菜单只从正确意图所在领域里抽 (256 项即整个领域, 顺序随机).
+    不同领域的意图不进同一份菜单 —— 部署时一个请求带的是一个应用自己的意图, 跨领域近义描述也就碰不到一起.
+    s 与 domains 是 load_synth 的两个返回值."""
+    by_domain: dict[str, list[int]] = {}
+    for c, d in enumerate(domains):
+        by_domain.setdefault(d, []).append(c)
+    out = []
+    for i in rng.sample(range(len(s.labels)), n):
+        lab = s.labels[i]
+        opts, gi = compose_menu(lab, by_domain[domains[lab]], draw_k(k_range, rng), rng)
+        out.append(s.make_example(i, opts, gi))
+    return out
 
 
 def synth_eval_examples(k: int, seed: int, data_dir=DEFAULT_DIR) -> list[MenuExample]:
