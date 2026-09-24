@@ -6,6 +6,7 @@
   boolq       BoolQ, k=2, 逐条问句
   synth       datasets/synth-intents, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
               菜单题只列正确意图所在领域的意图 (k 256 即整个领域 256 个), 二元题问消息里的一个细节 (no / yes)
+  synth-menu  synth 只要菜单题, 不要二元题 (不与 synth 并用)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
@@ -43,7 +44,7 @@ from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, checkpoint_adapter, load_trained, save_trained, train
 
-KNOWN = ("banking77", "boolq", "synth", "massive")
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "massive")
 KNOWN_EVAL = ("banking77", "massive", "boolq", "simple")
 
 
@@ -56,7 +57,10 @@ def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
 
 
 def parse_datasets(spec: str) -> list[str]:
-    return _parse_list("banking77+boolq" if spec == "both" else spec, KNOWN, "--dataset")
+    names = _parse_list("banking77+boolq" if spec == "both" else spec, KNOWN, "--dataset")
+    if {"synth", "synth-menu"} <= set(names):
+        raise SystemExit("--dataset: synth already includes synth-menu's menu questions; pick one")
+    return names
 
 
 def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
@@ -116,15 +120,16 @@ def build_data(args):
         samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, k_log=args.k_log))
         split_info = {"train": split.train, "held_out": split.held_out,
                       "held_out_names": [tr.names[c] for c in split.held_out]}
-    if "synth" in datasets:
+    if "synth" in datasets or "synth-menu" in datasets:
         # 每条消息两道题: 菜单题只列正确意图所在领域的意图 (k 256 即整个领域), 二元题问消息里的一个细节.
-        # 两种题各占一个 sampler, 于是一批里各一半.
+        # 两种题各占一个 sampler, 于是一批里各一半. synth-menu 只要菜单题, 一批全是它.
         from decidophobia.synth import load_synth, load_synth_binary, sample_domain_menus
 
         synth, synth_domains = load_synth()
-        synth_bin = load_synth_binary()
         samplers.append(lambda n, rng: sample_domain_menus(synth, synth_domains, ktr, n, rng))
-        samplers.append(lambda n, rng: synth_bin.sample_examples([0, 1], (2, 2), n, rng))
+        if "synth" in datasets:
+            synth_bin = load_synth_binary()
+            samplers.append(lambda n, rng: synth_bin.sample_examples([0, 1], (2, 2), n, rng))
         split_info["synth_classes"] = len(synth.names)
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
@@ -164,7 +169,7 @@ def build_data(args):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="synth",
-                    help="训练集, banking77 / boolq / synth / massive 用 + 连接; both = banking77+boolq")
+                    help="训练集, banking77 / boolq / synth / synth-menu / massive 用 + 连接; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None, help="从这份 trained.pt 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
     ap.add_argument("--trainable", default=None, choices=sorted(LORA_TARGETS),

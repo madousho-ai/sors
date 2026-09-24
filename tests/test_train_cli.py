@@ -88,6 +88,28 @@ def test_synth_trains_domain_menus_and_binary_questions_half_and_half():
         assert {e.context_label for e in batch} == {"Customer message"}
 
 
+def test_synth_menu_trains_the_domain_menus_without_the_binary_questions():
+    """--dataset synth-menu: synth 去掉二元题, 一批 8 条全是菜单题 (正确意图所在领域的 256 项全量菜单).
+    二元题的答案全落在 D0 / D1, 去掉它们才看得出这一半批次是否把概率拉向前两格."""
+    sample_fn, _, info = _mod.build_data(_args("synth-menu", eval="massive"))
+    _, domains = load_synth()
+    assert info == {"synth_classes": 4096}
+    rng = random.Random(0)
+    for _ in range(50):
+        batch = sample_fn(8, rng)
+        assert len(batch) == 8 and {e.qtype for e in batch} == {"choice"}
+        assert all(len(e.options) == 256 and {domains[c] for c in e.options} == {domains[e.label]} for e in batch)
+
+
+def test_synth_and_synth_menu_cannot_be_combined():
+    """两者的菜单题是同一批, 并用会让它们在一批里占两份."""
+    try:
+        _mod.parse_datasets("synth+synth-menu")
+    except SystemExit:
+        return
+    raise AssertionError("--dataset synth+synth-menu accepted")
+
+
 def test_banking77_and_synth_keep_separate_menus():
     """两个都在训练里时不再并池: Banking77 的题只列它的 60 个训练类, 合成意图的题只列自己领域的 256 个."""
     sample_fn, eval_sets, _ = _mod.build_data(_args("banking77+synth", eval="massive"))
