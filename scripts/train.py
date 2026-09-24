@@ -1,18 +1,19 @@
 #!/usr/bin/env python
 """训练 256 槽决策头 (LoRA + D-token 嵌入).
 
---dataset 是用加号连起来的数据集列表, 一个 batch 里各占一份:
+--dataset 是用加号连起来的训练集列表, 一个 batch 里各占一份:
   banking77   Banking77, 按类留出 17 个测泛化 (seen / unseen)
   boolq       BoolQ, k=2, 逐条问句
-  synth       datasets/synth-intents, 512 个合成意图 (不在训练里时可用 --eval-synth 当留出评估)
-  massive     MASSIVE 的 train 分区, 60 个语音助手意图; test 分区留给 scripts/eval-massive.py
-banking77 与 synth 同时在时, 两者的类并进一个 id 空间, 菜单干扰项从并集里抽 —— 这就是 k 能拉到 256 的来源.
-massive 的上下文标签不同, 自成一池.
+  synth       datasets/synth-intents, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
+              菜单题只列正确意图所在领域的意图 (k 256 即整个领域 256 个), 二元题问消息里的一个细节 (no / yes)
+  massive     MASSIVE 的 train 分区, 60 个语音助手意图
+每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
 
-  PYTHONPATH=src .venv/bin/python scripts/train.py --dataset banking77 --steps 2000
-  PYTHONPATH=src .venv/bin/python scripts/train.py --dataset boolq --init runs/<b77>/trained.pt --steps 0   # 跨任务零训练评估
-  PYTHONPATH=src .venv/bin/python scripts/train.py --dataset banking77+boolq+synth --k-max 256 --k-log --grad-ckpt --steps 2000
+--eval 是评估集列表, 与训练集无关, 默认 banking77+massive+boolq, 全量菜单 (见 build_eval_sets).
+
+  PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
+  PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.pt --steps 0   # 只评估
   .venv/bin/tensorboard --logdir runs
 
 产出 (--out 目录):
@@ -34,7 +35,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.data import RandomCodes, class_split, menu_k_range, merge_sets
+from decidophobia.data import RandomCodes, class_split, menu_k_range
 from decidophobia.loss import LOSSES
 from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
@@ -96,45 +97,29 @@ def build_data(args):
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
-    # banking77 与 synth 共用一个类 id 空间: 菜单干扰项从两边的并集里抽
-    b77 = synth = None
+    b77 = None
     if "banking77" in datasets:
         from decidophobia.banking77 import load_banking77
 
         b77 = load_banking77(args.data_dir)
-    if "synth" in datasets:
-        from decidophobia.synth import load_synth
-
-        synth, synth_domains = load_synth()
-    if b77 and synth:
-        tr, offs = merge_sets(b77[0], synth)
-        te = merge_sets(b77[1], synth)[0]  # synth 的 test 就是它自己的 1024 条, 只用来撑类 id 空间, 评估不抽它
-        synth_classes = list(range(offs[1], offs[1] + len(synth.names)))
-    elif b77:
         tr, te = b77
-        synth_classes = []
-    elif synth:
-        tr = te = synth
-        synth_classes = list(range(len(synth.names)))
-    if b77:
-        split = class_split(len(b77[0].names), args.held_out, seed=args.seed)
+        split = class_split(len(tr.names), args.held_out, seed=args.seed)
         kr = (args.k_eval, args.k_eval)
-        # 评估菜单只从 Banking77 自己的类里抽, 与历史 run 可比
         eval_sets["seen"] = EvalSet(te.build_examples(split.train, kr, erng), args.eval_batch_size)
         eval_sets["unseen"] = EvalSet(te.build_examples(split.held_out, kr, erng), args.eval_batch_size)
-        if synth_classes:
-            # 加一档: 留出类的题, 菜单用合成意图填到 k_eval (默认 256), 每个槽都当得上正确答案.
-            # 提示约 2600 token, batch 缩到 1/4: 评估时前向会建 KV cache, 16 条要 ~5 GiB
-            ex_far = te.build_examples(split.held_out, kr, erng, pool=split.held_out + synth_classes)
-            eval_sets[f"unseen{len(ex_far[0].options)}"] = EvalSet(ex_far, max(1, args.eval_batch_size // 4))
-        pool = split.train + synth_classes
-        samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, pool=pool, k_log=args.k_log))
+        samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, k_log=args.k_log))
         split_info = {"train": split.train, "held_out": split.held_out,
-                      "held_out_names": [b77[0].names[c] for c in split.held_out]}
-    if synth:
-        s_pool = (split.train if b77 else []) + synth_classes
-        samplers.append(lambda n, rng: tr.sample_examples(synth_classes, ktr, n, rng, pool=s_pool, k_log=args.k_log))
-        split_info["synth_classes"] = len(synth_classes)
+                      "held_out_names": [tr.names[c] for c in split.held_out]}
+    if "synth" in datasets:
+        # 每条消息两道题: 菜单题只列正确意图所在领域的意图 (k 256 即整个领域), 二元题问消息里的一个细节.
+        # 两种题各占一个 sampler, 于是一批里各一半.
+        from decidophobia.synth import load_synth, load_synth_binary, sample_domain_menus
+
+        synth, synth_domains = load_synth()
+        synth_bin = load_synth_binary()
+        samplers.append(lambda n, rng: sample_domain_menus(synth, synth_domains, ktr, n, rng))
+        samplers.append(lambda n, rng: synth_bin.sample_examples([0, 1], (2, 2), n, rng))
+        split_info["synth_classes"] = len(synth.names)
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
@@ -207,9 +192,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--k-min", type=int, default=None,
                     help="不给 = 全量菜单: 池子里的选项全放进去, 最多 --k-max 项. 给了才在 k-min..k-max 随机抽长度 (旧行为)")
     ap.add_argument("--k-max", type=int, default=256, help="菜单最多几项 (D 槽只有 256 个)")
-    ap.add_argument("--k-log", action="store_true", help="配 --k-min: 长度按对数均匀取, 默认均匀")
+    ap.add_argument("--k-log", action="store_true", help="配 --k-min: 长度按对数均匀取, 默认均匀. 只作用于 banking77")
     ap.add_argument("--k-eval", type=int, default=256,
-                    help="评估菜单最多几项, 池子不够就全放: seen 60, unseen 17, 带 synth 时留出类 + 合成意图 256; BoolQ 恒为 2")
+                    help="评估菜单最多几项, 池子不够就全放: seen 60, unseen 17, --eval 的 banking77 77 / massive 60; BoolQ 恒为 2")
     ap.add_argument("--held-out", type=int, default=17, help="Banking77 留出的类数, 训练里完全不出现")
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--eval-batch-size", type=int, default=16)

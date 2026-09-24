@@ -10,7 +10,7 @@ import pathlib
 import random
 
 from _runner import run
-from decidophobia.synth import synth_eval_examples
+from decidophobia.synth import load_synth, synth_eval_examples
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train.py"
 _spec = importlib.util.spec_from_file_location("train_cli", _SCRIPT)
@@ -56,6 +56,31 @@ def test_eval_rejects_an_unknown_set():
     except SystemExit:
         return
     raise AssertionError("--eval massive+synth accepted; synth is training data")
+
+
+def test_synth_trains_domain_menus_and_binary_questions_half_and_half():
+    """--dataset synth: 一批 8 条 = 4 道菜单题 (正确意图所在领域的 256 项全量菜单) + 4 道二元题 (no / yes, 问消息里的细节)."""
+    sample_fn, _, info = _mod.build_data(_args("synth", eval="massive"))
+    _, domains = load_synth()
+    assert info == {"synth_classes": 4096}
+    rng = random.Random(0)
+    for _ in range(50):
+        batch = sample_fn(8, rng)
+        choice = [e for e in batch if e.qtype == "choice"]
+        binary = [e for e in batch if e.qtype == "bool"]
+        assert len(choice) == len(binary) == 4
+        assert all(len(e.options) == 256 and {domains[c] for c in e.options} == {domains[e.label]} for e in choice)
+        assert all(sorted(e.option_names) == ["no", "yes"] and e.question.endswith("?") for e in binary)
+        assert {e.context_label for e in batch} == {"Customer message"}
+
+
+def test_banking77_and_synth_keep_separate_menus():
+    """两个都在训练里时不再并池: Banking77 的题只列它的 60 个训练类, 合成意图的题只列自己领域的 256 个."""
+    sample_fn, eval_sets, _ = _mod.build_data(_args("banking77+synth", eval="massive"))
+    rng = random.Random(0)
+    sizes = collections.Counter(len(e.options) for _ in range(50) for e in sample_fn(8, rng) if e.qtype == "choice")
+    assert set(sizes) == {60, 256}, sizes
+    assert set(eval_sets) == {"seen", "unseen", "massive"}
 
 
 def test_banking77_boolq_massive_trains_only_on_slots_d0_to_d59():
