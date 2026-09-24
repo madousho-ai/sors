@@ -108,6 +108,19 @@ def prepare_model(
     return m
 
 
+def adapter_config(m) -> dict:
+    """m 身上 LoRA 的形状, 键名与 prepare_model 的参数同名: 挂在哪档 (LORA_TARGETS 的键)、rank、alpha.
+    没套 peft 的就是 d-only, rank 与 alpha 无意义记 None."""
+    peft_cfg = getattr(m, "peft_config", {}).get("default")
+    if peft_cfg is None:
+        return {"trainable": "d-only", "lora_r": None, "lora_alpha": None}
+    targets = set(peft_cfg.target_modules)
+    name = next((k for k, v in LORA_TARGETS.items() if v and set(v) == targets), None)
+    if name is None:
+        raise ValueError(f"LoRA targets {sorted(targets)} match none of {sorted(LORA_TARGETS)}")
+    return {"trainable": name, "lora_r": peft_cfg.r, "lora_alpha": peft_cfg.lora_alpha}
+
+
 def trainable_param_groups(m, lr_lora: float, lr_embed: float) -> list[dict]:
     lora, embed = [], []
     for n, p in m.named_parameters():

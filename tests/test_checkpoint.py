@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from _runner import run
-from decidophobia.train import TrainConfig, load_trained, save_trained
+from decidophobia.train import TrainConfig, checkpoint_adapter, load_trained, save_trained
 
 
 class _Emb(nn.Module):
@@ -34,6 +34,42 @@ def _save(m, ids):
     f = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
     save_trained(m, ids, TrainConfig(), f.name)
     return f.name
+
+
+TINY_IDS = list(range(40, 64))
+
+
+def _tiny(trainable="attn", r=4, alpha=8):
+    """一层、hidden 16 的随机 Qwen3, 走真的 prepare_model (peft LoRA + SlotEmbedding), CPU 上一眨眼."""
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    from decidophobia.model import prepare_model
+
+    cfg = Qwen3Config(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
+                      num_attention_heads=2, num_key_value_heads=1, head_dim=8)
+    torch.manual_seed(0)
+    return prepare_model(Qwen3ForCausalLM(cfg), TINY_IDS, lora_r=r, lora_alpha=alpha, lora_dropout=0.0,
+                         trainable=trainable)
+
+
+def test_checkpoint_records_the_adapter_the_model_was_built_with():
+    """评估脚本要先搭一个同形的 LoRA 空壳才能装档, 所以档里得写着 LoRA 挂在哪些层、rank 和 alpha."""
+    path = _save(_tiny("attn-mlp", r=4, alpha=12), TINY_IDS)
+    assert checkpoint_adapter(path) == {"trainable": "attn-mlp", "lora_r": 4, "lora_alpha": 12}
+
+
+def test_checkpoint_of_a_d_only_model_records_no_rank():
+    path = _save(_tiny("d-only"), TINY_IDS)
+    assert checkpoint_adapter(path) == {"trainable": "d-only", "lora_r": None, "lora_alpha": None}
+
+
+def test_checkpoint_without_an_adapter_record_reads_as_attention_r8_alpha16():
+    """记 adapter 之前存的档, 训练时全是 attention LoRA r8 alpha16 (runs/*/result.json 逐个核过)."""
+    path = _save(_tiny(), TINY_IDS)
+    ck = torch.load(path)
+    del ck["adapter"]
+    torch.save(ck, path)
+    assert checkpoint_adapter(path) == {"trainable": "attn", "lora_r": 8, "lora_alpha": 16}
 
 
 def test_load_trained_accepts_checkpoint_with_a_prefix_of_the_model_rows():

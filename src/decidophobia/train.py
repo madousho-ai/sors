@@ -18,7 +18,7 @@ from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import answer_mass, gather_slot_logits, training_loss
 from decidophobia.metrics import answer_mass_summary, binary_summary, by_gold_slot, menu_size_summary, summarize
-from decidophobia.model import last_logits, trainable_param_groups
+from decidophobia.model import adapter_config, last_logits, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
 
@@ -197,13 +197,24 @@ def train(
 
 
 def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
-    """只存会变的部分: LoRA 权重 + 放开的嵌入行 (D 行 + 类型行) + 配置. 基模照 model_id 重新加载."""
+    """只存会变的部分: LoRA 权重 + 放开的嵌入行 (D 行 + 类型行) + 配置. 基模照 model_id 重新加载.
+    adapter 记 LoRA 的形状 (见 model.adapter_config), 装档前照它搭空壳."""
     rows = m.get_input_embeddings().rows
     state = {n: p.detach().cpu() for n, p in m.named_parameters() if p.requires_grad and "lora_" in n}
     torch.save(
-        {"lora": state, "d_embed": rows.detach().cpu(), "d_ids": train_ids, "config": asdict(cfg)},
+        {"lora": state, "d_embed": rows.detach().cpu(), "d_ids": train_ids, "config": asdict(cfg),
+         "adapter": adapter_config(m)},
         path,
     )
+
+
+LEGACY_ADAPTER = {"trainable": "attn", "lora_r": 8, "lora_alpha": 16}
+
+
+def checkpoint_adapter(path) -> dict:
+    """档里记的 LoRA 形状: {"trainable", "lora_r", "lora_alpha"}, 可以直接 ** 进 prepare_model.
+    没记的是加这一项之前的档, 那些训练全是 LEGACY_ADAPTER."""
+    return torch.load(path, map_location="cpu").get("adapter", LEGACY_ADAPTER)
 
 
 def load_trained(m, train_ids: list[int], path) -> dict:
