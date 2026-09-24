@@ -90,8 +90,6 @@ def build_data(args):
     """每个数据集给一个 sampler 和若干评估集. 返回 (sample_fn, eval_sets, split_info).
     只读数据, 不碰模型 —— tests/test_train_cli.py 直接调它."""
     datasets = parse_datasets(args.dataset)
-    if args.eval_synth and "synth" in datasets:
-        raise SystemExit("--eval-synth: synth is in training, so it would not be a held-out evaluation")
     if not 0.0 <= args.random_codes <= 1.0:
         raise SystemExit(f"--random-codes is a share of training menus, 0..1; got {args.random_codes}")
     erng = random.Random(args.seed + 1)
@@ -135,13 +133,6 @@ def build_data(args):
         btr, bva = load_boolq()
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
     eval_sets.update(build_eval_sets(args, b77[1] if b77 else None, bva if "boolq" in datasets else None))
-    if args.eval_synth:
-        # 留出评估: 512 个合成意图的 1024 条消息, 菜单只含合成意图. 60 项那档的正确答案都在 D0..D59,
-        # 256 项那档散到 D0..D255 —— 训练菜单不到 256 时, 看没当过答案的码能不能用.
-        from decidophobia.synth import synth_eval_examples
-
-        eval_sets["synth60"] = EvalSet(synth_eval_examples(60, args.seed + 60), args.eval_batch_size)
-        eval_sets["synth256"] = EvalSet(synth_eval_examples(256, args.seed + 256), max(1, args.eval_batch_size // 4))
     if args.eval_limit:
         for k, es in eval_sets.items():
             exs = list(es.examples)
@@ -202,8 +193,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--eval", default="banking77+massive+boolq",
                     help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单) / "
                          "massive (test 2974 条, 60 类全量菜单) / boolq (validation 3270 条)")
-    ap.add_argument("--eval-synth", action="store_true",
-                    help="把 synth 当留出评估集: synth60 / synth256 两档, 只含合成意图. 与 --dataset 里的 synth 互斥")
     ap.add_argument("--random-codes", type=float, default=0.0,
                     help="选择题里换成随机码的比例 (0..1): 挑上菜单次数最少的 k 个 D 码、顺序随机, 每个码上菜单时是答案的概率都是 1/k, "
                          "整场下来 D0..D255 当答案的次数期望相同 (60 项菜单下 rate >= 0.77 才补得齐). BoolQ 永远 D0 / D1. "

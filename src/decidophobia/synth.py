@@ -70,7 +70,7 @@ def sample_domain_menus(s: LabeledSet, domains: list[str], k_range: tuple[int, i
 
 
 def synth_eval_examples(k: int, seed: int, data_dir=DEFAULT_DIR) -> list[MenuExample]:
-    """留出评估: 1024 条合成意图消息各配一个 k 项菜单, 选项全来自 512 个合成意图, 连续编号.
-    train.py 的 --eval-synth (seed = --seed + k) 与 scripts/eval-invariance.py 都从这里取题, 同 seed 即同一批题."""
+    """scripts/eval-invariance.py 的题: 每条合成消息配一个 k 项菜单, 选项从全部 4096 个合成意图里抽 (跨领域),
+    连续编号. 同 seed 即同一批题. 合成意图现在全部进训练, 这批题测的是训练见过的消息."""
     s, _ = load_synth(data_dir)
     return s.build_examples(list(range(len(s.names))), (k, k), random.Random(seed))
