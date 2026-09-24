@@ -6,7 +6,7 @@
 import collections
 
 from _runner import run
-from decidophobia.synth import load_synth
+from decidophobia.synth import load_synth, load_synth_binary
 
 
 def test_synth_loads_4096_intents_with_three_utterances_each():
@@ -32,6 +32,26 @@ def test_synth_domains_are_16_of_256_intents():
     _, domains = load_synth()
     assert len(domains) == 4096 and len(set(domains)) == 16
     assert collections.Counter(domains) == {d: 256 for d in set(domains)}
+
+
+def test_synth_binary_asks_each_message_its_intents_question_with_no_yes_options():
+    """二元题与菜单题同一批消息、同一顺序; 选项 0 = no, 1 = yes, 与 BoolQ 同形, 上下文仍是 Customer message."""
+    s, _ = load_synth()
+    b = load_synth_binary()
+    assert b.queries == s.queries
+    assert b.names == {0: "no", 1: "yes"} and b.qtype == "bool" and b.context_label == "Customer message"
+    assert len(b.questions) == 12288 and all(q.endswith("?") and q == q.lower() for q in b.questions)
+    assert 0.45 <= sum(b.labels) / len(b.labels) <= 0.55
+
+
+def test_synth_binary_labels_are_the_intents_answers_in_message_order():
+    """telecom_report_dropped_calls 的三条消息答案是 [false, true, false], 问句三条相同."""
+    s, _ = load_synth()
+    b = load_synth_binary()
+    c = next(c for c, n in s.names.items() if n == "report that calls keep dropping")
+    rows = [i for i, lab in enumerate(s.labels) if lab == c]
+    assert [b.labels[i] for i in rows] == [0, 1, 0]
+    assert {b.questions[i] for i in rows} == {"does the customer mention their signal strength?"}
 
 
 if __name__ == "__main__":
