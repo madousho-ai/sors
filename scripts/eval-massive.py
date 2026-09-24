@@ -30,7 +30,7 @@ from decidophobia.model import prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, evaluate, load_trained
+from decidophobia.train import EvalSet, evaluate, prepare_from_checkpoint
 
 
 def main() -> None:
@@ -64,11 +64,16 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.model)
     d_ids = install_d_tokens(tok)
     train_ids = d_ids + install_type_tokens(tok)
-    torch.manual_seed(args.seed)
-    lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
-    # LoRA 形状要和 checkpoint 一致; 评估时 dropout 不生效
-    m = prepare_model(lm, train_ids, lora_r=8, lora_alpha=16, lora_dropout=0.0)
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
+
+    def build(path):
+        """每份档各搭一次模型: LoRA 形状照档里记的, 几份档的 rank 可以各不相同. 返回 (模型, 档里的训练 config).
+        种子每次都重置, 未训练基线与档里没有的类型行在每次搭建时都是同一份初值."""
+        torch.manual_seed(args.seed)
+        lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
+        if path is None:  # 未训练: LoRA B 为零, rank 不影响输出
+            return prepare_model(lm, train_ids, lora_r=8, lora_alpha=16, lora_dropout=0.0), None
+        return prepare_from_checkpoint(lm, train_ids, path)
 
     inits: list[tuple[str, str | None]] = []
     if not args.no_untrained:
@@ -78,7 +83,7 @@ def main() -> None:
     records = []
     print(f"massive test n={len(te.queries)} classes={len(classes)}  k={args.k}  inits={len(inits)}  tctl {guard.read()}", flush=True)
     for tag, path in inits:
-        cfg = load_trained(m, train_ids, path) if path else None
+        m, cfg = build(path)
         for k, es in eval_sets.items():
             guard.wait()
             t0 = time.time()
@@ -90,6 +95,8 @@ def main() -> None:
                   f"conf {r['conf_mean']:.3f}  n {r['n']}  {rec['t']:.0f}s  tctl {guard.read()}", flush=True)
             print("    by gold slot  " + "  ".join(f"{b}: {s['accuracy']:.3f} (n {s['n']})"
                                                    for b, s in r["by_gold_slot"].items()), flush=True)
+        del m
+        torch.cuda.empty_cache()
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

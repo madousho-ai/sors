@@ -29,11 +29,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from decidophobia.data import random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows
 from decidophobia.metrics import consistency, summarize
-from decidophobia.model import prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.synth import synth_eval_examples
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import load_trained, score_examples
+from decidophobia.train import prepare_from_checkpoint, score_examples
 
 SHORT = 60
 
@@ -73,8 +72,7 @@ def main() -> None:
     d_ids = install_d_tokens(tok)
     train_ids = d_ids + install_type_tokens(tok)
     lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
-    m = prepare_model(lm, train_ids, lora_r=8, lora_alpha=16, lora_dropout=0.0)
-    cfg = load_trained(m, train_ids, args.init)
+    m, cfg = prepare_from_checkpoint(lm, train_ids, args.init)  # LoRA 形状照档里记的
 
     def score(exs, shuffle_seed=None):
         """shuffle_seed 给了就打乱题目顺序再打分、再按原顺序放回 —— 每道题所在 batch 的邻居不同."""
