@@ -4,12 +4,13 @@
 """
 
 import tempfile
+from dataclasses import asdict
 
 import torch
 from torch import nn
 
 from _runner import run
-from decidophobia.train import TrainConfig, checkpoint_adapter, load_trained, save_trained
+from decidophobia.train import TrainConfig, checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
 
 
 class _Emb(nn.Module):
@@ -39,17 +40,21 @@ def _save(m, ids):
 TINY_IDS = list(range(40, 64))
 
 
-def _tiny(trainable="attn", r=4, alpha=8):
-    """一层、hidden 16 的随机 Qwen3, 走真的 prepare_model (peft LoRA + SlotEmbedding), CPU 上一眨眼."""
+def _tiny_lm():
+    """一层、hidden 16 的随机 Qwen3, 固定种子: 每次造出来的基模逐位相同. CPU 上一眨眼."""
     from transformers import Qwen3Config, Qwen3ForCausalLM
-
-    from decidophobia.model import prepare_model
 
     cfg = Qwen3Config(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
                       num_attention_heads=2, num_key_value_heads=1, head_dim=8)
     torch.manual_seed(0)
-    return prepare_model(Qwen3ForCausalLM(cfg), TINY_IDS, lora_r=r, lora_alpha=alpha, lora_dropout=0.0,
-                         trainable=trainable)
+    return Qwen3ForCausalLM(cfg)
+
+
+def _tiny(trainable="attn", r=4, alpha=8):
+    """_tiny_lm 走真的 prepare_model (peft LoRA + SlotEmbedding)."""
+    from decidophobia.model import prepare_model
+
+    return prepare_model(_tiny_lm(), TINY_IDS, lora_r=r, lora_alpha=alpha, lora_dropout=0.0, trainable=trainable)
 
 
 def test_checkpoint_records_the_adapter_the_model_was_built_with():
@@ -81,6 +86,24 @@ def test_load_trained_rejects_a_model_whose_alpha_differs_from_the_checkpoint():
     except ValueError:
         return
     raise AssertionError("alpha 16 的模型装进了 alpha 8 的档")
+
+
+def test_prepare_from_checkpoint_rebuilds_the_trained_model_from_the_file_alone():
+    """评估脚本手上只有基模和一个 trained.pt. 照档里的形状搭空壳、装档之后, 输出必须与存档时的模型逐位相同."""
+    trained = _tiny("attn-mlp", r=4, alpha=12)
+    with torch.no_grad():  # 离开初始化: LoRA B 初值是零, 不动的话 LoRA 形状错了输出也一样
+        for n, p in trained.named_parameters():
+            if p.requires_grad:
+                p.normal_(0, 0.1)
+    probe = torch.tensor([[1, 2, 41, 45, 3]])
+    trained.eval()
+    want = trained(input_ids=probe).logits
+    path = _save(trained, TINY_IDS)
+
+    m, cfg = prepare_from_checkpoint(_tiny_lm(), TINY_IDS, path)
+    m.eval()
+    assert torch.equal(m(input_ids=probe).logits, want)
+    assert cfg == asdict(TrainConfig())
 
 
 def test_load_trained_accepts_checkpoint_with_a_prefix_of_the_model_rows():

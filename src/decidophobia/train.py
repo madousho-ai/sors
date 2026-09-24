@@ -18,7 +18,7 @@ from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import answer_mass, gather_slot_logits, training_loss
 from decidophobia.metrics import answer_mass_summary, binary_summary, by_gold_slot, menu_size_summary, summarize
-from decidophobia.model import adapter_config, last_logits, trainable_param_groups
+from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
 
@@ -215,6 +215,13 @@ def checkpoint_adapter(path) -> dict:
     """档里记的 LoRA 形状: {"trainable", "lora_r", "lora_alpha"}, 可以直接 ** 进 prepare_model.
     没记的是加这一项之前的档, 那些训练全是 LEGACY_ADAPTER."""
     return torch.load(path, map_location="cpu").get("adapter", LEGACY_ADAPTER)
+
+
+def prepare_from_checkpoint(lm, train_ids: list[int], path, lora_dropout: float = 0.0):
+    """只拿基模和一份 trained.pt 还原训练好的模型: 照档里记的 LoRA 形状 prepare_model, 再 load_trained.
+    返回 (模型, 档里的训练 config). dropout 只在训练时生效, 评估用 0."""
+    m = prepare_model(lm, train_ids, lora_dropout=lora_dropout, **checkpoint_adapter(path))
+    return m, load_trained(m, train_ids, path)
 
 
 def load_trained(m, train_ids: list[int], path) -> dict:
