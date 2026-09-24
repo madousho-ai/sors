@@ -30,6 +30,10 @@ def test_parse_datasets_accepts_massive():
     assert _mod.parse_datasets("banking77+boolq+massive") == ["banking77", "boolq", "massive"]
 
 
+def test_dataset_defaults_to_synth():
+    assert _mod.build_parser().parse_args([]).dataset == "synth"
+
+
 def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
     """默认评估集与训练集无关: Banking77 test 3080 条配全部 77 类, MASSIVE test 2974 条配全部 60 类,
     BoolQ validation 3270 条. 菜单都是全量、连续编号."""

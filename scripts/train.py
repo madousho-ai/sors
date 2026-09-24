@@ -155,7 +155,8 @@ def build_data(args):
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="banking77", help="banking77 / boolq / synth 用 + 连接; both = banking77+boolq")
+    ap.add_argument("--dataset", default="synth",
+                    help="训练集, banking77 / boolq / synth / massive 用 + 连接; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None, help="从这份 trained.pt 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
     ap.add_argument("--trainable", default="attn", choices=sorted(LORA_TARGETS),
