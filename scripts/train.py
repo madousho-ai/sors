@@ -41,7 +41,7 @@ from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, TrainConfig, load_trained, save_trained, train
+from decidophobia.train import EvalSet, TrainConfig, checkpoint_adapter, load_trained, save_trained, train
 
 KNOWN = ("banking77", "boolq", "synth", "massive")
 KNOWN_EVAL = ("banking77", "massive", "boolq", "simple")
@@ -167,8 +167,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="训练集, banking77 / boolq / synth / massive 用 + 连接; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None, help="从这份 trained.pt 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
-    ap.add_argument("--trainable", default="attn", choices=sorted(LORA_TARGETS),
-                    help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA")
+    ap.add_argument("--trainable", default=None, choices=sorted(LORA_TARGETS),
+                    help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA. "
+                         "不给 = attn; 配 --init 时取档里记的")
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS,
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
     ap.add_argument("--type-marker", action="store_true",
@@ -176,8 +177,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--loss", default="vocab", choices=LOSSES,
                     help="vocab: 分母是整个词表, 普通 token 每步被压低, 答题位置只说 D 码; "
                          "all-slots: 分母是全部 256 个 D 槽; menu: 只在菜单 k 个槽上归一 (后两种是旧版)")
-    ap.add_argument("--lora-r", type=int, default=8)
-    ap.add_argument("--lora-alpha", type=int, default=16)
+    ap.add_argument("--lora-r", type=int, default=None, help="不给 = 8; 配 --init 时取档里记的")
+    ap.add_argument("--lora-alpha", type=int, default=None,
+                    help="不给 = 16; 配 --init 时取档里记的. peft 按 alpha / r 缩放, 改 r 时一起改才可比")
     ap.add_argument("--lora-dropout", type=float, default=0.05)
     ap.add_argument("--lr-lora", type=float, default=1e-4)
     ap.add_argument("--lr-embed", type=float, default=1e-3)
@@ -215,9 +217,28 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def resolve_adapter(args) -> dict:
+    """LoRA 的形状 {"trainable", "lora_r", "lora_alpha"}. 给了 --init 就用档里记的, 命令行上与它矛盾的直接退出;
+    没给就是命令行的值, 不写的取 attn / 8 / 16. d-only 没有 LoRA, rank 与 alpha 记 None, 与存档一致."""
+    given = {"trainable": args.trainable, "lora_r": args.lora_r, "lora_alpha": args.lora_alpha}
+    if args.init:
+        ck = checkpoint_adapter(args.init)
+        bad = {k: v for k, v in given.items() if v is not None and v != ck[k]}
+        if bad:
+            raise SystemExit(f"{bad} contradicts {args.init}, which was trained with {ck}; drop the flags to use it")
+        return ck
+    trainable = given["trainable"] or "attn"
+    if trainable == "d-only":
+        return {"trainable": trainable, "lora_r": None, "lora_alpha": None}
+    return {"trainable": trainable, "lora_r": given["lora_r"] or 8, "lora_alpha": given["lora_alpha"] or 16}
+
+
 def run_tag(args) -> str:
-    """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现."""
+    """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现.
+    rank / alpha 离开 8 / 16 才写, 旧 run 全是 8 / 16."""
     return ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
+        + (f"-r{args.lora_r}" if args.lora_r not in (None, 8) else "") \
+        + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
@@ -226,6 +247,7 @@ def run_tag(args) -> str:
 
 def main() -> None:
     args = build_parser().parse_args()
+    vars(args).update(resolve_adapter(args))  # 之后目录名、prepare_model、result.json 读的都是同一个形状
     datasets = parse_datasets(args.dataset)
 
     tag = run_tag(args)

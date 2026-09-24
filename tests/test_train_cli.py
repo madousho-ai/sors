@@ -168,5 +168,64 @@ def test_run_tag_names_the_loss_and_keeps_the_old_names_for_old_losses():
     assert tag("--loss", "menu", "--k-min", "2", "--k-max", "10") == "-k2-10"
 
 
+def _checkpoint(trainable, r, alpha):
+    """用一层的随机 Qwen3 走真的 prepare_model / save_trained 存一份 trained.pt."""
+    import tempfile
+
+    import torch
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    from decidophobia.model import prepare_model
+    from decidophobia.train import TrainConfig, save_trained
+
+    cfg = Qwen3Config(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
+                      num_attention_heads=2, num_key_value_heads=1, head_dim=8)
+    ids = list(range(40, 64))
+    m = prepare_model(Qwen3ForCausalLM(cfg), ids, lora_r=r, lora_alpha=alpha, lora_dropout=0.0, trainable=trainable)
+    f = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
+    save_trained(m, ids, TrainConfig(), f.name)
+    return f.name
+
+
+def test_adapter_without_init_defaults_to_attention_r8_alpha16():
+    p = _mod.build_parser()
+    assert _mod.resolve_adapter(p.parse_args([])) == {"trainable": "attn", "lora_r": 8, "lora_alpha": 16}
+    assert _mod.resolve_adapter(p.parse_args(["--lora-r", "32", "--lora-alpha", "64", "--trainable", "attn-mlp"])) \
+        == {"trainable": "attn-mlp", "lora_r": 32, "lora_alpha": 64}
+    # d-only 没有 LoRA, 与存档里记的一样写 None, result.json 不报一个没用上的 rank
+    assert _mod.resolve_adapter(p.parse_args(["--trainable", "d-only"])) \
+        == {"trainable": "d-only", "lora_r": None, "lora_alpha": None}
+
+
+def test_adapter_with_init_comes_from_the_checkpoint():
+    """--init 只评估或接着训时, 不必再在命令行上复述那次训练的 LoRA 形状."""
+    path = _checkpoint("attn-mlp", 4, 12)
+    got = _mod.resolve_adapter(_mod.build_parser().parse_args(["--init", path]))
+    assert got == {"trainable": "attn-mlp", "lora_r": 4, "lora_alpha": 12}
+
+
+def test_adapter_with_init_rejects_a_flag_that_contradicts_the_checkpoint():
+    path = _checkpoint("attn", 4, 12)
+    try:
+        _mod.resolve_adapter(_mod.build_parser().parse_args(["--init", path, "--lora-alpha", "16"]))
+    except SystemExit:
+        return
+    raise AssertionError("--lora-alpha 16 accepted for a checkpoint trained with alpha 12")
+
+
+def test_run_tag_names_rank_and_alpha_only_when_they_leave_8_and_16():
+    p = _mod.build_parser()
+
+    def tag(*argv):
+        args = p.parse_args(list(argv))
+        vars(args).update(_mod.resolve_adapter(args))
+        return _mod.run_tag(args)
+
+    assert tag() == "-kfull256-vocab"
+    assert tag("--lora-r", "32", "--lora-alpha", "64") == "-r32-alpha64-kfull256-vocab"
+    assert tag("--lora-r", "32") == "-r32-kfull256-vocab"
+    assert tag("--trainable", "d-only") == "-kfull256-vocab"
+
+
 if __name__ == "__main__":
     run(globals())
