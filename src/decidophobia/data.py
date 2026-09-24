@@ -208,25 +208,3 @@ class LabeledSet:
             out.append(self.make_example(i, opts, gi))
         return out
 
-
-def merge_sets(*sets: LabeledSet) -> tuple[LabeledSet, list[int]]:
-    """把几个同形状的集合并进一个类 id 空间 (后面的集合类 id 整体平移). 返回 (合并集, 每个集合的偏移).
-    只接受同一个上下文标签、没有逐条问句的集合 —— 那才是「同一种题、菜单可以混着抽」."""
-    first = sets[0]
-    for s in sets:
-        if s.context_label != first.context_label:
-            raise ValueError(f"context_label differs: {s.context_label!r} vs {first.context_label!r}")
-        if s.questions is not None:
-            raise ValueError("per-item questions cannot be merged")
-        if s.qtype != first.qtype or s.question_default != first.question_default:
-            raise ValueError("qtype / question_default differ")
-    queries, labels, names, offsets = [], [], {}, []
-    off = 0
-    for s in sets:
-        offsets.append(off)
-        queries += s.queries
-        labels += [lab + off for lab in s.labels]
-        names.update({c + off: n for c, n in s.names.items()})
-        off += len(s.names)
-    return LabeledSet(queries=queries, labels=labels, names=names, context_label=first.context_label,
-                      question_default=first.question_default, qtype=first.qtype), offsets

@@ -7,7 +7,7 @@ import random
 
 from _runner import run
 from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range,
-                               merge_sets, random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows)
+                               random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows)
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -153,33 +153,6 @@ def test_sample_examples_k_log_favours_short_menus_but_reaches_the_top():
     ex_u = s.sample_examples(classes=list(range(300)), k_range=(2, 256), n=250, rng=random.Random(0))
     ku = sorted(len(e.options) for e in ex_u)
     assert ku[len(ku) // 2] > 100, "默认仍是均匀"
-
-
-def test_merge_sets_puts_both_in_one_id_space_and_reports_offsets():
-    a = LabeledSet(queries=["a0", "a1", "a2"], labels=[0, 1, 0], names={0: "x", 1: "y"})
-    b = LabeledSet(queries=["b0"], labels=[0], names={0: "z"})
-    m, offsets = merge_sets(a, b)
-    assert offsets == [0, 2]
-    assert m.queries == ["a0", "a1", "a2", "b0"] and m.labels == [0, 1, 0, 2]
-    assert m.names == {0: "x", 1: "y", 2: "z"}
-    assert m.context_label == a.context_label and m.questions is None and m.qtype == "choice"
-
-
-def test_merge_sets_refuses_different_context_labels_or_per_item_questions():
-    a = LabeledSet(queries=["a"], labels=[0], names={0: "x"}, context_label="Customer message")
-    b = LabeledSet(queries=["b"], labels=[0], names={0: "z"}, context_label="Passage")
-    try:
-        merge_sets(a, b)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("上下文标签不同却合并了")
-    c = LabeledSet(queries=["c"], labels=[0], names={0: "w"}, questions=["q?"])
-    try:
-        merge_sets(a, c)
-    except ValueError:
-        return
-    raise AssertionError("带逐条问句的集合却合并了")
 
 
 # --------------------------------------------------------------------------
