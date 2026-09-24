@@ -89,6 +89,16 @@ def by_gold_slot(q: list[list[float]], y: list[int], width: int = 10) -> dict[st
     return out
 
 
+def first_two_slots(q: list[list[float]], y: list[int]) -> dict[str, float]:
+    """前两格 (D0 / D1) 吸走了多少: 选在前两格的比例 / 正确答案在前两格的比例 / 前两格的平均概率.
+    no / yes 题的答案永远在 D0 / D1; 训练里掺了它们, 菜单题的预测若被拉向前两格, pred 会高出 gold."""
+    return {
+        "pred_d01_rate": sum(_argsort_desc(row)[0] < 2 for row in q) / len(q),
+        "gold_d01_rate": sum(t < 2 for t in y) / len(y),
+        "q_d01_mean": sum(sum(row[:2]) for row in q) / len(q),
+    }
+
+
 def menu_size_summary(ks: list[int]) -> dict[str, float]:
     """评估集里每道题的菜单长度."""
     return {"k_min": min(ks), "k_max": max(ks), "k_mean": sum(ks) / len(ks)}

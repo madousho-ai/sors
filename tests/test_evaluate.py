@@ -8,10 +8,11 @@ import torch
 from _runner import run
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
+from decidophobia.metrics import first_two_slots
 from decidophobia.model import last_logits, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, evaluate
+from decidophobia.train import EvalSet, evaluate, score_examples
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -50,6 +51,23 @@ def test_evaluate_reports_the_cross_entropy_over_the_whole_vocabulary():
     want = -(logp[0, d_ids[2]] + logp[1, d_ids[0]]).item() / 2
     assert abs(r["vocab_ce"] - want) < 1e-5, (r["vocab_ce"], want)
     assert r["vocab_ce"] > r["nll"] + 1, (r["vocab_ce"], r["nll"])
+
+
+def test_evaluate_reports_how_much_lands_on_the_first_two_slots():
+    """evaluate 报 first_two_slots 的三个量, 与拿同一批逐题概率直接算的相同. 两题正确答案在 D2 / D0: gold 率 1/2."""
+    tok, d_ids, m = _tiny()
+    exs = [
+        MenuExample(query="I lost my card", options=[0, 1, 2], gold_idx=2, label=2,
+                    option_names=["change pin", "top up", "card lost"]),
+        MenuExample(query="my top up failed", options=[0, 1], gold_idx=0, label=0,
+                    option_names=["top up failed", "card lost"]),
+    ]
+    es = EvalSet(exs, batch_size=2)
+    r = evaluate(m, tok, d_ids, es, k_max=3, max_length=512, layout=DEFAULT_LAYOUT)
+    s = score_examples(m, tok, d_ids, exs, 2, 3, 512, DEFAULT_LAYOUT)
+    want = first_two_slots(s["q"], s["gold"])
+    assert r["gold_d01_rate"] == 0.5, r["gold_d01_rate"]
+    assert all(abs(r[k] - v) < 1e-9 for k, v in want.items()), ({k: r.get(k) for k in want}, want)
 
 
 if __name__ == "__main__":

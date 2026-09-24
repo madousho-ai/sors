@@ -17,7 +17,8 @@ import torch
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import answer_mass, gather_slot_logits, training_loss, vocab_cross_entropy
-from decidophobia.metrics import answer_mass_summary, binary_summary, by_gold_slot, menu_size_summary, summarize
+from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
+                                  summarize)
 from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
@@ -94,6 +95,7 @@ def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: st
         out.update(binary_summary(Q, es.examples, es.pos_class))
     out.update(answer_mass_summary(s["m_answer"], s["m_offmenu"], s["top1_in"]))
     out.update(menu_size_summary([len(ex.options) for ex in es.examples]))
+    out.update(first_two_slots(Q, Y))
     out["n"] = len(Y)
     out["by_gold_slot"] = by_gold_slot(Q, Y)
     return out

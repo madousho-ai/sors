@@ -13,7 +13,7 @@ from decidophobia.data import MenuExample
 from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss,
                                vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
-                                  menu_size_summary, nll_multiclass, topk_accuracy)
+                                  first_two_slots, menu_size_summary, nll_multiclass, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
 from decidophobia.train import scalar_items
 
@@ -313,6 +313,19 @@ def test_by_gold_slot_bins_every_ten_slots_and_skips_empty_bins():
     assert [got[b]["accuracy"] for b in got] == [0.5, 1.0, 0.5], got
     assert abs(got["10-19"]["nll"] - (-math.log(0.9))) < 1e-12, got["10-19"]
     assert set(got["0-9"]) == {"n", "accuracy", "top5_accuracy", "nll", "conf_mean"}, got["0-9"]
+
+
+def test_first_two_slots_compares_picks_and_mass_on_d0_d1_with_where_the_golds_are():
+    """四道 10 项菜单题, 正确答案在 D0 / D5 / D5 / D7. 模型选 D0 / D1 / D5 / D7 (第二题被拉到 D1).
+    选在前两格 2/4, 正确答案在前两格 1/4 —— 前者高出后者就是往前两格塌.
+    前两格的平均概率: 选 D0 与 D1 的两题各 .9 + .1/9, 另两题各 2 × .1/9."""
+    n = 10
+    q = [_onehot_row(n, 0), _onehot_row(n, 1), _onehot_row(n, 5), _onehot_row(n, 7)]
+    got = first_two_slots(q, [0, 5, 5, 7])
+    rest = 0.1 / 9
+    assert got.keys() == {"pred_d01_rate", "gold_d01_rate", "q_d01_mean"}, got
+    assert got["pred_d01_rate"] == 0.5 and got["gold_d01_rate"] == 0.25, got
+    assert abs(got["q_d01_mean"] - (2 * (0.9 + rest) + 2 * 2 * rest) / 4) < 1e-12, got
 
 
 def test_menu_size_summary_reports_min_max_mean():
