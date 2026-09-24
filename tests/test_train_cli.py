@@ -20,13 +20,42 @@ _spec.loader.exec_module(_mod)
 
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
-                eval_batch_size=16, eval_limit=0, eval_synth=False, data_dir="data/banking77", random_codes=0.0)
+                eval_batch_size=16, eval_limit=0, eval_synth=False, data_dir="data/banking77", random_codes=0.0,
+                eval="banking77+massive+boolq")
     base.update(kw)
     return argparse.Namespace(**base)
 
 
 def test_parse_datasets_accepts_massive():
     assert _mod.parse_datasets("banking77+boolq+massive") == ["banking77", "boolq", "massive"]
+
+
+def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
+    """默认评估集与训练集无关: Banking77 test 3080 条配全部 77 类, MASSIVE test 2974 条配全部 60 类,
+    BoolQ validation 3270 条. 菜单都是全量、连续编号."""
+    assert _mod.build_parser().parse_args([]).eval == "banking77+massive+boolq"
+    _, eval_sets, _ = _mod.build_data(_args("massive"))
+    assert set(eval_sets) == {"banking77", "massive", "boolq"}
+    b77, mas, bq = eval_sets["banking77"], eval_sets["massive"], eval_sets["boolq"]
+    assert len(b77.examples) == 3080 and {len(e.options) for e in b77.examples} == {77}
+    assert {e.context_label for e in b77.examples} == {"Customer message"}
+    assert len(mas.examples) == 2974 and {len(e.options) for e in mas.examples} == {60}
+    assert {e.context_label for e in mas.examples} == {"Voice command"}
+    assert len(bq.examples) == 3270 and bq.pos_class == 1
+    assert all(e.codes is None for es in eval_sets.values() for e in es.examples)
+
+
+def test_eval_takes_a_subset():
+    _, eval_sets, _ = _mod.build_data(_args("massive", eval="massive"))
+    assert set(eval_sets) == {"massive"}
+
+
+def test_eval_rejects_an_unknown_set():
+    try:
+        _mod.build_data(_args("massive", eval="massive+synth"))
+    except SystemExit:
+        return
+    raise AssertionError("--eval massive+synth accepted; synth is training data")
 
 
 def test_banking77_boolq_massive_trains_only_on_slots_d0_to_d59():

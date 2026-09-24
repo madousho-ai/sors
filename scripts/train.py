@@ -43,14 +43,46 @@ from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, load_trained, save_trained, train
 
 KNOWN = ("banking77", "boolq", "synth", "massive")
+KNOWN_EVAL = ("banking77", "massive", "boolq")
+
+
+def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
+    names = spec.split("+")
+    bad = [n for n in names if n not in known]
+    if bad or len(set(names)) != len(names):
+        raise SystemExit(f"{flag}: unknown or repeated {bad or names}; use + to combine {known}")
+    return names
 
 
 def parse_datasets(spec: str) -> list[str]:
-    names = ["banking77", "boolq"] if spec == "both" else spec.split("+")
-    bad = [n for n in names if n not in KNOWN]
-    if bad or len(set(names)) != len(names):
-        raise SystemExit(f"--dataset: unknown or repeated {bad or names}; use + to combine {KNOWN}")
-    return names
+    return _parse_list("banking77+boolq" if spec == "both" else spec, KNOWN, "--dataset")
+
+
+def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
+    """--eval 列的评估集, 与训练集无关. 菜单全量、连续编号; 每个集合的菜单用 Random(seed + 菜单长度) 组,
+    MASSIVE 那份因此与 scripts/eval-massive.py 的 k=60 逐题相同. 训练里已读过的 split 可以传进来复用."""
+    out = {}
+    for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
+        if name == "banking77":
+            if b77_test is None:
+                from decidophobia.banking77 import load_banking77
+
+                b77_test = load_banking77(args.data_dir)[1]
+            te, bs, pos = b77_test, args.eval_batch_size, None
+        elif name == "massive":
+            from decidophobia.massive import load_massive
+
+            te, bs, pos = load_massive(partition="test"), args.eval_batch_size, None
+        else:
+            if boolq_val is None:
+                from decidophobia.boolq import load_boolq
+
+                boolq_val = load_boolq()[1]
+            te, bs, pos = boolq_val, max(1, args.eval_batch_size // 2), 1
+        classes = list(range(len(te.names)))
+        k = min(args.k_eval, len(classes))
+        out[name] = EvalSet(te.build_examples(classes, (k, k), random.Random(args.seed + k)), bs, pos_class=pos)
+    return out
 
 
 def build_data(args):
@@ -116,8 +148,8 @@ def build_data(args):
         from decidophobia.boolq import load_boolq
 
         btr, bva = load_boolq()
-        eval_sets["boolq"] = EvalSet(bva.build_examples([0, 1], (2, 2), erng), max(1, args.eval_batch_size // 2), pos_class=1)
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
+    eval_sets.update(build_eval_sets(args, b77[1] if b77 else None, bva if "boolq" in datasets else None))
     if args.eval_synth:
         # 留出评估: 512 个合成意图的 1024 条消息, 菜单只含合成意图. 60 项那档的正确答案都在 D0..D59,
         # 256 项那档散到 D0..D255 —— 训练菜单不到 256 时, 看没当过答案的码能不能用.
@@ -182,6 +214,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--eval-batch-size", type=int, default=16)
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
+    ap.add_argument("--eval", default="banking77+massive+boolq",
+                    help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单) / "
+                         "massive (test 2974 条, 60 类全量菜单) / boolq (validation 3270 条)")
     ap.add_argument("--eval-synth", action="store_true",
                     help="把 synth 当留出评估集: synth60 / synth256 两档, 只含合成意图. 与 --dataset 里的 synth 互斥")
     ap.add_argument("--random-codes", type=float, default=0.0,
