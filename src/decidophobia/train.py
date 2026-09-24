@@ -16,7 +16,7 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import answer_mass, gather_slot_logits, training_loss
+from decidophobia.loss import answer_mass, gather_slot_logits, training_loss, vocab_cross_entropy
 from decidophobia.metrics import answer_mass_summary, binary_summary, by_gold_slot, menu_size_summary, summarize
 from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
@@ -57,12 +57,13 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
     """逐题打分, 不汇总.
       q          每道题在自己菜单 k 个槽上的概率 (位置空间, 长 k_max, 菜单之外补 0)
       gold       正确选项的位置
+      vocab_ce   全词表交叉熵, 与 --loss vocab 的训练 loss 同一个式子
       m_answer / m_offmenu / top1_in   全词表下的三个格式读数, 见 loss.answer_mass
     """
     was_training = m.training
     m.eval()
     dev = next(m.parameters()).device
-    out = {"q": [], "gold": [], "m_answer": [], "m_offmenu": [], "top1_in": []}
+    out = {"q": [], "gold": [], "vocab_ce": [], "m_answer": [], "m_offmenu": [], "top1_in": []}
     for s in range(0, len(examples), batch_size):
         b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker)
         b = {k: v.to(dev) for k, v in b.items()}
@@ -71,6 +72,7 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
         ma, off, top1 = answer_mass(logits, b["slot_ids"], d_ids)
         out["q"].extend(q.cpu().tolist())
         out["gold"].extend(b["gold"].tolist())
+        out["vocab_ce"].extend(vocab_cross_entropy(logits, b["slot_ids"], b["gold"], reduction="none").cpu().tolist())
         out["m_answer"].extend(ma.cpu().tolist())
         out["m_offmenu"].extend(off.cpu().tolist())
         out["top1_in"].extend(top1.cpu().tolist())
@@ -81,10 +83,13 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
 
 def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False) -> dict:
     """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一.
-    另报格式遵从 (answer_mass_summary): 全词表下有多少概率落在菜单的槽上, 与 baseline 脚本的 m_answer 同一个量."""
+    另报格式遵从 (answer_mass_summary): 全词表下有多少概率落在菜单的槽上, 与 baseline 脚本的 m_answer 同一个量.
+    vocab_ce 是评估集上的 loss, 分母是整个词表, 与 train/loss (--loss vocab) 直接可比;
+    nll 只在菜单上归一, 与 ece / brier / accuracy 同一个分布, 也与旧 run 的曲线同一个量."""
     s = score_examples(m, tok, d_ids, es.examples, es.batch_size, k_max, max_length, layout, type_marker)
     Q, Y = s["q"], s["gold"]
     out = summarize(Q, Y)
+    out["vocab_ce"] = sum(s["vocab_ce"]) / len(Y)
     if es.pos_class is not None:
         out.update(binary_summary(Q, es.examples, es.pos_class))
     out.update(answer_mass_summary(s["m_answer"], s["m_offmenu"], s["top1_in"]))

@@ -43,13 +43,15 @@ def all_slot_cross_entropy(
     return F.cross_entropy(logits[:, d], hit.int().argmax(1))
 
 
-def vocab_cross_entropy(logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor) -> torch.Tensor:
+def vocab_cross_entropy(
+    logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor, reduction: str = "mean",
+) -> torch.Tensor:
     """分母是整个词表; 目标是菜单第 gold 位绑的那个 D 的 token id. 普通 token 的梯度就是它的概率,
-    概率越高压得越狠."""
+    概率越高压得越狠. reduction="none" 给逐题的值, 评估用."""
     target = slot_ids.gather(1, gold[:, None]).squeeze(1)
     if bool((target < 0).any()):
         raise ValueError("gold points at a padding slot")
-    return F.cross_entropy(logits, target)
+    return F.cross_entropy(logits, target, reduction=reduction)
 
 
 LOSSES = ("menu", "all-slots", "vocab")
