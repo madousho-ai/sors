@@ -14,7 +14,7 @@
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
 
---eval 是评估集列表, 与训练集无关, 默认 banking77+massive+boolq+simple (见 build_eval_sets).
+--eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple (见 build_eval_sets).
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
   PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.pt --steps 0   # 只评估
@@ -48,7 +48,7 @@ from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, checkpoint_adapter, load_trained, save_trained, train
 
 KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "massive")
-KNOWN_EVAL = ("banking77", "massive", "boolq", "simple")
+KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple")
 
 
 def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
@@ -69,6 +69,8 @@ def parse_datasets(spec: str) -> list[str]:
 def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     """--eval 列的评估集, 与训练集无关. 菜单全量、连续编号; 每个集合的菜单用 Random(seed + 菜单长度) 组,
     MASSIVE 那份因此与 scripts/eval-massive.py 的 k=60 逐题相同. 训练里已读过的 split 可以传进来复用.
+    banking77 / massive 的菜单显示原始 label 名; -desc 那两个显示 datasets/label-descriptions 里的 description,
+    菜单用同一个 Random 组, 于是与不带 -desc 的逐题相同 (消息、选项顺序、正确位置), 只换了选项的文字.
     simple 是 datasets/synth-simple-eval, 菜单写死在文件里 (不受 --k-eval / --seed 影响), 展开成每个菜单长度一个集合."""
     out = {}
     for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
@@ -85,10 +87,15 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
 
                 b77_test = load_banking77(args.data_dir)[1]
             te, bs, pos = b77_test, args.eval_batch_size, None
-        elif name == "massive":
+        elif name == "banking77-desc":
+            from decidophobia.banking77 import load_banking77
+
+            te, bs, pos = load_banking77(args.data_dir, labels="desc")[1], args.eval_batch_size, None
+        elif name in ("massive", "massive-desc"):
             from decidophobia.massive import load_massive
 
-            te, bs, pos = load_massive(partition="test"), args.eval_batch_size, None
+            labels = "desc" if name == "massive-desc" else "raw"
+            te, bs, pos = load_massive(partition="test", labels=labels), args.eval_batch_size, None
         else:
             if boolq_val is None:
                 from decidophobia.boolq import load_boolq
@@ -220,9 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--eval-batch-size", type=int, default=16)
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
-    ap.add_argument("--eval", default="banking77+massive+boolq+simple",
-                    help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单) / "
-                         "massive (test 2974 条, 60 类全量菜单) / boolq (validation 3270 条) / "
+    ap.add_argument("--eval", default="banking77+banking77-desc+massive+massive-desc+boolq+simple",
+                    help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单, 原始 label 名) / "
+                         "banking77-desc (同一批题, 菜单显示 description) / "
+                         "massive (test 2974 条, 60 类全量菜单, 原始 intent 名) / massive-desc (同一批题, 显示 description) / "
+                         "boolq (validation 3270 条) / "
                          "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes)")
     ap.add_argument("--random-codes", type=float, default=0.0,
                     help="选择题里换成随机码的比例 (0..1): 挑上菜单次数最少的 k 个 D 码、顺序随机, 每个码上菜单时是答案的概率都是 1/k, "

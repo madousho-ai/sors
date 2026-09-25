@@ -6,10 +6,12 @@
 import argparse
 import collections
 import importlib.util
+import json
 import pathlib
 import random
 
 from _runner import run
+from decidophobia.label_names import DESC_DIR
 from decidophobia.simple_eval import load_simple_eval
 from decidophobia.synth import load_synth
 
@@ -37,17 +39,33 @@ def test_dataset_defaults_to_synth():
 
 def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
     """默认评估集与训练集无关: Banking77 test 3080 条配全部 77 类, MASSIVE test 2974 条配全部 60 类,
-    BoolQ validation 3270 条. 菜单都是全量、连续编号."""
-    assert _mod.build_parser().parse_args([]).eval == "banking77+massive+boolq+simple"
+    BoolQ validation 3270 条. 菜单都是全量、连续编号, 显示原始 label 名."""
+    assert _mod.build_parser().parse_args([]).eval == "banking77+banking77-desc+massive+massive-desc+boolq+simple"
     _, eval_sets, _ = _mod.build_data(_args("massive"))
     assert set(eval_sets) == {"banking77", "massive", "boolq"}
     b77, mas, bq = eval_sets["banking77"], eval_sets["massive"], eval_sets["boolq"]
     assert len(b77.examples) == 3080 and {len(e.options) for e in b77.examples} == {77}
     assert {e.context_label for e in b77.examples} == {"Customer message"}
+    assert "Refund_not_showing_up" in b77.examples[0].option_names
     assert len(mas.examples) == 2974 and {len(e.options) for e in mas.examples} == {60}
     assert {e.context_label for e in mas.examples} == {"Voice command"}
+    assert "iot_hue_lightchange" in mas.examples[0].option_names
     assert len(bq.examples) == 3270 and bq.pos_class == 1
     assert all(e.codes is None for es in eval_sets.values() for e in es.examples)
+
+
+def test_desc_eval_sets_ask_the_same_questions_with_descriptions_on_the_menu():
+    """banking77-desc / massive-desc 与 banking77 / massive 逐题相同 (消息、菜单顺序、正确位置),
+    只有菜单上显示的文字换成 datasets/label-descriptions 里的 description."""
+    _, ev, _ = _mod.build_data(_args("massive", eval="banking77+banking77-desc+massive+massive-desc"))
+    for raw, desc, f in (("banking77", "banking77-desc", "banking77.json"), ("massive", "massive-desc", "massive.json")):
+        d = json.loads((DESC_DIR / f).read_text())
+        a, b = ev[raw].examples, ev[desc].examples
+        assert len(a) == len(b) and ev[desc].pos_class is None
+        for x, y in zip(a, b):
+            assert (x.query, x.options, x.gold_idx, x.label, x.context_label) == \
+                   (y.query, y.options, y.gold_idx, y.label, y.context_label)
+            assert y.option_names == [d[n] for n in x.option_names]
 
 
 def test_eval_takes_a_subset():
