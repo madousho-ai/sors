@@ -1,4 +1,4 @@
-"""decidophobia.synth 的测试: datasets/synth-intents 读成菜单题与二元题两个 LabeledSet.
+"""decidophobia.synth 的测试: datasets/synth-intents-v2.5 读成菜单题与二元题两个 LabeledSet.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_synth.py
 """

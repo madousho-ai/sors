@@ -4,7 +4,7 @@
 --dataset 是用加号连起来的训练集列表, 一个 batch 里各占一份:
   banking77   Banking77, 按类留出 17 个测泛化 (seen / unseen)
   boolq       BoolQ, k=2, 逐条问句
-  synth       datasets/synth-intents, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
+  synth       datasets/synth-intents-v2.5, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
               菜单题只列正确意图所在领域的意图 (k 256 即整个领域 256 个), 二元题问消息里的一个细节 (no / yes)
   synth-menu  synth 只要菜单题, 不要二元题 (不与 synth 并用)
   synth-v3    datasets/synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):

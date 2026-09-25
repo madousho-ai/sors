@@ -1,9 +1,9 @@
-"""synth-intents 适配: datasets/synth-intents/*.jsonl -> LabeledSet. 只做训练.
+"""synth-intents v2.5 适配: datasets/synth-intents-v2.5/*.jsonl -> LabeledSet. 只做训练.
 
 4096 个虚构意图 × 3 条用户消息, 16 个领域各 256 个. 菜单里显示的是 description.
 类 id 按 intent id 字母序 (与 banking77 / massive 同一约定). 同时返回每个类的领域, 供按领域留出.
 每个意图还带一道 yes/no 问题, 三条消息各一个答案: load_synth_binary 把它读成与 BoolQ 同形的二元题.
-规格见 datasets/synth-intents/SPEC.md.
+规格见 datasets/synth-intents-v2.5/SPEC.md.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import random
 
 from decidophobia.data import LabeledSet, MenuExample, compose_menu, draw_k
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-intents"
+DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-intents-v2.5"
 CONTEXT_LABEL = "Customer message"
 
 
