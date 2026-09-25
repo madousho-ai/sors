@@ -7,9 +7,9 @@ import random
 from dataclasses import replace
 
 from _runner import run
-from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range, partner,
-                               random_rows, reassigned_codes, reorder_menu, row_alignment, shuffled_rows, top_rows,
-                               with_partners)
+from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, arrangements, class_split, compose_menu,
+                               menu_k_range, partner, random_arrangement, random_rows, reassigned_codes, reorder_menu,
+                               row_alignment, shuffled_rows, top_rows, with_partners)
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -419,6 +419,36 @@ def test_row_alignment_refuses_two_different_questions():
         except ValueError:
             continue
         raise AssertionError(f"paired {a} with {b}")
+
+
+def test_random_arrangement_shuffles_the_rows_and_draws_fresh_codes_for_every_row():
+    """评估的一种随机排法: 行打乱, 每行从 256 个码里随机挑一个, 互不相同. 正确描述会落到每一行、几乎每一个码上."""
+    rng = random.Random(0)
+    base = reorder_menu(_menu5(), [0, 1, 2])  # 10 11 12, 正确的是 12
+    got = [random_arrangement(base, rng) for _ in range(3000)]
+    assert all(sorted(e.options) == [10, 11, 12] and e.options[e.gold_idx] == 12 for e in got)
+    assert all(e.codes is not None and len(set(e.codes)) == 3 for e in got)
+    assert {e.gold_idx for e in got} == {0, 1, 2}
+    assert len({e.slot_codes[e.gold_idx] for e in got}) == 256
+
+
+def test_random_arrangement_recodes_binary_questions_too():
+    rng = random.Random(0)
+    got = [random_arrangement(_ex(options=(0, 1), gold_idx=1, qtype="bool"), rng) for _ in range(2000)]
+    assert {tuple(e.options) for e in got} == {(0, 1), (1, 0)}
+    assert len({c for e in got for c in e.slot_codes}) == 256
+
+
+def test_arrangements_give_each_pass_every_question_in_its_own_random_arrangement():
+    """passes 份, 每份题目顺序与原来相同, 每道题各有一种随机排法; 同一个 seed 给出同一套."""
+    exs = [_menu5(), _ex(options=(0, 1), gold_idx=0, qtype="bool"), replace(_menu5(), query="other")]
+    got = arrangements(exs, 4, random.Random(7))
+    assert len(got) == 4 and all(len(p) == 3 for p in got)
+    for p in got:
+        for a, b in zip(exs, p):
+            assert [b.options[j] for j in row_alignment(a, b)] == a.options and b.codes is not None
+    assert len({tuple(p[0].slot_codes) for p in got}) == 4
+    assert arrangements(exs, 4, random.Random(7)) == got
 
 
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():

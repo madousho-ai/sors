@@ -201,6 +201,21 @@ def row_alignment(a: MenuExample, b: MenuExample) -> list[int]:
     return [where[c] for c in a.options]
 
 
+# 一致性评估 (train.consistency_eval): 同一批题排成几种随机的样子, 看选中的描述变不变.
+
+
+def random_arrangement(ex: MenuExample, rng: random.Random) -> MenuExample:
+    """评估用的一种随机排法: 行随机打乱, 每行从 N_SLOTS 个码里随机挑一个 (互不相同), 二元题也一样.
+    行号和码都与描述无关, 只看描述作答的模型在每种排法下给每条描述的概率都相同."""
+    k = len(ex.options)
+    return reorder_menu(ex, rng.sample(range(k), k), rng.sample(range(N_SLOTS), k))
+
+
+def arrangements(examples: list[MenuExample], passes: int, rng: random.Random) -> list[list[MenuExample]]:
+    """passes 份, 第 p 份是每道题的第 p 种随机排法 (random_arrangement), 题目顺序与 examples 相同."""
+    return [[random_arrangement(ex, rng) for ex in examples] for _ in range(passes)]
+
+
 @dataclass(frozen=True)
 class LabeledSet:
     queries: list[str]
