@@ -293,10 +293,9 @@ def test_run_tag_names_the_loss_and_keeps_the_old_names_for_old_losses():
 
 
 def _checkpoint(trainable, r, alpha):
-    """用一层的随机 Qwen3 走真的 prepare_model / save_trained 存一份 trained.pt."""
+    """用一层的随机 Qwen3 走真的 prepare_model / save_trained 存一份档."""
     import tempfile
 
-    import torch
     from transformers import Qwen3Config, Qwen3ForCausalLM
 
     from decidophobia.model import prepare_model
@@ -306,7 +305,7 @@ def _checkpoint(trainable, r, alpha):
                       num_attention_heads=2, num_key_value_heads=1, head_dim=8)
     ids = list(range(40, 64))
     m = prepare_model(Qwen3ForCausalLM(cfg), ids, lora_r=r, lora_alpha=alpha, lora_dropout=0.0, trainable=trainable)
-    f = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
+    f = tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False)
     save_trained(m, ids, TrainConfig(), f.name)
     return f.name
 

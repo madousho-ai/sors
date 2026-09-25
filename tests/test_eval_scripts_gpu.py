@@ -1,4 +1,4 @@
-"""scripts/eval-massive.py 与 scripts/eval-invariance.py 端到端: 喂一份 r4 alpha8 的 trained.pt,
+"""scripts/eval-massive.py 与 scripts/eval-invariance.py 端到端: 喂一份 r4 alpha8 的存档,
 脚本得照档里记的形状搭 LoRA 空壳, 不靠命令行复述. 每个脚本只评几道题. 要 0.6B 和 GPU.
 
 跑:  OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_eval_scripts_gpu.py
@@ -23,7 +23,7 @@ _state: dict = {}
 
 
 def _checkpoint() -> str:
-    """0.6B 在 CPU 上走 prepare_model (r4 alpha8, 离开默认的 r8 alpha16) 与 save_trained, 存一份 trained.pt."""
+    """0.6B 在 CPU 上走 prepare_model (r4 alpha8, 离开默认的 r8 alpha16) 与 save_trained, 存一份 trained.safetensors."""
     if not _state:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -35,7 +35,7 @@ def _checkpoint() -> str:
         ids = install_d_tokens(tok) + install_type_tokens(tok)
         lm = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16)
         m = prepare_model(lm, ids, lora_r=4, lora_alpha=8, lora_dropout=0.0)
-        path = _TMP / "r4" / "trained.pt"
+        path = _TMP / "r4" / "trained.safetensors"
         path.parent.mkdir()
         save_trained(m, ids, TrainConfig(), path)
         _state["path"] = str(path)

@@ -3,6 +3,7 @@
 跑:  PYTHONPATH=src .venv/bin/python tests/test_checkpoint.py
 """
 
+import json
 import tempfile
 from dataclasses import asdict
 
@@ -10,6 +11,7 @@ import torch
 from torch import nn
 
 from _runner import run
+from decidophobia.model import adapter_config
 from decidophobia.train import TrainConfig, checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
 
 
@@ -32,8 +34,19 @@ class _Fake(nn.Module):
 
 
 def _save(m, ids):
-    f = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
+    f = tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False)
     save_trained(m, ids, TrainConfig(), f.name)
+    return f.name
+
+
+def _legacy_pt(m, ids, adapter=True):
+    """改用 safetensors 之前 save_trained 写的样子: torch.save 一个 dict. adapter=False 是更早、还没记 LoRA 形状的档."""
+    ck = {"lora": {n: p.detach().cpu() for n, p in m.named_parameters() if p.requires_grad and "lora_" in n},
+          "d_embed": m.get_input_embeddings().rows.detach().cpu(), "d_ids": ids, "config": asdict(TrainConfig())}
+    if adapter:
+        ck["adapter"] = adapter_config(m)
+    f = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
+    torch.save(ck, f.name)
     return f.name
 
 
@@ -68,13 +81,38 @@ def test_checkpoint_of_a_d_only_model_records_no_rank():
     assert checkpoint_adapter(path) == {"trainable": "d-only", "lora_r": None, "lora_alpha": None}
 
 
-def test_checkpoint_without_an_adapter_record_reads_as_attention_r8_alpha16():
+def test_save_trained_writes_safetensors_with_ids_config_and_adapter_as_metadata():
+    """存档是 safetensors: 张量是 LoRA 权重与 d_embed, d_ids / 训练 config / LoRA 形状写成 JSON 元数据."""
+    from safetensors import safe_open
+
+    m = _tiny(r=4, alpha=8)
+    path = _save(m, TINY_IDS)
+    with safe_open(path, framework="pt") as f:
+        keys, meta = set(f.keys()), f.metadata()
+    lora = {n for n, p in m.named_parameters() if p.requires_grad and "lora_" in n}
+    assert keys == lora | {"d_embed"}, keys ^ (lora | {"d_embed"})
+    assert json.loads(meta["d_ids"]) == TINY_IDS
+    assert json.loads(meta["config"]) == asdict(TrainConfig())
+    assert json.loads(meta["adapter"]) == {"trainable": "attn", "lora_r": 4, "lora_alpha": 8}
+
+
+def test_legacy_pt_checkpoint_without_an_adapter_record_reads_as_attention_r8_alpha16():
     """记 adapter 之前存的档, 训练时全是 attention LoRA r8 alpha16 (runs/*/result.json 逐个核过)."""
-    path = _save(_tiny(), TINY_IDS)
-    ck = torch.load(path)
-    del ck["adapter"]
-    torch.save(ck, path)
+    path = _legacy_pt(_tiny(), TINY_IDS, adapter=False)
     assert checkpoint_adapter(path) == {"trainable": "attn", "lora_r": 8, "lora_alpha": 16}
+
+
+def test_prepare_from_checkpoint_still_rebuilds_a_legacy_pt_checkpoint():
+    """runs/ 里已有的档都是 torch.save 的 trained.pt, 评估脚本和 --init 照样要读得回来."""
+    trained = _perturbed("attn-mlp", r=4, alpha=12)
+    probe = torch.tensor([[1, 2, 41, 45, 3]])
+    want = trained(input_ids=probe).logits
+    path = _legacy_pt(trained, TINY_IDS)
+
+    m, cfg = prepare_from_checkpoint(_tiny_lm(), TINY_IDS, path)
+    m.eval()
+    assert torch.equal(m(input_ids=probe).logits, want)
+    assert cfg == asdict(TrainConfig())
 
 
 def test_load_trained_rejects_a_model_whose_alpha_differs_from_the_checkpoint():
@@ -88,15 +126,20 @@ def test_load_trained_rejects_a_model_whose_alpha_differs_from_the_checkpoint():
     raise AssertionError("alpha 16 的模型装进了 alpha 8 的档")
 
 
-def test_prepare_from_checkpoint_rebuilds_the_trained_model_from_the_file_alone():
-    """评估脚本手上只有基模和一个 trained.pt. 照档里的形状搭空壳、装档之后, 输出必须与存档时的模型逐位相同."""
-    trained = _tiny("attn-mlp", r=4, alpha=12)
-    with torch.no_grad():  # 离开初始化: LoRA B 初值是零, 不动的话 LoRA 形状错了输出也一样
-        for n, p in trained.named_parameters():
+def _perturbed(trainable, r, alpha):
+    """_tiny 的可训参数全部离开初始化 (LoRA B 初值是零, 不动的话 LoRA 形状错了输出也一样), 置 eval."""
+    m = _tiny(trainable, r=r, alpha=alpha)
+    with torch.no_grad():
+        for p in m.parameters():
             if p.requires_grad:
                 p.normal_(0, 0.1)
+    return m.eval()
+
+
+def test_prepare_from_checkpoint_rebuilds_the_trained_model_from_the_file_alone():
+    """评估脚本手上只有基模和一份存档. 照档里的形状搭空壳、装档之后, 输出必须与存档时的模型逐位相同."""
+    trained = _perturbed("attn-mlp", r=4, alpha=12)
     probe = torch.tensor([[1, 2, 41, 45, 3]])
-    trained.eval()
     want = trained(input_ids=probe).logits
     path = _save(trained, TINY_IDS)
 

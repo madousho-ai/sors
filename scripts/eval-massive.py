@@ -2,7 +2,8 @@
 """在 MASSIVE (en-US test, 2974 条, 60 intent) 上评估训好的决策头. 只评估, 不训练.
 
   PYTHONPATH=src .venv/bin/python scripts/eval-massive.py \
-      --init runs/<banking77>/trained.pt --init runs/<boolq>/trained.pt --init runs/<both>/trained.pt
+      --init runs/<banking77>/trained.safetensors --init runs/<boolq>/trained.safetensors --init runs/<both>/trained.safetensors
+旧 run 的 trained.pt 与新的 .safetensors 都能给 --init.
 
 不给 --init 时评估的是「未训练」: D 行随机初始化、LoRA 为零, 这是 chance 参照.
 给了 --init 时第一个记录仍是未训练 (--no-untrained 关掉).
@@ -35,7 +36,7 @@ from decidophobia.train import EvalSet, evaluate, prepare_from_checkpoint
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--init", action="append", default=[], help="trained.pt, 可多个; 每个评一遍")
+    ap.add_argument("--init", action="append", default=[], help="scripts/train.py 的存档 (.safetensors 或旧的 trained.pt), 可多个; 每个评一遍")
     ap.add_argument("--no-untrained", action="store_true", help="不评未训练基线")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--k", type=int, nargs="+", default=[10, 20, 60])

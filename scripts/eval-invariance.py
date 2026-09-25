@@ -13,7 +13,8 @@ rows_only / codes_only 必然是不连续编号 (连续编号下行号就是码�
 
 每个变体报: 准确率、metrics.consistency (flip_rate / tv_mean / gold_logp_drift)、全词表格式读数 (m_answer / top1_in).
 
-  PYTHONPATH=src .venv/bin/python scripts/eval-invariance.py --init runs/<run>/trained.pt [--model Qwen/Qwen3-1.7B-Base]
+  PYTHONPATH=src .venv/bin/python scripts/eval-invariance.py --init runs/<run>/trained.safetensors [--model Qwen/Qwen3-1.7B-Base]
+旧 run 的 trained.pt 同样能给 --init.
 """
 
 from __future__ import annotations
@@ -55,8 +56,8 @@ def variants(base, seed: int) -> dict[str, list]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--init", required=True, help="trained.pt")
-    ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base", help="必须与训练时的基模相同; trained.pt 里没记")
+    ap.add_argument("--init", required=True, help="scripts/train.py 的存档 (.safetensors 或旧的 trained.pt)")
+    ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base", help="必须与训练时的基模相同; 存档里没记")
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS)
     ap.add_argument("--max-length", type=int, default=4096)
     ap.add_argument("--batch-size", type=int, default=4, help="256 项菜单的 batch; 60 项的用它的 4 倍")

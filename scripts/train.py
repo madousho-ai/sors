@@ -20,13 +20,14 @@
 与全量题的同一种一致性. 见 decidophobia.train.eval_record.
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
-  PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.pt --steps 0   # 只评估: 探针 + 全量
+  PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.safetensors --steps 0   # 只评估: 探针 + 全量
   .venv/bin/tensorboard --logdir runs
 
 产出 (--out 目录):
   log.jsonl     每个评估点一行 (step 0 是训练前 / 加载后的基线): consistency 是探针; 最后一行另有 eval 与 consistency_full
   result.json   配置 + 类切分 + 全部评估记录
-  trained.pt    LoRA 权重 + 256 个 D 行嵌入 (--steps 0 时不写, 保住 --init 那份)
+  trained.safetensors  LoRA 权重 + D 行嵌入, 元数据里记 d_ids / 训练 config / LoRA 形状 (--steps 0 时不写, 保住 --init 那份).
+                旧 run 的 trained.pt 仍能给 --init
   tb/           TensorBoard 事件
 """
 
@@ -203,7 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / massive 用 + 连接; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
-    ap.add_argument("--init", default=None, help="从这份 trained.pt 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
+    ap.add_argument("--init", default=None,
+                    help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
     ap.add_argument("--trainable", default=None, choices=sorted(LORA_TARGETS),
                     help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA. "
                          "不给 = attn; 配 --init 时取档里记的")
@@ -340,7 +342,7 @@ def main() -> None:
     history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard)
     writer.close()
     if args.steps > 0:
-        save_trained(m, train_ids, cfg, out / "trained.pt")
+        save_trained(m, train_ids, cfg, out / "trained.safetensors")
     (out / "result.json").write_text(json.dumps({
         "args": vars(args),
         "trainable_params": n_train,

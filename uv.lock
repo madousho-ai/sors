@@ -506,6 +506,7 @@ dependencies = [
     { name = "datasets" },
     { name = "numpy" },
     { name = "peft" },
+    { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -524,6 +525,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "peft", specifier = ">=0.21.0" },
+    { name = "safetensors", specifier = ">=0.8.0" },
     { name = "torch", specifier = ">=2.14.0" },
     { name = "transformers", specifier = ">=5.17.0" },
 ]
