@@ -23,6 +23,8 @@ def collate(
       slot_ids       (B, k_max)  第 j 列是菜单第 j 项绑的那个 D 的 id (默认 <|Dj|>, 见 MenuExample.codes),
                                  超出该样本菜单长度的位置填 -1
       gold           (B,)        正确选项在菜单里的位置
+      target         (B, k_max)  菜单各行的目标概率: 样本带软标签 (MenuExample.target) 就是它, 否则 gold 那格 1;
+                                 超出菜单长度的位置 0
     """
     texts = [render_menu(ex, layout, type_marker) for ex in examples]
     pad = tokenizer.pad_token_id
@@ -35,7 +37,12 @@ def collate(
         input_ids[i, L - len(e) :] = torch.tensor(e)
         attn[i, L - len(e) :] = 1
     slot_ids = torch.full((len(examples), k_max), -1, dtype=torch.long)
+    target = torch.zeros((len(examples), k_max), dtype=torch.float32)
     for i, ex in enumerate(examples):
         slot_ids[i, : len(ex.options)] = torch.tensor([d_ids[c] for c in ex.slot_codes])
+        if ex.target is None:
+            target[i, ex.gold_idx] = 1.0
+        else:
+            target[i, : len(ex.options)] = torch.tensor(ex.target, dtype=torch.float32)
     gold = torch.tensor([ex.gold_idx for ex in examples], dtype=torch.long)
-    return {"input_ids": input_ids, "attention_mask": attn, "slot_ids": slot_ids, "gold": gold}
+    return {"input_ids": input_ids, "attention_mask": attn, "slot_ids": slot_ids, "gold": gold, "target": target}

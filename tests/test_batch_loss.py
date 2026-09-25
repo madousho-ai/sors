@@ -131,6 +131,20 @@ def test_collate_slot_ids_follow_each_examples_codes():
     assert all_slot_cross_entropy(torch.zeros(1, 151936), b["slot_ids"], b["gold"], d_ids).item() > 0
 
 
+def test_collate_target_is_each_examples_distribution_or_one_hot_on_gold():
+    """target (B, k_max): 带软标签的样本就是它的 target, 没有的在 gold 那一格放 1; 菜单之外补 0."""
+    tok = _tok()
+    d_ids = install_d_tokens(tok)
+    exs = [
+        MenuExample(query="x", options=[5, 9], gold_idx=1, label=9, option_names=["n5", "n9"]),
+        MenuExample(query="y", options=[1, 2, 3], gold_idx=0, label=1, option_names=["n1", "n2", "n3"],
+                    target=[0.5, 0.25, 0.25]),
+    ]
+    b = collate(exs, tok, d_ids, k_max=4)
+    assert b["target"].dtype == torch.float32
+    assert b["target"].tolist() == [[0.0, 1.0, 0.0, 0.0], [0.5, 0.25, 0.25, 0.0]], b["target"]
+
+
 # --------------------------------------------------------------------------
 # loss
 # --------------------------------------------------------------------------
