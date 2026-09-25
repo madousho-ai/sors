@@ -25,7 +25,7 @@ _spec.loader.exec_module(_mod)
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
-                consistency=0.0, eval="banking77+massive+boolq")
+                consistency=0.0, probe_size=200, probe_passes=5, eval="banking77+massive+boolq")
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -262,6 +262,21 @@ def test_consistency_gives_every_question_a_partner_in_another_row_order():
             assert a.codes is not None and b.codes is not None
             kinds["v3" if a.context_label != "Customer message" else len(a.options)] += 1
     assert kinds[256] == kinds[2] == kinds["v3"] == 90, kinds
+
+
+def test_probe_defaults_to_200_questions_in_5_arrangements():
+    args = _mod.build_parser().parse_args([])
+    assert (args.probe_size, args.probe_passes) == (200, 5)
+
+
+def test_probe_needs_a_question_and_two_arrangements():
+    """一份排法没有东西可比: agree 恒为 1、js 恒为 0."""
+    for kw in ({"probe_passes": 1}, {"probe_size": 0}):
+        try:
+            _mod.build_data(_args("boolq", **kw))
+        except SystemExit:
+            continue
+        raise AssertionError(f"{kw} accepted")
 
 
 def test_loss_defaults_to_the_whole_vocabulary():

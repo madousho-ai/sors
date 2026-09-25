@@ -15,13 +15,16 @@
 "both" 仍可用, 等于 banking77+boolq.
 
 --eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple (见 build_eval_sets).
+训练中 (step 0 与每 --eval-every 步) 只跑探针: 每个评估集固定 --probe-size 道题, 固定 --probe-passes 种随机排法
+(行打乱、D 码随机), 报 accuracy / agree / js. 最后一步再跑全量评估集: 部署形态 (连续编号) 下的正确率那一套,
+与全量题的同一种一致性. 见 decidophobia.train.eval_record.
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
-  PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.pt --steps 0   # 只评估
+  PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.pt --steps 0   # 只评估: 探针 + 全量
   .venv/bin/tensorboard --logdir runs
 
 产出 (--out 目录):
-  log.jsonl     每次评估一行 (step 0 是训练前 / 加载后的基线)
+  log.jsonl     每个评估点一行 (step 0 是训练前 / 加载后的基线): consistency 是探针; 最后一行另有 eval 与 consistency_full
   result.json   配置 + 类切分 + 全部评估记录
   trained.pt    LoRA 权重 + 256 个 D 行嵌入 (--steps 0 时不写, 保住 --init 那份)
   tb/           TensorBoard 事件
@@ -119,6 +122,9 @@ def build_data(args):
                          f"got {args.label_smoothing}")
     if args.consistency < 0:
         raise SystemExit(f"--consistency is the weight of the JS term, >= 0; got {args.consistency}")
+    if args.probe_size < 1 or args.probe_passes < 2:
+        raise SystemExit(f"--probe-size must be >= 1 and --probe-passes >= 2 (one arrangement has nothing to compare); "
+                         f"got {args.probe_size} and {args.probe_passes}")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -229,7 +235,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--k-eval", type=int, default=256,
                     help="评估菜单最多几项, 池子不够就全放: seen 60, unseen 17, --eval 的 banking77 77 / massive 60; BoolQ 恒为 2")
     ap.add_argument("--held-out", type=int, default=17, help="Banking77 留出的类数, 训练里完全不出现")
-    ap.add_argument("--eval-every", type=int, default=100)
+    ap.add_argument("--eval-every", type=int, default=100,
+                    help="每隔几步跑一次探针: 只报一致性. 全量评估集的正确率与一致性只在最后一步跑")
+    ap.add_argument("--probe-size", type=int, default=200,
+                    help="探针: 每个评估集固定抽几道题 (不够就全部), 整场训练每个评估点都是这一批")
+    ap.add_argument("--probe-passes", type=int, default=5,
+                    help="每道题排成几种随机的样子 (行打乱、D 码随机, 二元题也一样), 整场固定; 最后一步的全量一致性也用这个数")
     ap.add_argument("--eval-batch-size", type=int, default=16)
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
     ap.add_argument("--eval", default="banking77+banking77-desc+massive+massive-desc+boolq+simple",
@@ -314,7 +325,7 @@ def main() -> None:
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
-        eval_every=args.eval_every, seed=args.seed,
+        eval_every=args.eval_every, probe_size=args.probe_size, probe_passes=args.probe_passes, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
