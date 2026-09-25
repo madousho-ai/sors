@@ -12,6 +12,8 @@ vocab      分母是整个词表 (151936 个 token). 前两种给全部 D 码的
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -94,6 +96,28 @@ def target_cross_entropy(
         raise ValueError("target puts probability on a padding slot")
     logp = menu_log_probs(kind, logits, slot_ids, d_ids)
     return -torch.where(target > 0, target * logp, torch.zeros_like(logp)).sum(1).mean()
+
+
+def consistency_js(logits: torch.Tensor, slot_ids: torch.Tensor, align: torch.Tensor) -> torch.Tensor:
+    """同一道题两种排法之间的 Jensen-Shannon 散度, 按对取平均. 行 2i 与 2i+1 是第 i 对,
+    align (n, K) 是 batch.pair_alignment 给的对齐: 前一份第 j 行的描述在后一份的第 align[i, j] 行, 补位 -1.
+
+    两份各自只在菜单 k 行上 softmax (不论训练 loss 用哪个分母: 这里只比概率在菜单上怎么分),
+    按描述对齐成 P、Q, M = (P + Q) / 2, JS = ½ KL(P‖M) + ½ KL(Q‖M). 0 = 两种排法给每条描述的概率相同,
+    上限 ln 2. 梯度同时流进两份, 把它们往 M 拉; 不需要标签."""
+    if logits.shape[0] != 2 * align.shape[0]:
+        raise ValueError(f"{logits.shape[0]} rows of logits for {align.shape[0]} pairs")
+    on = align >= 0
+    for s in (slot_ids[0::2], slot_ids[1::2]):
+        if not bool(((s >= 0).sum(1) == on.sum(1)).all()):
+            raise ValueError("align does not cover each menu's rows")
+    # 补位先填 0 再做运算: -inf 减 -inf 是 nan, 即使事后被 where 丢掉, 反传时也会把 nan 带进梯度
+    la = torch.log_softmax(gather_slot_logits(logits[0::2], slot_ids[0::2]), 1).masked_fill(~on, 0.0)
+    lb = torch.log_softmax(gather_slot_logits(logits[1::2], slot_ids[1::2]), 1)
+    lb = lb.gather(1, align.clamp_min(0)).masked_fill(~on, 0.0)
+    lm = torch.logaddexp(la, lb) - math.log(2)
+    term = 0.5 * (la.exp() * (la - lm) + lb.exp() * (lb - lm))
+    return torch.where(on, term, torch.zeros_like(term)).sum(1).mean()
 
 
 def training_loss(

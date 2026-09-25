@@ -8,10 +8,10 @@ import sys
 
 import torch
 
-from decidophobia.batch import collate
-from decidophobia.data import MenuExample
-from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, smooth_target,
-                               training_loss, vocab_cross_entropy)
+from decidophobia.batch import collate, pair_alignment
+from decidophobia.data import MenuExample, reorder_menu
+from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, slot_cross_entropy,
+                               smooth_target, training_loss, vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
                                   first_two_slots, menu_size_summary, nll_multiclass, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
@@ -300,6 +300,85 @@ def test_training_loss_dispatches_on_kind():
     except ValueError:
         return
     raise AssertionError("unknown loss kind, expected ValueError")
+
+
+# --------------------------------------------------------------------------
+# 一致性项: 同一道题两种排法, 菜单分布按描述对齐后的 Jensen-Shannon 散度
+# --------------------------------------------------------------------------
+
+
+def test_pair_alignment_lines_up_each_adjacent_pair_and_pads_with_minus_one():
+    """第 i 行是第 i 对 (2i, 2i+1): 前一份菜单第 j 行的描述在后一份的第几行; 菜单之外补 -1."""
+    a = MenuExample(query="q", options=[10, 11, 12], gold_idx=0, label=10, option_names=["a", "b", "c"])
+    b = MenuExample(query="r", options=[3, 4], gold_idx=1, label=4, option_names=["x", "y"])
+    got = pair_alignment([a, reorder_menu(a, [2, 0, 1]), b, reorder_menu(b, [1, 0])], k_max=4)
+    assert got.tolist() == [[1, 2, 0, -1], [1, 0, -1, -1]], got
+    try:
+        pair_alignment([a, reorder_menu(a, [2, 0, 1]), b], k_max=4)
+    except ValueError:
+        return
+    raise AssertionError("an odd batch cannot be paired")
+
+
+def _pair_logits(p1, p2, V=10):
+    """两份, 菜单都在 id 5.. 上, 第一份各行概率 p1、第二份 p2 (logit = ln p); 菜单外的 id 放 0."""
+    logits = torch.zeros(2, V)
+    logits[0, 5 : 5 + len(p1)] = torch.tensor(p1).log()
+    logits[1, 5 : 5 + len(p2)] = torch.tensor(p2).log()
+    return logits
+
+
+def test_consistency_js_matches_the_worked_example():
+    """A B C 三项. 第一份按 A B C 排, 给 (.6 .3 .1); 第二份按 C A B 排, 给 (.25 .45 .30).
+    对齐到描述: P = (.6 .3 .1), Q = (.45 .30 .25), JS = 0.0219791 (手算见对话记录)."""
+    slot_ids = torch.tensor([[5, 6, 7], [5, 6, 7]])
+    align = torch.tensor([[1, 2, 0]])  # A 在第二份第 1 行, B 第 2 行, C 第 0 行
+    got = consistency_js(_pair_logits([0.6, 0.3, 0.1], [0.25, 0.45, 0.30]), slot_ids, align).item()
+    assert abs(got - 0.021979093421794056) < 1e-6, got
+
+
+def test_consistency_js_is_zero_when_each_description_keeps_its_probability():
+    slot_ids = torch.tensor([[5, 6, 7], [5, 6, 7]])
+    got = consistency_js(_pair_logits([0.6, 0.3, 0.1], [0.1, 0.6, 0.3]), slot_ids, torch.tensor([[1, 2, 0]]))
+    assert abs(got.item()) < 1e-7, got
+
+
+def test_consistency_js_normalises_on_the_menu_only():
+    """不论训练用哪个分母, 一致性只比概率在菜单 k 行上怎么分: 菜单外的 logit、以及一份菜单整体加常数, 都不改变它."""
+    slot_ids, align = torch.tensor([[5, 6, 7], [5, 6, 7]]), torch.tensor([[1, 2, 0]])
+    logits = _pair_logits([0.6, 0.3, 0.1], [0.25, 0.45, 0.30])
+    moved = logits.clone()
+    moved[:, :5] += 7.0
+    moved[1, 5:8] += 3.0
+    a, b = consistency_js(logits, slot_ids, align).item(), consistency_js(moved, slot_ids, align).item()
+    assert abs(a - b) < 1e-6, (a, b)
+
+
+def test_consistency_js_averages_over_pairs_and_skips_padding_without_nan():
+    """两对: 上一题的三项菜单 (0.0219791), 与一道两项题对调后 (.9 .1) 对 (.1 .9) (0.3680642); 取平均.
+    两项那一对补了一列 -1, 值与梯度都不能出 nan."""
+    logits = torch.zeros(4, 10)
+    logits[:2] = _pair_logits([0.6, 0.3, 0.1], [0.25, 0.45, 0.30])
+    logits[2:] = _pair_logits([0.9, 0.1], [0.9, 0.1])  # 第二份对调了行, 于是同一个描述拿到 .9 与 .1
+    logits.requires_grad_(True)
+    slot_ids = torch.tensor([[5, 6, 7], [5, 6, 7], [5, 6, -1], [5, 6, -1]])
+    align = torch.tensor([[1, 2, 0], [1, 0, -1]])
+    js = consistency_js(logits, slot_ids, align)
+    assert abs(js.item() - (0.021979093421794056 + 0.3680642071684971) / 2) < 1e-6, js
+    js.backward()
+    assert torch.isfinite(logits.grad).all(), logits.grad
+
+
+def test_consistency_js_gradient_pulls_the_two_orders_together():
+    """沿梯度走一小步: 散度变小, 第二份里被挪到第一行而偏高的 C 降下来, A 升上去."""
+    slot_ids, align = torch.tensor([[5, 6, 7], [5, 6, 7]]), torch.tensor([[1, 2, 0]])
+    logits = _pair_logits([0.6, 0.3, 0.1], [0.25, 0.45, 0.30]).requires_grad_(True)
+    before = consistency_js(logits, slot_ids, align)
+    before.backward()
+    stepped = (logits - 1.0 * logits.grad).detach()
+    assert consistency_js(stepped, slot_ids, align) < before
+    q = torch.softmax(stepped[1, 5:8], 0)  # 第二份的行: C A B
+    assert q[0] < 0.25 and q[1] > 0.45, q
 
 
 def test_answer_mass_splits_full_vocab_into_menu_offmenu_and_rest():

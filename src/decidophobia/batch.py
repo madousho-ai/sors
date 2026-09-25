@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from decidophobia.data import MenuExample
+from decidophobia.data import MenuExample, row_alignment
 from decidophobia.prompt import DEFAULT_LAYOUT, render_menu
 
 
@@ -46,3 +46,15 @@ def collate(
             target[i, : len(ex.options)] = torch.tensor(ex.target, dtype=torch.float32)
     gold = torch.tensor([ex.gold_idx for ex in examples], dtype=torch.long)
     return {"input_ids": input_ids, "attention_mask": attn, "slot_ids": slot_ids, "gold": gold, "target": target}
+
+
+def pair_alignment(examples: list[MenuExample], k_max: int) -> torch.Tensor:
+    """(n, k_max), n = len(examples) // 2. 相邻两条 (2i, 2i+1) 是同一道题的两种排法 (data.with_partners);
+    第 i 行第 j 列 = 第 2i 条菜单第 j 行的描述在第 2i+1 条菜单的第几行 (data.row_alignment). 菜单之外补 -1."""
+    if len(examples) % 2:
+        raise ValueError(f"{len(examples)} examples cannot be split into pairs")
+    out = torch.full((len(examples) // 2, k_max), -1, dtype=torch.long)
+    for i in range(0, len(examples), 2):
+        rows = row_alignment(examples[i], examples[i + 1])
+        out[i // 2, : len(rows)] = torch.tensor(rows)
+    return out
