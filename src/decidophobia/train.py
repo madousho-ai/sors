@@ -16,7 +16,7 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import answer_mass, gather_slot_logits, training_loss, vocab_cross_entropy
+from decidophobia.loss import answer_mass, gather_slot_logits, smooth_target, training_loss, vocab_cross_entropy
 from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
                                   summarize)
 from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
@@ -40,6 +40,7 @@ class TrainConfig:
     layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
     loss: str = "all-slots"  # loss.LOSSES: vocab 整个词表; all-slots 全部 D 槽; menu 菜单 k 个槽. scripts/train.py 总是显式传, 默认 vocab
+    label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
     eval_every: int = 100
     log_every: int = 20
     seed: int = 0
@@ -112,6 +113,14 @@ def scalar_items(prefix: str, d: dict) -> list[tuple[str, float]]:
     return out
 
 
+def step_target(exs: list[MenuExample], b: dict, eps: float) -> torch.Tensor | None:
+    """一步训练用的目标分布. 全是硬标签且不平滑时返回 None, 损失照旧只认 gold (旧 run 逐位复现);
+    否则是 collate 给的 target (硬标签那几行是 one-hot), 再按 eps 在各自菜单上平滑."""
+    if eps == 0 and all(ex.target is None for ex in exs):
+        return None
+    return smooth_target(b["target"], b["slot_ids"], eps)
+
+
 def train(
     m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
     cfg: TrainConfig, log_path=None, writer=None, guard=None,
@@ -178,7 +187,8 @@ def train(
         b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
-        loss = training_loss(cfg.loss, logits, b["slot_ids"], b["gold"], d_ids)
+        loss = training_loss(cfg.loss, logits, b["slot_ids"], b["gold"], d_ids,
+                             target=step_target(exs, b, cfg.label_smoothing))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()

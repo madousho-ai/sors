@@ -12,7 +12,7 @@ from decidophobia.metrics import first_two_slots
 from decidophobia.model import last_logits, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, evaluate, score_examples
+from decidophobia.train import EvalSet, evaluate, score_examples, step_target
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -68,6 +68,18 @@ def test_evaluate_reports_how_much_lands_on_the_first_two_slots():
     want = first_two_slots(s["q"], s["gold"])
     assert r["gold_d01_rate"] == 0.5, r["gold_d01_rate"]
     assert all(abs(r[k] - v) < 1e-9 for k, v in want.items()), ({k: r.get(k) for k in want}, want)
+
+
+def test_step_target_is_none_for_hard_labels_without_smoothing_so_the_old_loss_runs():
+    """一批全是硬标签、平滑 0: 不给 target, 训练走按 gold 下标的老损失, 旧 run 逐位复现.
+    有一条带软标签、或平滑大于 0: 给整批的目标分布 (硬标签那几行是 one-hot), 平滑摊在各自菜单上."""
+    hard = MenuExample(query="a", options=[0, 1, 2], gold_idx=2, label=2, option_names=["x", "y", "z"])
+    soft = MenuExample(query="b", options=[0, 1], gold_idx=0, label=0, option_names=["x", "y"], target=[0.75, 0.25])
+    b = {"target": torch.tensor([[0.0, 0.0, 1.0], [0.75, 0.25, 0.0]]), "slot_ids": torch.tensor([[5, 6, 7], [5, 6, -1]])}
+    assert step_target([hard, hard], b, 0.0) is None
+    assert step_target([hard, soft], b, 0.0) is b["target"]
+    got = step_target([hard, hard], b, 0.3)
+    assert torch.allclose(got, torch.tensor([[0.1, 0.1, 0.8], [0.675, 0.325, 0.0]])), got
 
 
 if __name__ == "__main__":
