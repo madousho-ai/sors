@@ -15,11 +15,11 @@ from dataclasses import asdict, dataclass
 import torch
 
 from decidophobia.batch import collate, pair_alignment
-from decidophobia.data import MenuExample
+from decidophobia.data import MenuExample, arrangements
 from decidophobia.loss import (answer_mass, consistency_js, gather_slot_logits, smooth_target, training_loss,
                                vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
-                                  summarize)
+                                  pass_consistency, summarize)
 from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
@@ -44,6 +44,8 @@ class TrainConfig:
     label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
     consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (data.with_partners)
     eval_every: int = 100
+    probe_size: int = 200  # 训练中的评估点每个评估集抽几道题, 见 probe_passes
+    probe_passes: int = 5  # 每道题排成几种随机的样子 (行打乱、码随机), 训练中与最后一步都用这个数
     log_every: int = 20
     seed: int = 0
 
@@ -115,6 +117,43 @@ def scalar_items(prefix: str, d: dict) -> list[tuple[str, float]]:
     return out
 
 
+def probe_passes(examples: list[MenuExample], size: int, passes: int, key: str) -> list[list[MenuExample]]:
+    """训练中每个评估点都用的那一套: 抽 size 道 (不够就全部, 顺序照旧), 排成 passes 种随机的样子
+    (data.arrangements: 行打乱、码随机). 全由 key 定死, 整场训练每个评估点比的都是同一批题、同样的排法,
+    曲线上两点的差别只来自模型. 用自己的 rng, 不动训练抽题的那一个."""
+    rng = random.Random(key)
+    if len(examples) > size:
+        examples = [examples[i] for i in sorted(rng.sample(range(len(examples)), size))]
+    return arrangements(examples, passes, rng)
+
+
+def consistency_eval(m, tok, d_ids, passes: list[list[MenuExample]], batch_size: int, k_max: int, max_length: int,
+                     layout: str, type_marker: bool = False) -> dict:
+    """每一份各打一次分, 再按描述对齐比 (metrics.pass_consistency): accuracy / agree / js."""
+    qs = [score_examples(m, tok, d_ids, exs, batch_size, k_max, max_length, layout, type_marker)["q"] for exs in passes]
+    return pass_consistency(qs, passes)
+
+
+def eval_record(m, tok, d_ids, eval_sets: dict[str, EvalSet], probes: dict[str, list[list[MenuExample]]],
+                cfg: TrainConfig, final: bool) -> dict:
+    """一个评估点的读数, 按评估集名分:
+      consistency       探针子集 (probe_passes) 上的一致性. 每个评估点都有
+      final=True 时再加两样, 都用全量评估集:
+      eval              部署形态 (连续编号) 下的 evaluate(): 正确率、NLL、校准等
+      consistency_full  cfg.probe_passes 种随机排法下的一致性, 排法由 seed 和集名定死"""
+    args = (cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker)
+    rec = {"consistency": {name: consistency_eval(m, tok, d_ids, probes[name], es.batch_size, *args)
+                           for name, es in eval_sets.items()}}
+    if final:
+        rec["eval"] = {name: evaluate(m, tok, d_ids, es, *args) for name, es in eval_sets.items()}
+        rec["consistency_full"] = {
+            name: consistency_eval(m, tok, d_ids, arrangements(es.examples, cfg.probe_passes,
+                                                               random.Random(f"full-{cfg.seed}-{name}")),
+                                   es.batch_size, *args)
+            for name, es in eval_sets.items()}
+    return rec
+
+
 def step_target(exs: list[MenuExample], b: dict, eps: float) -> torch.Tensor | None:
     """一步训练用的目标分布. 全是硬标签且不平滑时返回 None, 损失照旧只认 gold (旧 run 逐位复现);
     否则是 collate 给的 target (硬标签那几行是 one-hot), 再按 eps 在各自菜单上平滑."""
@@ -143,12 +182,18 @@ def train(
     m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
     cfg: TrainConfig, log_path=None, writer=None, guard=None,
 ) -> list[dict]:
-    """跑 cfg.steps 步 (0 = 只做 step 0 的评估). 返回评估记录. 每条记录也追加写到 log_path.
+    """跑 cfg.steps 步 (0 = 只评估). 返回评估记录. 每条记录也追加写到 log_path.
 
-    writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量分三组:
+    评估点是 step 0 与每 eval_every 步, 以及最后一步. 每个评估点都跑探针 (eval_record 的 consistency):
+    每个评估集固定抽 cfg.probe_size 道, 固定 cfg.probe_passes 种随机排法. 最后一步 (steps 0 时就是 step 0)
+    再跑全量的 eval 与 consistency_full.
+
+    writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量:
       train/loss, train/lr_*        每 log_every 步. train/loss 只是交叉熵, 与加一致性项之前的 run 同一个量
       train/js                      cfg.consistency > 0 时, 成对题的 JS (乘 λ 之前)
-      eval/<set>/<metric>           每次评估
+      consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
+      eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
+      consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
       sys/tctl_c, sys/thermal_waits 温度与被温度闸拦下的次数
     guard: ThermalGuard, 可选. 每步之前和每次评估之前各问一次.
     """
@@ -157,22 +202,24 @@ def train(
     history: list[dict] = []
     log_f = open(log_path, "a") if log_path else None
     waits = 0
+    probes = {name: probe_passes(es.examples, cfg.probe_size, cfg.probe_passes, f"probe-{cfg.seed}-{name}")
+              for name, es in eval_sets.items()}
 
     def tctl() -> float | None:
         return guard.read() if guard else None
 
-    def do_eval(step: int, train_loss: float | None):
+    def do_eval(step: int, train_loss: float | None, final: bool):
         nonlocal waits
         if guard:
             waits += guard.wait()
         rec = {"step": step, "train_loss": train_loss, "t": round(time.time() - t0, 1),
                "tctl_c": tctl(), "thermal_waits": waits}
-        for name, es in eval_sets.items():
-            rec[name] = evaluate(m, tok, d_ids, es, cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker)
-            if writer:
-                for tag, v in scalar_items(f"eval/{name}", rec[name]):
-                    writer.add_scalar(tag, v, step)
+        rec.update(eval_record(m, tok, d_ids, eval_sets, probes, cfg, final))
         if writer:
+            for group in ("consistency", "eval", "consistency_full"):
+                for name, r in rec.get(group, {}).items():
+                    for tag, v in scalar_items(f"{group}/{name}", r):
+                        writer.add_scalar(tag, v, step)
             if rec["tctl_c"] is not None:
                 writer.add_scalar("sys/tctl_c", rec["tctl_c"], step)
             writer.add_scalar("sys/thermal_waits", waits, step)
@@ -186,7 +233,7 @@ def train(
 
     t0 = time.time()
     m.train()
-    do_eval(0, None)
+    do_eval(0, None, final=cfg.steps == 0)
     if cfg.steps == 0:
         if log_f:
             log_f.close()
@@ -230,7 +277,7 @@ def train(
                     writer.add_scalar("sys/tctl_c", t, step)
             running, running_js = 0.0, 0.0
         if step % cfg.eval_every == 0 or step == cfg.steps:
-            do_eval(step, ce.item())
+            do_eval(step, ce.item(), final=step == cfg.steps)
     if log_f:
         log_f.close()
     return history

@@ -9,13 +9,14 @@ import torch
 
 from _runner import run
 from decidophobia.batch import collate, pair_alignment
-from decidophobia.data import MenuExample, with_partners
+from decidophobia.data import MenuExample, arrangements, with_partners
 from decidophobia.loss import consistency_js, training_loss
-from decidophobia.metrics import first_two_slots
+from decidophobia.metrics import first_two_slots, pass_consistency
 from decidophobia.model import last_logits, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, TrainConfig, evaluate, score_examples, step_loss, step_target
+from decidophobia.train import (EvalSet, TrainConfig, consistency_eval, eval_record, evaluate, probe_passes,
+                                score_examples, step_loss, step_target)
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -131,6 +132,53 @@ def test_step_loss_with_consistency_refuses_a_batch_that_is_not_in_pairs():
     except ValueError:
         return
     raise AssertionError("two different questions were paired")
+
+
+def _questions(n):
+    names = ["change pin", "top up", "card lost", "refund"]
+    return [MenuExample(query=f"message {i}", options=[0, 1, 2], gold_idx=i % 3, label=i % 3, option_names=names[:3])
+            for i in range(n)]
+
+
+def test_probe_passes_are_a_fixed_subset_in_fixed_random_arrangements():
+    """从评估集里抽 size 道 (够不上就全部, 顺序照旧), 排成 passes 种随机的样子; 同一个 key 永远给同一套,
+    于是整场训练每个评估点比的都是同一批题、同样的排法."""
+    exs = _questions(10)
+    got = probe_passes(exs, 4, 5, "probe-0-banking77")
+    assert len(got) == 5 and all(len(p) == 4 for p in got)
+    assert all(p[i].query == got[0][i].query for p in got for i in range(4))
+    assert got == probe_passes(exs, 4, 5, "probe-0-banking77")
+    assert got != probe_passes(exs, 4, 5, "probe-0-massive")
+    everything = probe_passes(exs[:3], 4, 2, "k")
+    assert [e.query for e in everything[0]] == [e.query for e in exs[:3]]
+
+
+def test_consistency_eval_scores_each_pass_and_compares_them_by_description():
+    tok, d_ids, m = _tiny()
+    passes = arrangements(_questions(3), 3, random.Random(0))
+    got = consistency_eval(m, tok, d_ids, passes, batch_size=2, k_max=3, max_length=512, layout=DEFAULT_LAYOUT)
+    qs = [score_examples(m, tok, d_ids, p, 2, 3, 512, DEFAULT_LAYOUT)["q"] for p in passes]
+    want = pass_consistency(qs, passes)
+    assert got.keys() == want.keys() and got["n"] == 3 and got["passes"] == 3, got
+    assert all(abs(got[k] - want[k]) < 1e-6 for k in want), (got, want)
+
+
+def test_eval_record_reports_only_probe_consistency_until_the_final_step():
+    """训练中的评估点只报探针子集上的一致性 (accuracy / agree / js). 最后一步再加全量评估集的两样:
+    eval 是部署形态 (连续编号) 下原来那套正确率指标, consistency_full 是全量题的同一种一致性."""
+    tok, d_ids, m = _tiny()
+    binary = [MenuExample(query=f"passage {i}", options=[0, 1], gold_idx=i % 2, label=i % 2, option_names=["no", "yes"],
+                          qtype="bool") for i in range(4)]
+    eval_sets = {"intents": EvalSet(_questions(5), batch_size=4), "boolq": EvalSet(binary, batch_size=4, pos_class=1)}
+    cfg = TrainConfig(k_max=3, max_length=512, probe_size=2, probe_passes=3)
+    probes = {name: probe_passes(es.examples, cfg.probe_size, cfg.probe_passes, name) for name, es in eval_sets.items()}
+    mid = eval_record(m, tok, d_ids, eval_sets, probes, cfg, final=False)
+    assert mid.keys() == {"consistency"}, mid.keys()
+    assert {name: (r["n"], r["passes"]) for name, r in mid["consistency"].items()} == {"intents": (2, 3), "boolq": (2, 3)}
+    end = eval_record(m, tok, d_ids, eval_sets, probes, cfg, final=True)
+    assert end.keys() == {"consistency", "eval", "consistency_full"}, end.keys()
+    assert end["eval"]["intents"]["n"] == 5 and "auroc" in end["eval"]["boolq"]
+    assert {name: r["n"] for name, r in end["consistency_full"].items()} == {"intents": 5, "boolq": 4}
 
 
 if __name__ == "__main__":
