@@ -350,5 +350,29 @@ def test_run_tag_names_rank_and_alpha_only_when_they_leave_8_and_16():
     assert tag("--trainable", "d-only") == "-kfull256-vocab"
 
 
+def test_save_every_defaults_to_every_eval_point():
+    """不给 --save-every 时每个评估点存一次, 与 --eval-every 同步; 给了就照给的步数, 0 = 途中不存."""
+    p = _mod.build_parser()
+    assert _mod.resolve_save_every(p.parse_args(["--eval-every", "250"])) == 250
+    assert _mod.resolve_save_every(p.parse_args(["--eval-every", "250", "--save-every", "100"])) == 100
+    assert _mod.resolve_save_every(p.parse_args(["--save-every", "0"])) == 0
+
+
+def test_save_every_rejects_a_negative_step_count():
+    try:
+        _mod.resolve_save_every(_mod.build_parser().parse_args(["--save-every", "-1"]))
+    except SystemExit:
+        return
+    raise AssertionError("--save-every -1 accepted")
+
+
+def test_checkpoint_path_sorts_by_step():
+    """途中的档放在 checkpoints/ 下, 步数补零, ls 出来就是训练顺序."""
+    out = pathlib.Path("runs/x")
+    assert _mod.checkpoint_path(out, 250) == out / "checkpoints" / "step-00250.safetensors"
+    assert sorted([_mod.checkpoint_path(out, s) for s in (1000, 250, 500)]) \
+        == [_mod.checkpoint_path(out, s) for s in (250, 500, 1000)]
+
+
 if __name__ == "__main__":
     run(globals())

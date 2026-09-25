@@ -44,6 +44,7 @@ class TrainConfig:
     label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
     consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (data.with_partners)
     eval_every: int = 100
+    save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
     probe_size: int = 200  # 训练中的评估点每个评估集抽几道题, 见 probe_passes
     probe_passes: int = 5  # 每道题排成几种随机的样子 (行打乱、码随机), 训练中与最后一步都用这个数
     log_every: int = 20
@@ -180,13 +181,16 @@ def step_loss(
 
 def train(
     m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
-    cfg: TrainConfig, log_path=None, writer=None, guard=None,
+    cfg: TrainConfig, log_path=None, writer=None, guard=None, on_checkpoint: Callable[[int], None] | None = None,
 ) -> list[dict]:
     """跑 cfg.steps 步 (0 = 只评估). 返回评估记录. 每条记录也追加写到 log_path.
 
     评估点是 step 0 与每 eval_every 步, 以及最后一步. 每个评估点都跑探针 (eval_record 的 consistency):
     每个评估集固定抽 cfg.probe_size 道, 固定 cfg.probe_passes 种随机排法. 最后一步 (steps 0 时就是 step 0)
     再跑全量的 eval 与 consistency_full.
+
+    on_checkpoint(step): cfg.save_every > 0 时, 每 save_every 步做完 (同一步有评估就在评估之后) 叫一次,
+    由调用方把 m 存下来. 最后一步不叫, 训练结束后调用方本来就存.
 
     writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量:
       train/loss, train/lr_*        每 log_every 步. train/loss 只是交叉熵, 与加一致性项之前的 run 同一个量
@@ -246,12 +250,13 @@ def train(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )
     running, running_js = 0.0, 0.0
+    dev = next(m.parameters()).device
     for step in range(1, cfg.steps + 1):
         if guard:
             waits += guard.wait()
         exs = sample_fn(cfg.batch_size, rng)
         b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
-        b = {k: v.to("cuda") for k, v in b.items()}
+        b = {k: v.to(dev) for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
         opt.zero_grad(set_to_none=True)
@@ -278,6 +283,8 @@ def train(
             running, running_js = 0.0, 0.0
         if step % cfg.eval_every == 0 or step == cfg.steps:
             do_eval(step, ce.item(), final=step == cfg.steps)
+        if on_checkpoint and cfg.save_every > 0 and step % cfg.save_every == 0 and step < cfg.steps:
+            on_checkpoint(step)
     if log_f:
         log_f.close()
     return history

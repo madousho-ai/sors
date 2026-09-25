@@ -1,4 +1,4 @@
-"""train.save_trained / load_trained 的测试. 用一个假模型, 不碰 GPU.
+"""train.save_trained / load_trained 的测试, 以及 train() 训练途中什么时候交出存档. 用假模型或一层的随机 Qwen3, 不碰 GPU.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_checkpoint.py
 """
@@ -11,8 +11,10 @@ import torch
 from torch import nn
 
 from _runner import run
+from decidophobia.data import MenuExample
 from decidophobia.model import adapter_config
-from decidophobia.train import TrainConfig, checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
+from decidophobia.train import (TrainConfig, checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained,
+                                train)
 
 
 class _Emb(nn.Module):
@@ -187,6 +189,35 @@ def test_load_trained_rejects_checkpoint_with_more_rows_than_the_model():
     except ValueError:
         return
     raise AssertionError("档比模型多行却没有报错")
+
+
+class _Tok:
+    """collate 只用到 encode 与 pad_token_id. 字符映射进 1..39, 不撞 TINY_IDS 的 D 行."""
+
+    pad_token_id = 0
+
+    def encode(self, text, add_special_tokens=False):
+        return [1 + ord(c) % 39 for c in text]
+
+
+_EX = MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0, option_names=["card lost", "change pin"])
+
+
+def _train_tiny(**cfg) -> list[int]:
+    """_tiny 在 CPU 上真跑 train(), 返回 on_checkpoint 被叫到的那些步."""
+    saved = []
+    train(_tiny(), _Tok(), TINY_IDS, lambda n, rng: [_EX] * n, {},
+          TrainConfig(batch_size=1, k_max=2, eval_every=100, log_every=100, **cfg), on_checkpoint=saved.append)
+    return saved
+
+
+def test_train_hands_every_save_every_step_to_on_checkpoint_except_the_last():
+    """最后一步的档由调用方存成 trained.safetensors, 途中的交给 on_checkpoint, 两边不重复."""
+    assert _train_tiny(steps=6, save_every=2) == [2, 4]
+
+
+def test_train_with_save_every_0_saves_nothing_along_the_way():
+    assert _train_tiny(steps=3, save_every=0) == []
 
 
 if __name__ == "__main__":

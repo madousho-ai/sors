@@ -28,6 +28,7 @@
   result.json   配置 + 类切分 + 全部评估记录
   trained.safetensors  LoRA 权重 + D 行嵌入, 元数据里记 d_ids / 训练 config / LoRA 形状 (--steps 0 时不写, 保住 --init 那份).
                 旧 run 的 trained.pt 仍能给 --init
+  checkpoints/step-<步数>.safetensors  训练途中的档, 格式同上, 每 --save-every 步一份 (默认跟 --eval-every 走), 最后一步不在这里
   tb/           TensorBoard 事件
 """
 
@@ -239,6 +240,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--held-out", type=int, default=17, help="Banking77 留出的类数, 训练里完全不出现")
     ap.add_argument("--eval-every", type=int, default=100,
                     help="每隔几步跑一次探针: 只报一致性. 全量评估集的正确率与一致性只在最后一步跑")
+    ap.add_argument("--save-every", type=int, default=None,
+                    help="每隔几步存一次档到 checkpoints/step-<步数>.safetensors. 不给 = 与 --eval-every 相同, "
+                         "每个评估点存一次; 0 = 途中不存. 最后一步照旧只存 trained.safetensors")
     ap.add_argument("--probe-size", type=int, default=200,
                     help="探针: 每个评估集固定抽几道题 (不够就全部), 整场训练每个评估点都是这一批")
     ap.add_argument("--probe-passes", type=int, default=5,
@@ -287,6 +291,20 @@ def resolve_adapter(args) -> dict:
     return {"trainable": trainable, "lora_r": given["lora_r"] or 8, "lora_alpha": given["lora_alpha"] or 16}
 
 
+def resolve_save_every(args) -> int:
+    """途中每隔几步存一次档. 不给 --save-every 就跟 --eval-every 走, 每个评估点一份; 0 = 途中不存."""
+    if args.save_every is None:
+        return args.eval_every
+    if args.save_every < 0:
+        raise SystemExit(f"--save-every is a step count, >= 0 (0 = no checkpoints along the way); got {args.save_every}")
+    return args.save_every
+
+
+def checkpoint_path(out: pathlib.Path, step: int) -> pathlib.Path:
+    """途中那些档的位置. 步数补到 5 位, 按文件名排就是训练顺序."""
+    return out / "checkpoints" / f"step-{step:05d}.safetensors"
+
+
 def run_tag(args) -> str:
     """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现.
     rank / alpha 离开 8 / 16 才写, 旧 run 全是 8 / 16."""
@@ -304,6 +322,7 @@ def run_tag(args) -> str:
 def main() -> None:
     args = build_parser().parse_args()
     vars(args).update(resolve_adapter(args))  # 之后目录名、prepare_model、result.json 读的都是同一个形状
+    args.save_every = resolve_save_every(args)
     datasets = parse_datasets(args.dataset)
 
     tag = run_tag(args)
@@ -327,7 +346,8 @@ def main() -> None:
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
-        eval_every=args.eval_every, probe_size=args.probe_size, probe_passes=args.probe_passes, seed=args.seed,
+        eval_every=args.eval_every, save_every=args.save_every, probe_size=args.probe_size,
+        probe_passes=args.probe_passes, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
@@ -339,7 +359,14 @@ def main() -> None:
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)
-    history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard)
+    def save_checkpoint(step: int) -> None:
+        path = checkpoint_path(out, step)
+        path.parent.mkdir(exist_ok=True)
+        save_trained(m, train_ids, cfg, path)
+        print(f"step {step:5d}  saved {path}", flush=True)
+
+    history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard,
+                    on_checkpoint=save_checkpoint)
     writer.close()
     if args.steps > 0:
         save_trained(m, train_ids, cfg, out / "trained.safetensors")
