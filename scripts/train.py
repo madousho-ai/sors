@@ -39,7 +39,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.data import RandomCodes, class_split, menu_k_range
+from decidophobia.data import RandomCodes, class_split, menu_k_range, with_partners
 from decidophobia.loss import LOSSES
 from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
@@ -117,6 +117,8 @@ def build_data(args):
     if not 0.0 <= args.label_smoothing < 1.0:
         raise SystemExit(f"--label-smoothing is the share of the target spread over the menu, 0..1; "
                          f"got {args.label_smoothing}")
+    if args.consistency < 0:
+        raise SystemExit(f"--consistency is the weight of the JS term, >= 0; got {args.consistency}")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -176,12 +178,15 @@ def build_data(args):
     random_codes = RandomCodes(args.random_codes)  # 一个 run 一个: 它记着每个码上过几次菜单
 
     def sample_fn(n, rng):
-        """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱. --random-codes 只作用在这里:
+        """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱. --consistency > 0 时每道题后面紧跟它的另一种排法,
+        一批 2n 条. --random-codes 只作用在这里, 两种排法各换各的码:
         评估集始终按位置编号 D0, D1, ..., 与部署时调用方写的菜单同形."""
         parts = [n // len(samplers)] * len(samplers)
         parts[0] += n - sum(parts)
         out = [ex for s, c in zip(samplers, parts) for ex in s(c, rng)]
         rng.shuffle(out)
+        if args.consistency > 0:
+            out = with_partners(out, rng)
         return random_codes(out, rng)
 
     return sample_fn, eval_sets, split_info
@@ -240,6 +245,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--label-smoothing", type=float, default=0.0,
                     help="标签平滑 (0..1): 训练目标里这一份均摊到这道题菜单的每一行, 硬标签与软标签都摊; "
                          "菜单外的 D 码和其余 token 不分. 0 = 不平滑, 全是硬标签时与旧 run 逐位相同")
+    ap.add_argument("--consistency", type=float, default=0.0,
+                    help="一致性项的权重 λ (>= 0): 每道训练题在同一批里再出一份, 行序重新打乱 (两项就是对调), "
+                         "两份的菜单分布按描述对齐后求 Jensen-Shannon 散度, 损失 = 交叉熵 + λ · JS. "
+                         "--batch-size 仍是每步几道题, 一步因此是两倍的 prompt. 0 = 不配对 (旧行为)")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")
     ap.add_argument("--seed", type=int, default=0)
@@ -274,6 +283,7 @@ def run_tag(args) -> str:
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
         + (f"-ls{args.label_smoothing:g}" if args.label_smoothing > 0 else "") \
+        + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")
 
 
@@ -302,7 +312,8 @@ def main() -> None:
         steps=args.steps, batch_size=args.batch_size, k_max=k_pad, max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
-        loss=args.loss, label_smoothing=args.label_smoothing, eval_every=args.eval_every, seed=args.seed,
+        loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
+        eval_every=args.eval_every, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
@@ -310,6 +321,7 @@ def main() -> None:
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
     print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} loss={args.loss} "
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
+          f"consistency={args.consistency:g} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)

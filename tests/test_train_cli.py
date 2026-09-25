@@ -11,6 +11,7 @@ import pathlib
 import random
 
 from _runner import run
+from decidophobia.data import row_alignment
 from decidophobia.label_names import DESC_DIR
 from decidophobia.simple_eval import load_simple_eval
 from decidophobia.synth import load_synth
@@ -24,7 +25,7 @@ _spec.loader.exec_module(_mod)
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
-                eval="banking77+massive+boolq")
+                consistency=0.0, eval="banking77+massive+boolq")
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -226,6 +227,44 @@ def test_random_codes_rejects_a_rate_outside_zero_to_one():
     except SystemExit:
         return
     raise AssertionError("--random-codes 1.5 accepted")
+
+
+def test_consistency_defaults_to_zero_and_is_named_in_the_run_directory():
+    p = _mod.build_parser()
+    assert p.parse_args([]).consistency == 0.0
+    args = p.parse_args(["--consistency", "1", "--label-smoothing", "0.1"])
+    vars(args).update(_mod.resolve_adapter(args))
+    assert _mod.run_tag(args) == "-kfull256-ls0.1-js1-vocab"
+
+
+def test_consistency_below_zero_is_refused():
+    try:
+        _mod.build_data(_args("boolq", consistency=-0.5))
+    except SystemExit:
+        return
+    raise AssertionError("--consistency -0.5 accepted")
+
+
+def test_consistency_gives_every_question_a_partner_in_another_row_order():
+    """--consistency > 0: sample_fn(9) 给 9 道题各两份, 共 18 条, 同一道题的两份挨着 (2i, 2i+1).
+    菜单题、二元题、v3 都配对; 两份上下文、问句、选项集合相同, 行序不同. --random-codes 1 下两份选择题各换各的码,
+    二元题仍是 D0 / D1."""
+    sample_fn, _, _ = _mod.build_data(_args("synth+synth-v3", consistency=1.0, random_codes=1.0, eval="massive"))
+    rng = random.Random(0)
+    kinds = collections.Counter()
+    for _ in range(30):
+        batch = sample_fn(9, rng)
+        assert len(batch) == 18
+        for a, b in zip(batch[0::2], batch[1::2]):
+            assert (a.query, a.question, a.context_label, a.qtype) == (b.query, b.question, b.context_label, b.qtype)
+            assert sorted(a.options) == sorted(b.options) and a.options != b.options
+            assert [b.options[j] for j in row_alignment(a, b)] == a.options
+            if a.qtype == "choice":
+                assert a.codes is not None and b.codes is not None
+            else:
+                assert a.codes is None and b.codes is None
+            kinds["v3" if a.context_label != "Customer message" else len(a.options)] += 1
+    assert kinds[256] == kinds[2] == kinds["v3"] == 90, kinds
 
 
 def test_loss_defaults_to_the_whole_vocabulary():
