@@ -7,8 +7,9 @@ import random
 from dataclasses import replace
 
 from _runner import run
-from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range,
-                               random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows)
+from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range, partner,
+                               random_rows, reassigned_codes, reorder_menu, row_alignment, shuffled_rows, top_rows,
+                               with_partners)
 from decidophobia.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
@@ -354,6 +355,69 @@ def test_top_rows_keep_the_gold_and_the_highest_scoring_other_rows():
     """分数 [.1 .5 .05 .3 .05], 正确的是第 2 行: 留它加分数最高的两个其它行 (1、3), 按原顺序."""
     assert top_rows([0.1, 0.5, 0.05, 0.3, 0.05], gold_idx=2, n=3) == [1, 2, 3]
     assert top_rows([0.1, 0.5, 0.05, 0.3, 0.05], gold_idx=1, n=2) == [1, 3], "正确那行分最高时不重复计入"
+
+
+# --------------------------------------------------------------------------
+# 一致性配对: 同一道题的第二种排法, 两份按描述对齐
+# --------------------------------------------------------------------------
+
+
+def test_partner_is_the_same_question_in_a_different_row_order_numbered_d0_upwards():
+    """第二份与原题的上下文、问句、选项集合都相同, 行序一定不同 (1/k! 的概率撞上原顺序也要换掉), 连续编号."""
+    rng = random.Random(0)
+    for k in (3, 4, 5):
+        base = reorder_menu(_menu5(), list(range(k)))  # 前 k 行, 正确的第 2 行在内
+        for _ in range(300):
+            p = partner(replace(base, question="which?"), rng)
+            assert p.options != base.options and sorted(p.options) == sorted(base.options), p.options
+            assert p.query == base.query and p.question == "which?" and p.codes is None
+            assert p.options[p.gold_idx] == p.label == base.label
+
+
+def test_partner_of_a_two_option_menu_swaps_the_rows():
+    rng = random.Random(0)
+    ex = _ex(options=(0, 1), gold_idx=1, qtype="bool")
+    assert all(partner(ex, rng).options == [1, 0] for _ in range(20))
+
+
+def test_partner_carries_the_soft_target_with_its_rows():
+    e = replace(_menu5(), target=[0.1, 0.2, 0.4, 0.2, 0.1])
+    p = partner(e, random.Random(3))
+    assert dict(zip(p.options, p.target)) == dict(zip(e.options, e.target))
+
+
+def test_partner_refuses_a_one_option_menu():
+    try:
+        partner(_ex(options=(4,), gold_idx=0), random.Random(0))
+    except ValueError:
+        return
+    raise AssertionError("a one-option menu has no second order")
+
+
+def test_with_partners_puts_each_questions_partner_right_after_it():
+    exs = [_menu5(), _ex(options=(0, 1), gold_idx=0), replace(_menu5(), query="other")]
+    got = with_partners(exs, random.Random(0))
+    assert len(got) == 6 and got[0::2] == exs
+    assert all(b.query == a.query and sorted(b.options) == sorted(a.options) and b.options != a.options
+               for a, b in zip(got[0::2], got[1::2]))
+
+
+def test_row_alignment_finds_each_row_of_the_first_menu_on_the_second():
+    """a 第 j 行的描述在 b 的第 row_alignment(a, b)[j] 行; 码怎么编不影响, 按描述 (类 id) 对齐."""
+    a = _menu5()  # 10 11 12 13 14
+    b = reorder_menu(a, [4, 2, 0, 1, 3], codes=[9, 200, 3, 40, 77])  # 14 12 10 11 13
+    assert row_alignment(a, b) == [2, 3, 1, 4, 0]
+    assert [b.options[j] for j in row_alignment(a, b)] == a.options
+
+
+def test_row_alignment_refuses_two_different_questions():
+    a = _menu5()
+    for b in (reorder_menu(a, [0, 1, 2]), replace(a, query="another message"), replace(a, question="another?")):
+        try:
+            row_alignment(a, b)
+        except ValueError:
+            continue
+        raise AssertionError(f"paired {a} with {b}")
 
 
 def test_context_first_puts_query_before_menu_and_splits_at_the_newline():

@@ -169,6 +169,38 @@ def top_rows(scores: list[float], gold_idx: int, n: int) -> list[int]:
     return sorted(others[: n - 1] + [gold_idx])
 
 
+# 一致性配对 (TrainConfig.consistency): 同一道题在一个 batch 里出两份, 只有行序不同.
+# 两份的菜单分布按描述对齐后应当相同, 训练时用 Jensen-Shannon 散度把它们拉到一起 (loss.consistency_js).
+
+
+def partner(ex: MenuExample, rng: random.Random) -> MenuExample:
+    """同一道题的另一种排法: 行重新随机打乱, 与 ex 的顺序一定不同 (两项菜单就是对调), 连续编号 D0, D1, ...
+    上下文、问句、软标签都跟着原题走. 码要换成随机码的话, 由之后的 RandomCodes 给."""
+    k = len(ex.options)
+    if k < 2:
+        raise ValueError(f"a {k}-option menu has no second row order")
+    rows = list(range(k))
+    while rows == list(range(k)):
+        rows = rng.sample(range(k), k)
+    return reorder_menu(ex, rows)
+
+
+def with_partners(examples: list[MenuExample], rng: random.Random) -> list[MenuExample]:
+    """每道题后面紧跟它的 partner: [a0, a0', a1, a1', ...]. 训练按相邻两条 (2i, 2i+1) 配对."""
+    return [x for ex in examples for x in (ex, partner(ex, rng))]
+
+
+def row_alignment(a: MenuExample, b: MenuExample) -> list[int]:
+    """a 菜单第 j 行的描述在 b 菜单的第几行. 按描述 (options 里的类 id) 对齐, 与码无关.
+    两份必须是同一道题: 上下文、问句、选项集合都相同."""
+    same = (a.query, a.question, a.context_label, sorted(a.options)) == (b.query, b.question, b.context_label,
+                                                                       sorted(b.options))
+    if not same or len(set(a.options)) != len(a.options):
+        raise ValueError("row_alignment needs two orders of the same question with distinct options")
+    where = {c: j for j, c in enumerate(b.options)}
+    return [where[c] for c in a.options]
+
+
 @dataclass(frozen=True)
 class LabeledSet:
     queries: list[str]
