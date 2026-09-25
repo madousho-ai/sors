@@ -42,6 +42,7 @@ class MenuExample:
     question: str | None = None  # 这条样本的问句; None 表示数据集用固定的默认问句
     qtype: str = "choice"  # choice | bool | score, 见 tokens.QTYPES
     codes: list[int] | None = None  # 与 options 平行, 第 i 项绑 <|D{codes[i]}|>; None = 按位置 D0, D1, ...
+    target: list[float] | None = None  # 与 options 平行, 各行的目标概率 (软标签); None = 只认 gold_idx 那一行
 
     def __post_init__(self):
         # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.
@@ -52,6 +53,10 @@ class MenuExample:
             c = self.codes
             if len(c) != len(self.options) or len(set(c)) != len(c) or not all(0 <= x < N_SLOTS for x in c):
                 raise ValueError(f"codes must be {len(self.options)} distinct slots in 0..{N_SLOTS - 1}, got {c}")
+        if self.target is not None:
+            t = self.target
+            if len(t) != len(self.options) or min(t) < 0 or abs(sum(t) - 1) > 1e-6:
+                raise ValueError(f"target must be {len(self.options)} non-negative probabilities summing to 1, got {t}")
 
     @property
     def slot_codes(self) -> list[int]:
@@ -126,13 +131,17 @@ class RandomCodes:
 
 def reorder_menu(ex: MenuExample, rows: list[int], codes: list[int] | None = None) -> MenuExample:
     """按 rows (原菜单的行号, 顺序即新顺序) 重排或取子集; 正确那一行必须在其中, gold_idx 跟到它的新位置.
-    codes 给新菜单每一行绑的码, None = 连续编号 D0, D1, ..."""
+    codes 给新菜单每一行绑的码, None = 连续编号 D0, D1, ... 有软标签时各行的目标概率跟着行走, 取子集就在留下的行上重新归一."""
     if len(set(rows)) != len(rows) or not all(0 <= r < len(ex.options) for r in rows):
         raise ValueError(f"rows must be distinct rows of a {len(ex.options)}-option menu, got {rows}")
     if ex.gold_idx not in rows:
         raise ValueError(f"the gold row {ex.gold_idx} must stay on the menu")
+    target = None
+    if ex.target is not None:
+        kept = [ex.target[r] for r in rows]
+        target = [x / sum(kept) for x in kept]
     return replace(ex, options=[ex.options[r] for r in rows], option_names=[ex.option_names[r] for r in rows],
-                   gold_idx=rows.index(ex.gold_idx), codes=codes)
+                   gold_idx=rows.index(ex.gold_idx), codes=codes, target=target)
 
 
 def shuffled_rows(ex: MenuExample, rng: random.Random, keep_codes: bool) -> MenuExample:

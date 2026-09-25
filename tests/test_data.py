@@ -4,6 +4,7 @@
 """
 
 import random
+from dataclasses import replace
 
 from _runner import run
 from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, class_split, compose_menu, menu_k_range,
@@ -78,6 +79,20 @@ def test_menu_example_accepts_256_options_and_rejects_257():
     except ValueError:
         return
     raise AssertionError("257 options, expected ValueError")
+
+
+def test_menu_example_target_is_a_distribution_over_its_own_menu():
+    """target 与 options 平行, 是菜单各行的目标概率 (软标签); None = 只认 gold 那一行.
+    长度与菜单不符、有负数、加起来不是 1, 都在造样本的当下报错."""
+    e = _ex(options=(0, 1, 2), gold_idx=1, target=[0.2, 0.5, 0.3])
+    assert e.target == [0.2, 0.5, 0.3]
+    assert _ex(options=(0, 1)).target is None
+    for bad in ([0.5, 0.5], [1.2, -0.1, -0.1], [0.2, 0.2, 0.2]):
+        try:
+            _ex(options=(0, 1, 2), gold_idx=1, target=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"target {bad} accepted for a 3-option menu")
 
 
 def test_pipeline_that_emits_a_menu_over_256_fails_while_sampling():
@@ -285,6 +300,15 @@ def test_reorder_menu_moves_each_description_with_its_name_and_the_gold_follows(
 def test_reorder_menu_keeps_a_subset_and_binds_the_given_codes():
     e = reorder_menu(_menu5(), [1, 2, 4], codes=[200, 7, 31])
     assert e.options == [11, 12, 14] and e.gold_idx == 1 and e.slot_codes == [200, 7, 31]
+
+
+def test_reorder_menu_carries_the_target_with_its_rows_and_renormalises_a_subset():
+    """带软标签的题换行时, 每行的目标概率跟着它的描述走; 取子集时在留下的行上重新归一."""
+    e = replace(_menu5(), target=[0.1, 0.2, 0.4, 0.2, 0.1])
+    assert reorder_menu(e, [4, 2, 0, 1, 3]).target == [0.1, 0.4, 0.1, 0.2, 0.2]
+    s = reorder_menu(e, [1, 2])
+    assert all(abs(a - b) < 1e-12 for a, b in zip(s.target, [1 / 3, 2 / 3])), s.target
+    assert reorder_menu(_menu5(), [1, 2]).target is None
 
 
 def test_reorder_menu_refuses_to_drop_the_gold_row_or_repeat_a_row():
