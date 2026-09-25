@@ -13,7 +13,7 @@ from decidophobia.data import MenuExample, reorder_menu
 from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, slot_cross_entropy,
                                smooth_target, training_loss, vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
-                                  first_two_slots, menu_size_summary, nll_multiclass, topk_accuracy)
+                                  first_two_slots, menu_size_summary, nll_multiclass, pass_consistency, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
 from decidophobia.train import scalar_items
 
@@ -510,6 +510,43 @@ def test_consistency_refuses_misaligned_questions():
         except ValueError:
             continue
         raise AssertionError(f"{var[0].options} accepted as a variant of {base[0].options}")
+
+
+def test_pass_consistency_reports_accuracy_agreement_and_js_across_arrangements():
+    """两道题各两种排法, 概率按位置给、菜单之外补 0.
+    题 1: [10 11 12] = (.6 .3 .1); [12 10 11] = (.25 .45 .30). 正确 10. 两份都选 10, 都对.
+          按描述对齐 (.6 .3 .1) 对 (.45 .30 .25), JS 0.0219791 (对话里手算过的那道).
+    题 2: [20 21] = (.9 .1); [21 20] = (.9 .1). 正确 21. 第一份选 20 错, 第二份选 21 对, 首选不一致.
+          对齐 (.9 .1) 对 (.1 .9), JS 0.3680642.
+    accuracy 3/4, agree 1/2, js 两题平均."""
+    p0 = [_mex([10, 11, 12], 10), _mex([20, 21], 21)]
+    p1 = [_mex([12, 10, 11], 10), _mex([21, 20], 21)]
+    qs = [[[0.6, 0.3, 0.1], [0.9, 0.1, 0.0]], [[0.25, 0.45, 0.30], [0.9, 0.1, 0.0]]]
+    got = pass_consistency(qs, [p0, p1])
+    want = {"n": 2, "passes": 2, "accuracy": 0.75, "agree": 0.5,
+            "js": (0.021979093421794056 + 0.3680642071684971) / 2}
+    assert got.keys() == want.keys(), got
+    assert all(abs(got[k] - v) < 1e-9 for k, v in want.items()), got
+
+
+def test_pass_consistency_js_over_several_passes_is_the_entropy_of_the_mean_minus_the_mean_entropy():
+    """三份各自把全部概率押在不同的描述上: 平均是均匀分布, 熵 ln 3; 每份熵 0. JS = ln 3, 首选全不一致.
+    三份相同时 JS 0、首选一致."""
+    base = _mex([10, 11, 12], 10)
+    ps = [[reorder_menu(base, rows)] for rows in ([0, 1, 2], [1, 2, 0], [2, 0, 1])]
+    split = pass_consistency([[[1.0, 0.0, 0.0]]] * 3, ps)  # 各份第 0 行分别是 10、11、12
+    assert abs(split["js"] - math.log(3)) < 1e-9 and split["agree"] == 0.0, split
+    assert abs(split["accuracy"] - 1 / 3) < 1e-9, split
+    same = pass_consistency([[[1.0, 0.0, 0.0]], [[0.0, 0.0, 1.0]], [[0.0, 1.0, 0.0]]], ps)  # 都押在 10 上
+    assert abs(same["js"]) < 1e-12 and same["agree"] == 1.0 and same["accuracy"] == 1.0, same
+
+
+def test_pass_consistency_refuses_passes_that_are_not_the_same_questions():
+    try:
+        pass_consistency([[[0.5, 0.5]], [[0.5, 0.5]]], [[_mex([10, 11], 10)], [_mex([10, 12], 10)]])
+    except ValueError:
+        return
+    raise AssertionError("two different questions were compared")
 
 
 def test_scalar_items_flattens_nested_dicts_and_skips_none():

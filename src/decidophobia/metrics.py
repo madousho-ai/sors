@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+from decidophobia.data import row_alignment
+
 NLL_EPS = 1e-12
 
 
@@ -133,6 +135,37 @@ def consistency(base_q: list[list[float]], base_exs, var_q: list[list[float]], v
     n = len(base_exs)
     return {"n": n, "n_comparable": comparable, "flip_rate": flips / comparable if comparable else None,
             "tv_mean": tv / n, "gold_logp_drift": drift / n}
+
+
+def _entropy(p: list[float]) -> float:
+    return -sum(x * math.log(x) for x in p if x > 0)
+
+
+def pass_consistency(qs: list[list[list[float]]], passes: list[list]) -> dict[str, float]:
+    """同一批题的几种排法 (data.arrangements) 放在一起比. qs[p][i] 是第 p 份第 i 道题在菜单各行上的概率 (按位置,
+    可以带菜单之外补的 0 列), passes[p][i] 是那一份的菜单. 各份按描述对齐 (data.row_alignment) 到第 0 份的顺序.
+
+      accuracy  每份每题首选是不是正确描述, 全部平均. 首选只能靠读描述选对, 压平分布或乱猜刷不出来
+      agree     各份首选都是同一条描述的题占多少
+      js        各份分布的 Jensen-Shannon 散度 H(平均分布) − 平均 H, 逐题平均. 两份时就是 loss.consistency_js,
+                0 = 排法完全不影响给每条描述的概率; 上限 ln(份数)
+    """
+    P, n = len(passes), len(passes[0])
+    correct = agree = 0
+    js = 0.0
+    for i in range(n):
+        base = passes[0][i]
+        dists, picks = [], set()
+        for p in range(P):
+            ex, q = passes[p][i], qs[p][i][: len(passes[p][i].options)]
+            top = max(range(len(q)), key=q.__getitem__)
+            correct += top == ex.gold_idx
+            picks.add(ex.options[top])
+            dists.append([q[j] for j in row_alignment(base, ex)])
+        agree += len(picks) == 1
+        mean = [sum(col) / P for col in zip(*dists)]
+        js += _entropy(mean) - sum(_entropy(d) for d in dists) / P
+    return {"n": n, "passes": P, "accuracy": correct / (n * P), "agree": agree / n, "js": js / n}
 
 
 def _percentile(xs: list[float], pct: float) -> float:
