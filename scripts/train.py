@@ -7,6 +7,9 @@
   synth       datasets/synth-intents, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
               菜单题只列正确意图所在领域的意图 (k 256 即整个领域 256 个), 二元题问消息里的一个细节 (no / yes)
   synth-menu  synth 只要菜单题, 不要二元题 (不与 synth 并用)
+  synth-v3    datasets/synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
+              每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
+              写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/synth_v3.py)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
@@ -44,7 +47,7 @@ from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, checkpoint_adapter, load_trained, save_trained, train
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "massive")
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "massive")
 KNOWN_EVAL = ("banking77", "massive", "boolq", "simple")
 
 
@@ -104,6 +107,9 @@ def build_data(args):
     datasets = parse_datasets(args.dataset)
     if not 0.0 <= args.random_codes <= 1.0:
         raise SystemExit(f"--random-codes is a share of training menus, 0..1; got {args.random_codes}")
+    if not 0.0 <= args.label_smoothing < 1.0:
+        raise SystemExit(f"--label-smoothing is the share of the target spread over the menu, 0..1; "
+                         f"got {args.label_smoothing}")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -131,6 +137,14 @@ def build_data(args):
             synth_bin = load_synth_binary()
             samplers.append(lambda n, rng: synth_bin.sample_examples([0, 1], (2, 2), n, rng))
         split_info["synth_classes"] = len(synth.names)
+    if "synth-v3" in datasets:
+        # 题自带选项, 不组菜单: 每条先挑领域 (五个领域机会均等) 再挑题, 每次换问法、重新打乱选项.
+        # --k-min / --k-max 管不到它, 菜单长度就是题的选项数.
+        from decidophobia.synth_v3 import load_synth_v3, sample_synth_v3
+
+        v3 = load_synth_v3()
+        samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
+        split_info["synth_v3_items"] = sum(len(v) for v in v3.values())
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
@@ -169,7 +183,7 @@ def build_data(args):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="synth",
-                    help="训练集, banking77 / boolq / synth / synth-menu / massive 用 + 连接; both = banking77+boolq")
+                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / massive 用 + 连接; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None, help="从这份 trained.pt 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
     ap.add_argument("--trainable", default=None, choices=sorted(LORA_TARGETS),
@@ -214,6 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="选择题里换成随机码的比例 (0..1): 挑上菜单次数最少的 k 个 D 码、顺序随机, 每个码上菜单时是答案的概率都是 1/k, "
                          "整场下来 D0..D255 当答案的次数期望相同 (60 项菜单下 rate >= 0.77 才补得齐). BoolQ 永远 D0 / D1. "
                          "0 = 全部按位置 D0, D1, ... (旧行为). 评估集不受影响")
+    ap.add_argument("--label-smoothing", type=float, default=0.0,
+                    help="标签平滑 (0..1): 训练目标里这一份均摊到这道题菜单的每一行, 硬标签与软标签都摊; "
+                         "菜单外的 D 码和其余 token 不分. 0 = 不平滑, 全是硬标签时与旧 run 逐位相同")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")
     ap.add_argument("--seed", type=int, default=0)
@@ -247,6 +264,7 @@ def run_tag(args) -> str:
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
+        + (f"-ls{args.label_smoothing:g}" if args.label_smoothing > 0 else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")
 
 
@@ -275,14 +293,14 @@ def main() -> None:
         steps=args.steps, batch_size=args.batch_size, k_max=k_pad, max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
-        loss=args.loss, eval_every=args.eval_every, seed=args.seed,
+        loss=args.loss, label_smoothing=args.label_smoothing, eval_every=args.eval_every, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
     writer.add_text("args", json.dumps(vars(args), indent=2), 0)
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
     print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} loss={args.loss} "
-          f"random_codes={args.random_codes:g} "
+          f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)

@@ -21,7 +21,7 @@ _spec.loader.exec_module(_mod)
 
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
-                eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0,
+                eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
                 eval="banking77+massive+boolq")
     base.update(kw)
     return argparse.Namespace(**base)
@@ -167,6 +167,39 @@ def test_random_codes_over_the_whole_run_answer_evenly_without_favouring_any_cod
         counts[e.slot_codes[e.gold_idx]] += 1
     lo, hi = sum(counts[:60]) / 60, sum(counts[60:]) / 196
     assert abs(lo / hi - 1) < 0.06, (lo, hi)
+
+
+def test_synth_v3_trains_its_five_domains_alongside_synth():
+    """--dataset synth+synth-v3: 一批 9 条 = synth 菜单题 3 + synth 二元题 3 + v3 3 (第一个 sampler 拿零头).
+    v3 那几条的上下文标签是各领域的 LABEL, 菜单就是题自己的选项 (2..107 项), 不与 synth 的意图混."""
+    sample_fn, _, info = _mod.build_data(_args("synth+synth-v3", eval="massive"))
+    assert info == {"synth_classes": 4096, "synth_v3_items": 688}
+    labels = {"Support ticket", "Hotel document", "Browser agent state", "Security on-call screen", "Code and CI state"}
+    rng = random.Random(0)
+    seen = set()
+    for _ in range(100):
+        batch = sample_fn(9, rng)
+        v3 = [e for e in batch if e.context_label in labels]
+        assert len(v3) == 3, [e.context_label for e in batch]
+        assert all(2 <= len(e.options) <= 107 for e in v3)
+        seen |= {e.context_label for e in v3}
+    assert seen == labels
+
+
+def test_label_smoothing_defaults_to_zero_and_is_named_in_the_run_directory():
+    p = _mod.build_parser()
+    assert p.parse_args([]).label_smoothing == 0.0
+    args = p.parse_args(["--label-smoothing", "0.1"])
+    vars(args).update(_mod.resolve_adapter(args))
+    assert _mod.run_tag(args) == "-kfull256-ls0.1-vocab"
+
+
+def test_label_smoothing_outside_zero_to_one_is_refused():
+    try:
+        _mod.build_data(_args("boolq", label_smoothing=1.0))
+    except SystemExit:
+        return
+    raise AssertionError("--label-smoothing 1.0 accepted")
 
 
 def test_random_codes_rejects_a_rate_outside_zero_to_one():
