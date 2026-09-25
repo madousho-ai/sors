@@ -10,8 +10,8 @@ import torch
 
 from decidophobia.batch import collate
 from decidophobia.data import MenuExample
-from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, training_loss,
-                               vocab_cross_entropy)
+from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, slot_cross_entropy, smooth_target,
+                               training_loss, vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
                                   first_two_slots, menu_size_summary, nll_multiclass, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
@@ -231,6 +231,53 @@ def test_vocab_cross_entropy_rejects_a_gold_on_a_padding_slot():
     except ValueError:
         return
     raise AssertionError("gold on a padding slot, expected ValueError")
+
+
+def test_training_loss_with_a_target_is_cross_entropy_to_that_distribution_under_each_denominator():
+    """V=10, D 在 id 5..8. 菜单 [5,6,7], logit id5..7 = [1,2,3], 目标 [.5, 0, .5]:
+    loss = -(.5 (1 - ln Z) + .5 (3 - ln Z)) = ln Z - 2, Z 随分母变:
+      menu       Z = e + e² + e³                  -> 1.40760596
+      all-slots  Z = e + e² + e³ + e⁰ (id 8)      -> 1.44018970
+      vocab      Z = e + e² + e³ + 7 (其余 7 个 0) -> 1.61611721"""
+    logits = torch.zeros(1, 10)
+    logits[0, 5], logits[0, 6], logits[0, 7] = 1.0, 2.0, 3.0
+    slot_ids, gold, target = torch.tensor([[5, 6, 7]]), torch.tensor([0]), torch.tensor([[0.5, 0.0, 0.5]])
+    want = {"menu": 1.4076059644443801, "all-slots": 1.4401896985611953, "vocab": 1.6161172066588838}
+    for kind, v in want.items():
+        got = training_loss(kind, logits, slot_ids, gold, [5, 6, 7, 8], target=target).item()
+        assert abs(got - v) < 1e-6, (kind, got, v)
+
+
+def test_training_loss_with_a_one_hot_target_matches_the_gold_index_loss():
+    """硬标签写成 one-hot 目标, 三种分母下都与按 gold 下标算的老损失相同; 菜单之外补 0 的列不参与."""
+    logits = torch.randn(3, 10, generator=torch.Generator().manual_seed(0))
+    slot_ids = torch.tensor([[5, 6, -1], [5, 6, 7], [8, 5, 6]])
+    gold = torch.tensor([1, 2, 0])
+    target = torch.nn.functional.one_hot(gold, 3).float()
+    for kind in LOSSES:
+        a = training_loss(kind, logits, slot_ids, gold, [5, 6, 7, 8]).item()
+        b = training_loss(kind, logits, slot_ids, gold, [5, 6, 7, 8], target=target).item()
+        assert abs(a - b) < 1e-6, (kind, a, b)
+
+
+def test_training_loss_rejects_target_mass_on_a_padding_slot():
+    try:
+        training_loss("menu", torch.zeros(1, 10), torch.tensor([[5, -1]]), torch.tensor([0]), [5, 6],
+                      target=torch.tensor([[0.5, 0.5]]))
+    except ValueError:
+        return
+    raise AssertionError("target puts 0.5 on a padding slot, expected ValueError")
+
+
+def test_smooth_target_moves_eps_onto_the_menu_rows_evenly():
+    """标签平滑只在菜单的 k 行上摊: 3 项菜单 one-hot 在第 2 行, eps 0.3 -> [.1 .8 .1]; 补位列仍是 0.
+    软标签同样处理: [.5 .5] (k 2), eps 0.2 -> [.5 .5]. eps 0 原样返回."""
+    target = torch.tensor([[0.0, 1.0, 0.0, 0.0], [0.5, 0.5, 0.0, 0.0]])
+    slot_ids = torch.tensor([[5, 6, 7, -1], [5, 6, -1, -1]])
+    got = smooth_target(target, slot_ids, 0.3)
+    assert torch.allclose(got[0], torch.tensor([0.1, 0.8, 0.1, 0.0])), got
+    assert torch.allclose(smooth_target(target, slot_ids, 0.2)[1], torch.tensor([0.5, 0.5, 0.0, 0.0]))
+    assert smooth_target(target, slot_ids, 0.0) is target
 
 
 def test_training_loss_dispatches_on_kind():

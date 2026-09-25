@@ -57,10 +57,53 @@ def vocab_cross_entropy(
 LOSSES = ("menu", "all-slots", "vocab")
 
 
+def smooth_target(target: torch.Tensor, slot_ids: torch.Tensor, eps: float) -> torch.Tensor:
+    """标签平滑, 只在菜单的 k 行上摊: (1 - eps) * target + eps / k. 补位列 (slot_ids == -1) 仍是 0.
+    硬标签的正确那一行因此是 1 - eps + eps / k, 其余每行 eps / k. eps 0 原样返回同一个张量."""
+    if eps == 0:
+        return target
+    on = (slot_ids >= 0).to(target.dtype)
+    return (1 - eps) * target + eps * on / on.sum(1, keepdim=True)
+
+
+def menu_log_probs(
+    kind: str, logits: torch.Tensor, slot_ids: torch.Tensor, d_ids: list[int],
+) -> torch.Tensor:
+    """(B, K): 菜单每一行那个 D 码的对数概率, 分母按 kind 取 (菜单 k 个槽 / 全部 D 槽 / 整个词表). 补位列是 -inf."""
+    slot = gather_slot_logits(logits, slot_ids)
+    if kind == "menu":
+        z = torch.logsumexp(slot, 1, keepdim=True)
+    elif kind == "all-slots":
+        d = torch.tensor(d_ids, device=logits.device)
+        if not bool(torch.isin(slot_ids[slot_ids >= 0], d).all()):
+            raise ValueError("a menu slot is not one of d_ids")
+        z = torch.logsumexp(logits[:, d], 1, keepdim=True)
+    elif kind == "vocab":
+        z = torch.logsumexp(logits, 1, keepdim=True)
+    else:
+        raise ValueError(f"unknown loss {kind!r}; expected one of {LOSSES}")
+    return slot - z
+
+
+def target_cross_entropy(
+    kind: str, logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor, d_ids: list[int],
+) -> torch.Tensor:
+    """对目标分布的交叉熵 -Σ target · log p, 批内取平均. target (B, K) 与 slot_ids 平行;
+    one-hot 目标时等于按 gold 下标算的那一种."""
+    if bool(((target > 0) & (slot_ids < 0)).any()):
+        raise ValueError("target puts probability on a padding slot")
+    logp = menu_log_probs(kind, logits, slot_ids, d_ids)
+    return -torch.where(target > 0, target * logp, torch.zeros_like(logp)).sum(1).mean()
+
+
 def training_loss(
     kind: str, logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor, d_ids: list[int],
+    target: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """训练循环用的损失. menu = 分母只有菜单 k 个槽; all-slots = 全部 D 槽; vocab = 整个词表."""
+    """训练循环用的损失. menu = 分母只有菜单 k 个槽; all-slots = 全部 D 槽; vocab = 整个词表.
+    target 给了就对这个分布求交叉熵 (软标签、标签平滑); 不给就只认 gold, 与加 target 之前逐位相同."""
+    if target is not None:
+        return target_cross_entropy(kind, logits, slot_ids, target, d_ids)
     if kind == "menu":
         return slot_cross_entropy(logits, slot_ids, gold)
     if kind == "all-slots":
