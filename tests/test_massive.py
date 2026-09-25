@@ -4,20 +4,12 @@
 需要 data/massive/amazon-massive-dataset-1.0.tar.gz 在盘上 (39.5MB, 不自动下载).
 """
 
+import json
 import random
 
 from _runner import run
-from decidophobia.massive import humanize_intent, load_massive
-
-
-def test_humanize_intent_reads_as_scenario_then_action():
-    """名字形如 'scenario: action'. 粘连的复合词要拆开, 品牌名 (hue / wemo) 保留."""
-    assert humanize_intent("alarm_set") == "alarm: set"
-    assert humanize_intent("iot_hue_lightchange") == "iot: hue light change"
-    assert humanize_intent("lists_createoradd") == "lists: create or add"
-    assert humanize_intent("email_querycontact") == "email: query contact"
-    assert humanize_intent("iot_wemo_off") == "iot: wemo off"
-    assert humanize_intent("qa_maths") == "qa: maths"
+from decidophobia.label_names import DESC_DIR
+from decidophobia.massive import load_massive
 
 
 def test_test_split_has_2974_utterances_over_60_intents():
@@ -29,11 +21,21 @@ def test_test_split_has_2974_utterances_over_60_intents():
     assert te.qtype == "choice"
 
 
-def test_intent_ids_follow_sorted_raw_names():
-    """类 id 按原始 intent 名字母序, 与 banking77 同一约定; 名字表是人话化之后的."""
+def test_intent_ids_follow_sorted_raw_names_and_the_names_are_shown_raw():
+    """类 id 按原始 intent 名字母序, 与 banking77 同一约定; 菜单上显示的就是原始名, 下划线和粘连的复合词都不动."""
     te = load_massive()
-    assert te.names[0] == "alarm: query"
-    assert te.names[59] == "weather: query"
+    assert te.names[0] == "alarm_query"
+    assert te.names[59] == "weather_query"
+    assert "iot_hue_lightchange" in te.names.values()
+
+
+def test_desc_names_are_the_descriptions_with_the_same_class_ids():
+    """labels="desc": 同一个类 id 显示 datasets/label-descriptions/massive.json 里它的 description; train 分区同样可用."""
+    raw, te = load_massive(), load_massive(labels="desc")
+    desc = json.loads((DESC_DIR / "massive.json").read_text())
+    assert te.names == {c: desc[n] for c, n in raw.names.items()}
+    assert te.queries == raw.queries and te.labels == raw.labels
+    assert load_massive(partition="train", labels="desc").names == te.names
 
 
 def test_full_menu_lists_every_intent_exactly_once():

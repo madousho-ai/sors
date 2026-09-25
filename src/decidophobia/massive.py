@@ -6,6 +6,7 @@
 数据: https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.0.tar.gz (39.5MB, 51 locale)
 取 1.0/data/en-US.jsonl, 分区 test 2974 条 / train 11514 条. tarball 不自动下载, md5 钉死.
 类 id 按原始 intent 名字母序编, 与 banking77 同一约定.
+菜单上显示的文字由 labels 选: raw 原始 intent 名 (默认), desc 写好的 description, 见 decidophobia.label_names.
 """
 
 from __future__ import annotations
@@ -16,25 +17,12 @@ import pathlib
 import tarfile
 
 from decidophobia.data import LabeledSet
+from decidophobia.label_names import label_names
 
 TARBALL = "amazon-massive-dataset-1.0.tar.gz"
 TARBALL_MD5 = "92fe0007628b31ca02c7bf4035a883e7"
 MEMBER = "1.0/data/en-US.jsonl"
 CONTEXT_LABEL = "Voice command"
-
-# 原始名里粘连在一起的复合词. 品牌名 hue (飞利浦灯) / wemo (智能插座) 保留.
-_COMPOUND = {
-    "lightchange": "light change", "lightdim": "light dim", "lightoff": "light off",
-    "lighton": "light on", "lightup": "light up", "createoradd": "create or add",
-    "sendemail": "send email", "addcontact": "add contact", "querycontact": "query contact",
-}
-
-
-def humanize_intent(raw: str) -> str:
-    """'iot_hue_lightchange' -> 'iot: hue light change'. 第一段是 scenario, 其余是动作."""
-    scenario, _, action = raw.partition("_")
-    words = [_COMPOUND.get(w, w) for w in action.split("_")]
-    return f"{scenario}: {' '.join(words)}"
 
 
 def _read_rows(cache_dir) -> list[dict]:
@@ -51,7 +39,7 @@ def _read_rows(cache_dir) -> list[dict]:
         return [json.loads(line) for line in f]
 
 
-def load_massive(cache_dir="data/massive", partition: str = "test") -> LabeledSet:
+def load_massive(cache_dir="data/massive", partition: str = "test", labels: str = "raw") -> LabeledSet:
     rows = _read_rows(cache_dir)
     raw_names = sorted({r["intent"] for r in rows})
     idx = {c: i for i, c in enumerate(raw_names)}
@@ -59,6 +47,6 @@ def load_massive(cache_dir="data/massive", partition: str = "test") -> LabeledSe
     return LabeledSet(
         queries=[r["utt"] for r in part],
         labels=[idx[r["intent"]] for r in part],
-        names={i: humanize_intent(c) for c, i in idx.items()},
+        names=label_names("massive", raw_names, labels),
         context_label=CONTEXT_LABEL,
     )
