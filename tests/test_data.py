@@ -231,11 +231,12 @@ def test_random_codes_rate_is_the_share_of_examples_that_get_them():
     assert abs(share - 0.3) < 0.03, share
 
 
-def test_random_codes_leave_binary_questions_numbered_d0_d1():
-    """二元题 (BoolQ, qtype bool) 永远连续编号, 只有选择题换码."""
+def test_random_codes_give_binary_questions_random_codes_too():
+    """二元题 (qtype bool) 与选择题一样换码: 模型要靠 no / yes 的描述答题, 与它们写成 D0 / D1 还是别的码无关."""
     rng = random.Random(0)
-    got = RandomCodes(1.0)([_ex(options=(1, 0), qtype="bool") for _ in range(200)], rng)
-    assert all(e.codes is None for e in got)
+    got = RandomCodes(1.0)([_ex(options=(1, 0), qtype="bool") for _ in range(500)], rng)
+    assert all(e.codes is not None and len(set(e.codes)) == 2 for e in got)
+    assert len({c for e in got for c in e.codes}) == 256
 
 
 def _menu60(gold_idx):

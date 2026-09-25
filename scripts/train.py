@@ -239,8 +239,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "boolq (validation 3270 条) / "
                          "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes)")
     ap.add_argument("--random-codes", type=float, default=0.0,
-                    help="选择题里换成随机码的比例 (0..1): 挑上菜单次数最少的 k 个 D 码、顺序随机, 每个码上菜单时是答案的概率都是 1/k, "
-                         "整场下来 D0..D255 当答案的次数期望相同 (60 项菜单下 rate >= 0.77 才补得齐). BoolQ 永远 D0 / D1. "
+                    help="训练题里换成随机码的比例 (0..1), 二元题也换: 挑上菜单次数最少的 k 个 D 码、顺序随机, "
+                         "每个码上菜单时是答案的概率都是 1/k, "
+                         "整场下来 D0..D255 当答案的次数期望相同 (60 项菜单下 rate >= 0.77 才补得齐). "
                          "0 = 全部按位置 D0, D1, ... (旧行为). 评估集不受影响")
     ap.add_argument("--label-smoothing", type=float, default=0.0,
                     help="标签平滑 (0..1): 训练目标里这一份均摊到这道题菜单的每一行, 硬标签与软标签都摊; "

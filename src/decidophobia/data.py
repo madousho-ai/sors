@@ -90,13 +90,14 @@ def compose_menu(gold: int, pool: list[int], k: int, rng: random.Random) -> tupl
 
 
 class RandomCodes:
-    """训练抽题的最后一步: 每条选择题 (qtype choice) 以概率 rate 换一套码, 其余保持 D0, D1, ... 连续编号;
-    二元题 (BoolQ) 永远连续编号. 菜单第 i 项写成这套里的第 i 个, 答案是正确那一项旁边写的码, 与它排第几行无关.
+    """训练抽题的最后一步: 每道题以概率 rate 换一套码, 其余保持 D0, D1, ... 连续编号. 二元题 (no / yes) 也一样换:
+    模型要靠描述答题, 两项菜单写成 D0 / D1 还是别的码都不该有差别. 菜单第 i 项写成这套里的第 i 个,
+    答案是正确那一项旁边写的码, 与它排第几行无关.
 
     设计目的是光看编号推不出答案: 一个码出现在 k 项菜单上时, 它是答案的概率必须是 1/k, 对哪个码都一样.
     所以换码时不单独给答案挑码, 而是整套一起挑: 取到目前为止上菜单次数最少的 k 个码 (并列时随机),
     再随机排进菜单 —— 答案落在这套里的哪一个完全随机. 均衡的是上菜单的次数, 当答案的次数随之期望相同.
-    计数覆盖所有选择题, 连续编号那部分也算 (它们只占 D0..D(k-1)), 跨调用保留 —— 一个 run 用一个实例.
+    计数覆盖所有题, 连续编号那部分也算 (它们只占 D0..D(k-1)), 跨调用保留 —— 一个 run 用一个实例.
     连续编号的菜单太多时补不齐: 60 项菜单下 rate 低于 0.77, D0..D59 光靠连续编号上菜单的次数就超过均分,
     换码的菜单全用 D60 以后的码, D0..D59 仍然偏多, 但每个码是答案的概率依旧是 1/k.
 
@@ -111,11 +112,10 @@ class RandomCodes:
             return examples
         out = []
         for ex in examples:
-            if ex.qtype == "choice":
-                if rng.random() < self.rate:
-                    ex = replace(ex, codes=self._codes(len(ex.options), rng))
-                for c in ex.slot_codes:
-                    self.on_menu[c] += 1
+            if rng.random() < self.rate:
+                ex = replace(ex, codes=self._codes(len(ex.options), rng))
+            for c in ex.slot_codes:
+                self.on_menu[c] += 1
             out.append(ex)
         return out
 
