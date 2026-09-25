@@ -3,16 +3,19 @@
 跑:  HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_evaluate.py
 """
 
+import random
+
 import torch
 
 from _runner import run
-from decidophobia.batch import collate
-from decidophobia.data import MenuExample
+from decidophobia.batch import collate, pair_alignment
+from decidophobia.data import MenuExample, with_partners
+from decidophobia.loss import consistency_js, training_loss
 from decidophobia.metrics import first_two_slots
 from decidophobia.model import last_logits, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, evaluate, score_examples, step_target
+from decidophobia.train import EvalSet, TrainConfig, evaluate, score_examples, step_loss, step_target
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -80,6 +83,54 @@ def test_step_target_is_none_for_hard_labels_without_smoothing_so_the_old_loss_r
     assert step_target([hard, soft], b, 0.0) is b["target"]
     got = step_target([hard, hard], b, 0.3)
     assert torch.allclose(got, torch.tensor([[0.1, 0.1, 0.8], [0.675, 0.325, 0.0]])), got
+
+
+D5 = [5, 6, 7, 8, 9]  # 手搭的 batch: 词表 10, D 码在 id 5..9
+
+
+def _hand_batch(exs):
+    """collate 会给的 slot_ids / gold / target, 不经 tokenizer."""
+    k = max(len(e.options) for e in exs)
+    slot_ids = torch.full((len(exs), k), -1)
+    target = torch.zeros(len(exs), k)
+    for i, e in enumerate(exs):
+        slot_ids[i, : len(e.options)] = torch.tensor([D5[c] for c in e.slot_codes])
+        target[i, e.gold_idx] = 1.0
+    return {"slot_ids": slot_ids, "gold": torch.tensor([e.gold_idx for e in exs]), "target": target}
+
+
+def _two_questions():
+    return [MenuExample(query="a", options=[0, 1, 2], gold_idx=2, label=2, option_names=["x", "y", "z"]),
+            MenuExample(query="b", options=[3, 4], gold_idx=0, label=3, option_names=["no", "yes"], qtype="bool")]
+
+
+def test_step_loss_without_consistency_is_the_training_loss_alone():
+    """consistency 0: 一致性项不算, 优化的就是原来的 training_loss, 旧 run 逐位复现."""
+    exs = _two_questions()
+    b, logits = _hand_batch(exs), torch.randn(2, 10, generator=torch.Generator().manual_seed(0))
+    total, ce, js = step_loss(TrainConfig(loss="vocab"), exs, b, logits, D5)
+    assert js is None and total is ce
+    assert ce.item() == training_loss("vocab", logits, b["slot_ids"], b["gold"], D5).item()
+
+
+def test_step_loss_with_consistency_adds_lambda_times_the_js_of_each_adjacent_pair():
+    """batch 是 with_partners 排好的 [a, a', b, b']: 交叉熵照旧对四条取平均, 再加 λ · 两对 JS 的平均."""
+    exs = with_partners(_two_questions(), random.Random(0))
+    b, logits = _hand_batch(exs), torch.randn(4, 10, generator=torch.Generator().manual_seed(1))
+    total, ce, js = step_loss(TrainConfig(loss="vocab", consistency=0.5), exs, b, logits, D5)
+    want_js = consistency_js(logits, b["slot_ids"], pair_alignment(exs, b["slot_ids"].shape[1]))
+    assert abs(js.item() - want_js.item()) < 1e-7 and js.item() > 0, (js, want_js)
+    assert ce.item() == training_loss("vocab", logits, b["slot_ids"], b["gold"], D5).item()
+    assert abs(total.item() - (ce.item() + 0.5 * js.item())) < 1e-6, (total, ce, js)
+
+
+def test_step_loss_with_consistency_refuses_a_batch_that_is_not_in_pairs():
+    exs = _two_questions()  # 两道不同的题挨着, 不是同一道题的两种排法
+    try:
+        step_loss(TrainConfig(loss="vocab", consistency=0.5), exs, _hand_batch(exs), torch.zeros(2, 10), D5)
+    except ValueError:
+        return
+    raise AssertionError("two different questions were paired")
 
 
 if __name__ == "__main__":

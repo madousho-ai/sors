@@ -14,9 +14,10 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from decidophobia.batch import collate
+from decidophobia.batch import collate, pair_alignment
 from decidophobia.data import MenuExample
-from decidophobia.loss import answer_mass, gather_slot_logits, smooth_target, training_loss, vocab_cross_entropy
+from decidophobia.loss import (answer_mass, consistency_js, gather_slot_logits, smooth_target, training_loss,
+                               vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
                                   summarize)
 from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
@@ -41,6 +42,7 @@ class TrainConfig:
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
     loss: str = "all-slots"  # loss.LOSSES: vocab 整个词表; all-slots 全部 D 槽; menu 菜单 k 个槽. scripts/train.py 总是显式传, 默认 vocab
     label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
+    consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (data.with_partners)
     eval_every: int = 100
     log_every: int = 20
     seed: int = 0
@@ -121,6 +123,22 @@ def step_target(exs: list[MenuExample], b: dict, eps: float) -> torch.Tensor | N
     return smooth_target(b["target"], b["slot_ids"], eps)
 
 
+def step_loss(
+    cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: torch.Tensor, d_ids: list[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """一步的 (总损失, 交叉熵, JS). 交叉熵是 training_loss, 对 batch 里每一条取平均.
+    cfg.consistency > 0 时 exs 必须是 data.with_partners 排好的 [a, a', b, b', ...], 总损失再加
+    consistency · consistency_js (两种排法按描述对齐后的 JS, 按对平均); 不成对就报 ValueError.
+    consistency 0 时 JS 是 None、总损失就是交叉熵那个张量."""
+    ce = training_loss(cfg.loss, logits, b["slot_ids"], b["gold"], d_ids,
+                       target=step_target(exs, b, cfg.label_smoothing))
+    if cfg.consistency <= 0:
+        return ce, ce, None
+    align = pair_alignment(exs, b["slot_ids"].shape[1]).to(logits.device)
+    js = consistency_js(logits, b["slot_ids"], align)
+    return ce + cfg.consistency * js, ce, js
+
+
 def train(
     m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
     cfg: TrainConfig, log_path=None, writer=None, guard=None,
@@ -128,7 +146,8 @@ def train(
     """跑 cfg.steps 步 (0 = 只做 step 0 的评估). 返回评估记录. 每条记录也追加写到 log_path.
 
     writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量分三组:
-      train/loss, train/lr_*        每 log_every 步
+      train/loss, train/lr_*        每 log_every 步. train/loss 只是交叉熵, 与加一致性项之前的 run 同一个量
+      train/js                      cfg.consistency > 0 时, 成对题的 JS (乘 λ 之前)
       eval/<set>/<metric>           每次评估
       sys/tctl_c, sys/thermal_waits 温度与被温度闸拦下的次数
     guard: ThermalGuard, 可选. 每步之前和每次评估之前各问一次.
@@ -179,7 +198,7 @@ def train(
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )
-    running = 0.0
+    running, running_js = 0.0, 0.0
     for step in range(1, cfg.steps + 1):
         if guard:
             waits += guard.wait()
@@ -187,27 +206,31 @@ def train(
         b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
-        loss = training_loss(cfg.loss, logits, b["slot_ids"], b["gold"], d_ids,
-                             target=step_target(exs, b, cfg.label_smoothing))
+        loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
         sched.step()
-        running += loss.item()
+        running += ce.item()
+        if js is not None:
+            running_js += js.item()
         if step % cfg.log_every == 0:
             avg = running / cfg.log_every
+            avg_js = running_js / cfg.log_every
             t = tctl()
-            print(f"step {step:5d}  loss {avg:.4f}  {time.time() - t0:.0f}s"
-                  + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
+            print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js is not None else "")
+                  + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
             if writer:
                 writer.add_scalar("train/loss", avg, step)
+                if js is not None:
+                    writer.add_scalar("train/js", avg_js, step)
                 for i, g in enumerate(opt.param_groups):
                     writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
                 if t is not None:
                     writer.add_scalar("sys/tctl_c", t, step)
-            running = 0.0
+            running, running_js = 0.0, 0.0
         if step % cfg.eval_every == 0 or step == cfg.steps:
-            do_eval(step, loss.item())
+            do_eval(step, ce.item())
     if log_f:
         log_f.close()
     return history
