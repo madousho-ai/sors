@@ -120,6 +120,20 @@ def consistency_js(logits: torch.Tensor, slot_ids: torch.Tensor, align: torch.Te
     return torch.where(on, term, torch.zeros_like(term)).sum(1).mean()
 
 
+def menu_hits(logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor) -> tuple[int, int]:
+    """训练批上的正确率读数, 返回 (答对几道, 算了几道). 模型的选择是菜单 k 行里 logit 最高的那一行
+    (菜单外的 D 码、普通 token 不参与, 与评估时的 accuracy 同一种读法); 目标 target (B, K) 是 collate 给的分布,
+    平滑之前. 选中的那一行在 target 上是最大值 (并列最大时选中其中任意一行都算) 就是答对.
+    target 在菜单上处处相等的题 (文本没提、标成均匀的那些) 没有答案, 不计入分母."""
+    on = slot_ids >= 0
+    pick = gather_slot_logits(logits, slot_ids).argmax(1, keepdim=True)
+    top = target.masked_fill(~on, float("-inf")).amax(1)
+    low = target.masked_fill(~on, float("inf")).amin(1)
+    scored = top - low > 1e-6
+    hit = (target.gather(1, pick).squeeze(1) >= top - 1e-6) & scored
+    return int(hit.sum()), int(scored.sum())
+
+
 def training_loss(
     kind: str, logits: torch.Tensor, slot_ids: torch.Tensor, gold: torch.Tensor, d_ids: list[int],
     target: torch.Tensor | None = None,

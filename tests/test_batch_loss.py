@@ -10,8 +10,8 @@ import torch
 
 from decidophobia.batch import collate, pair_alignment
 from decidophobia.data import MenuExample, reorder_menu
-from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, slot_cross_entropy,
-                               smooth_target, training_loss, vocab_cross_entropy)
+from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, menu_hits,
+                               slot_cross_entropy, smooth_target, training_loss, vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
                                   first_two_slots, menu_size_summary, nll_multiclass, pass_consistency, topk_accuracy)
 from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
@@ -326,6 +326,36 @@ def _pair_logits(p1, p2, V=10):
     logits[0, 5 : 5 + len(p1)] = torch.tensor(p1).log()
     logits[1, 5 : 5 + len(p2)] = torch.tensor(p2).log()
     return logits
+
+
+def _menu_logits(rows, V=12):
+    """每一行一道题, 菜单都从 id 5 开始; rows[i] 是第 i 题各菜单行的 logit, 菜单外的 id 放 9 (比菜单都高)."""
+    logits = torch.full((len(rows), V), 9.0)
+    for i, r in enumerate(rows):
+        logits[i, 5 : 5 + len(r)] = torch.tensor(r)
+    return logits
+
+
+def test_menu_hits_counts_the_top_menu_row_against_the_targets_largest_row():
+    """四道三项题, 模型各自在菜单上最看好第 0 / 2 / 1 / 0 行 (菜单外的 id 分数更高, 不算).
+      一  one-hot 在第 0 行                命中
+      二  one-hot 在第 0 行                没中
+      三  软标签 (.2 .7 .1), 最大在第 1 行  命中
+      四  均匀 (1/3 各行), 没有答案         不计
+    """
+    slot_ids = torch.tensor([[5, 6, 7]] * 4)
+    logits = _menu_logits([[3, 1, 0], [0, 1, 3], [0, 3, 1], [3, 1, 0]])
+    target = torch.tensor([[1, 0, 0], [1, 0, 0], [0.2, 0.7, 0.1], [1 / 3, 1 / 3, 1 / 3]])
+    assert menu_hits(logits, slot_ids, target) == (2, 3)
+
+
+def test_menu_hits_accepts_any_of_several_tied_largest_rows_and_ignores_padding():
+    """(.45 .45 .1) 选第 1 行也算对. 两项题补了一列 -1: 那一列的 logit 再高也选不到;
+    两项各 .5 的题照样算均匀、不计 —— 补位那格的 0 不能让它看起来有高有低."""
+    slot_ids = torch.tensor([[5, 6, 7], [5, 6, -1], [5, 6, -1]])
+    logits = _menu_logits([[0, 3, 1], [3, 0], [3, 0]])
+    target = torch.tensor([[0.45, 0.45, 0.1], [0.5, 0.5, 0.0], [1.0, 0.0, 0.0]])
+    assert menu_hits(logits, slot_ids, target) == (2, 2)
 
 
 def test_consistency_js_matches_the_worked_example():

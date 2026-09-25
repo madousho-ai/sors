@@ -16,8 +16,8 @@ import torch
 
 from decidophobia.batch import collate, pair_alignment
 from decidophobia.data import MenuExample, arrangements
-from decidophobia.loss import (answer_mass, consistency_js, gather_slot_logits, smooth_target, training_loss,
-                               vocab_cross_entropy)
+from decidophobia.loss import (answer_mass, consistency_js, gather_slot_logits, menu_hits, smooth_target,
+                               training_loss, vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
                                   pass_consistency, summarize)
 from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
@@ -194,18 +194,24 @@ def train(
 
     writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量:
       train/loss, train/lr_*        每 log_every 步. train/loss 只是交叉熵, 与加一致性项之前的 run 同一个量
+      train/accuracy                每 log_every 步, 这几步训练批上的正确率 (loss.menu_hits: 菜单上 logit 最高的一行
+                                    是不是目标分布的最大行; 均匀标签的题不计). 批里是打乱过、换过码的题, 成对时两份都算
       train/js                      cfg.consistency > 0 时, 成对题的 JS (乘 λ 之前)
       consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
       eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
       consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
       sys/tctl_c, sys/thermal_waits 温度与被温度闸拦下的次数
     guard: ThermalGuard, 可选. 每步之前和每次评估之前各问一次.
+
+    log_path 的每条记录另有 train_accuracy / train_accuracy_n: 上一个评估点以来全部训练题上的正确率与题数
+    (step 0 还没训练, 是 None / 0).
     """
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
     history: list[dict] = []
     log_f = open(log_path, "a") if log_path else None
     waits = 0
+    since_eval = [0, 0]  # 上一个评估点以来训练题的 (答对, 计入)
     probes = {name: probe_passes(es.examples, cfg.probe_size, cfg.probe_passes, f"probe-{cfg.seed}-{name}")
               for name, es in eval_sets.items()}
 
@@ -216,8 +222,10 @@ def train(
         nonlocal waits
         if guard:
             waits += guard.wait()
-        rec = {"step": step, "train_loss": train_loss, "t": round(time.time() - t0, 1),
-               "tctl_c": tctl(), "thermal_waits": waits}
+        hits, n = since_eval
+        since_eval[:] = [0, 0]
+        rec = {"step": step, "train_loss": train_loss, "train_accuracy": hits / n if n else None,
+               "train_accuracy_n": n, "t": round(time.time() - t0, 1), "tctl_c": tctl(), "thermal_waits": waits}
         rec.update(eval_record(m, tok, d_ids, eval_sets, probes, cfg, final))
         if writer:
             for group in ("consistency", "eval", "consistency_full"):
@@ -249,7 +257,7 @@ def train(
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )
-    running, running_js = 0.0, 0.0
+    running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
     dev = next(m.parameters()).device
     for step in range(1, cfg.steps + 1):
         if guard:
@@ -259,28 +267,36 @@ def train(
         b = {k: v.to(dev) for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
+        hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])  # 更新之前的模型在这一批上的读数
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
         sched.step()
         running += ce.item()
+        running_hits, running_n = running_hits + hits, running_n + n
+        since_eval[0] += hits
+        since_eval[1] += n
         if js is not None:
             running_js += js.item()
         if step % cfg.log_every == 0:
             avg = running / cfg.log_every
             avg_js = running_js / cfg.log_every
+            acc = running_hits / running_n if running_n else None
             t = tctl()
             print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js is not None else "")
+                  + (f"  acc {acc:.3f}" if acc is not None else "")
                   + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
             if writer:
                 writer.add_scalar("train/loss", avg, step)
+                if acc is not None:
+                    writer.add_scalar("train/accuracy", acc, step)
                 if js is not None:
                     writer.add_scalar("train/js", avg_js, step)
                 for i, g in enumerate(opt.param_groups):
                     writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
                 if t is not None:
                     writer.add_scalar("sys/tctl_c", t, step)
-            running, running_js = 0.0, 0.0
+            running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
         if step % cfg.eval_every == 0 or step == cfg.steps:
             do_eval(step, ce.item(), final=step == cfg.steps)
         if on_checkpoint and cfg.save_every > 0 and step % cfg.save_every == 0 and step < cfg.steps:

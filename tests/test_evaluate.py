@@ -10,13 +10,13 @@ import torch
 from _runner import run
 from decidophobia.batch import collate, pair_alignment
 from decidophobia.data import MenuExample, arrangements, with_partners
-from decidophobia.loss import consistency_js, training_loss
+from decidophobia.loss import consistency_js, menu_hits, training_loss
 from decidophobia.metrics import first_two_slots, pass_consistency
 from decidophobia.model import last_logits, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import (EvalSet, TrainConfig, consistency_eval, eval_record, evaluate, probe_passes,
-                                score_examples, step_loss, step_target)
+                                score_examples, step_loss, step_target, train)
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -179,6 +179,51 @@ def test_eval_record_reports_only_probe_consistency_until_the_final_step():
     assert end.keys() == {"consistency", "eval", "consistency_full"}, end.keys()
     assert end["eval"]["intents"]["n"] == 5 and "auroc" in end["eval"]["boolq"]
     assert {name: r["n"] for name, r in end["consistency_full"].items()} == {"intents": 5, "boolq": 4}
+
+
+class _Writer:
+    """SummaryWriter 的替身, 只记 add_scalar."""
+
+    def __init__(self):
+        self.scalars = []
+
+    def add_scalar(self, tag, value, step):
+        self.scalars.append((tag, value, step))
+
+    def flush(self):
+        pass
+
+
+def test_train_reports_accuracy_on_the_training_batch_and_leaves_out_questions_without_an_answer():
+    """一步训练: 这一步的 logits 就是训练前的模型算的, 期望值先用 menu_hits 算好.
+    批里第三道是均匀标签 (文本没提), 不进分母. TensorBoard 记 train/accuracy, log.jsonl 那条记 train_accuracy
+    (上一个评估点以来的全部训练题) 与它的题数 train_accuracy_n; step 0 还没训练, 两样是 None / 0."""
+    tok, d_ids, m = _tiny()
+    names = ["change pin", "top up", "card lost"]
+    exs = [MenuExample(query="I lost my card", options=[0, 1, 2], gold_idx=2, label=2, option_names=names),
+           MenuExample(query="my top up failed", options=[0, 1, 2], gold_idx=1, label=1, option_names=names),
+           MenuExample(query="hello", options=[0, 1, 2], gold_idx=0, label=0, option_names=names, target=[1 / 3] * 3)]
+    b = collate(exs, tok, d_ids, k_max=3)
+    with torch.no_grad():
+        hits, n = menu_hits(last_logits(m, b["input_ids"], b["attention_mask"]), b["slot_ids"], b["target"])
+    assert n == 2
+
+    w = _Writer()
+    hist = train(m, tok, d_ids, lambda n_, rng: list(exs), {},
+                 TrainConfig(steps=1, batch_size=3, k_max=3, loss="vocab", eval_every=1, log_every=1), writer=w)
+    assert [(t, s) for t, _, s in w.scalars if t == "train/accuracy"] == [("train/accuracy", 1)], w.scalars
+    assert [v for t, v, _ in w.scalars if t == "train/accuracy"] == [hits / n]
+    assert [(r["step"], r["train_accuracy"], r["train_accuracy_n"]) for r in hist] == [(0, None, 0), (1, hits / n, 2)]
+
+
+def test_train_accuracy_in_the_log_covers_every_step_since_the_previous_eval_point():
+    """eval_every 3 / log_every 1: step 3 那条的 train_accuracy_n 是三步的题数合计, 不是最后一步的."""
+    tok, d_ids, m = _tiny()
+    ex = MenuExample(query="I lost my card", options=[0, 1, 2], gold_idx=2, label=2,
+                     option_names=["change pin", "top up", "card lost"])
+    hist = train(m, tok, d_ids, lambda n_, rng: [ex] * n_, {},
+                 TrainConfig(steps=3, batch_size=2, k_max=3, loss="vocab", eval_every=3, log_every=1))
+    assert [(r["step"], r["train_accuracy_n"]) for r in hist] == [(0, 0), (3, 6)]
 
 
 if __name__ == "__main__":
