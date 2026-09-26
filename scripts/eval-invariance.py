@@ -96,7 +96,9 @@ def main() -> None:
         if name != "base":
             rec.update(consistency(base_s["q"], base, s["q"], exs))
             rec["picks"] = [e.options[max(range(len(e.options)), key=q.__getitem__)] for e, q in zip(exs, s["q"])]
-        flip = f"flip {rec['flip_rate']:.3f}  tv {rec['tv_mean']:.3f}  drift {rec['gold_logp_drift']:.3f}  " if name != "base" else ""
+        # 原菜单选中的描述在短菜单里全被删掉时, flip_rate 没有分母, 是 None
+        fr = "n/a" if name == "base" or rec["flip_rate"] is None else f"{rec['flip_rate']:.3f}"
+        flip = f"flip {fr}  tv {rec['tv_mean']:.3f}  drift {rec['gold_logp_drift']:.3f}  " if name != "base" else ""
         print(f"{name:13s} k={rec['k']:3d}  acc {rec['accuracy']:.3f}  {flip}m_answer {rec['m_answer_mean']:.3f}  "
               f"top1_in {rec['top1_in_menu_rate']:.3f}  {rec['t']:.0f}s", flush=True)
         return rec
