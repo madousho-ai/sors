@@ -1,4 +1,4 @@
-"""decidophobia.model 的测试. 要加载 0.6B, 走 GPU.
+"""decidophobia.core.model 的测试. 要加载 0.6B, 走 GPU.
 
 跑:  OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_model.py
 """
@@ -6,11 +6,11 @@
 import torch
 
 from _runner import run
-from decidophobia.batch import collate
-from decidophobia.data import MenuExample
-from decidophobia.loss import slot_cross_entropy
-from decidophobia.model import SlotEmbedding, SlotHead, last_logits, prepare_model, trainable_param_groups
-from decidophobia.tokens import install_d_tokens, install_type_tokens
+from decidophobia.core.batch import collate
+from decidophobia.core.menu import MenuExample
+from decidophobia.core.model import SlotEmbedding, SlotHead, last_logits, prepare_model, trainable_param_groups
+from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.training.loss import slot_cross_entropy
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -149,7 +149,7 @@ def test_train_loss_all_slots_moves_offmenu_d_rows_and_menu_leaves_them():
     cfg.loss='menu' 时它们不在提示里也不在分母里, 梯度为零、weight_decay=0, 必须原样不动."""
     import random
 
-    from decidophobia.train import TrainConfig, train
+    from decidophobia.training.loop import TrainConfig, train
 
     ex = MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0,
                      option_names=["card lost", "change pin"])
@@ -171,9 +171,9 @@ def test_train_loss_all_slots_moves_offmenu_d_rows_and_menu_leaves_them():
 def test_vocab_loss_step_lowers_the_answer_positions_non_d_mass_without_touching_frozen_rows():
     """vocab loss 跑几步: 普通 token 的嵌入行一行不动 (冻结), 压低它们只能靠 LoRA 改 h 和 D 行抬高;
     同一道题上, 全词表下非 D token 的概率合计必须下降."""
-    from decidophobia.batch import collate
-    from decidophobia.model import last_logits
-    from decidophobia.train import TrainConfig, train
+    from decidophobia.core.batch import collate
+    from decidophobia.core.model import last_logits
+    from decidophobia.training.loop import TrainConfig, train
 
     ex = MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0,
                      option_names=["card lost", "change pin"])

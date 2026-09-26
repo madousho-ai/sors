@@ -1,4 +1,4 @@
-"""decidophobia.cache 的测试: 上下文算一次 KV cache, 多个问题各自接在后面, 结果必须等于完整前向.
+"""decidophobia.core.cache 的测试: 上下文算一次 KV cache, 多个问题各自接在后面, 结果必须等于完整前向.
 
 跑:  OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_cache.py
 """
@@ -7,11 +7,11 @@ import sys
 
 import torch
 
-from decidophobia.cache import branch_logits, prefix_cache
-from decidophobia.data import MenuExample
-from decidophobia.model import last_logits
-from decidophobia.prompt import render_menu, split_prompt
-from decidophobia.tokens import install_d_tokens
+from decidophobia.core.cache import branch_logits, prefix_cache
+from decidophobia.core.menu import MenuExample
+from decidophobia.core.model import last_logits
+from decidophobia.core.prompt import render_menu, split_prompt
+from decidophobia.core.tokens import install_d_tokens
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 

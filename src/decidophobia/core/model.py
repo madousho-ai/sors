@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from peft import LoraConfig, get_peft_model
 
-from decidophobia.batch import length_groups, trim_left_padding
+from decidophobia.core.batch import length_groups, trim_left_padding
 
 ATTN_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]

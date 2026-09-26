@@ -21,9 +21,9 @@ import random
 import sys
 from dataclasses import dataclass, replace
 
-from decidophobia.data import MenuExample, reorder_menu
+from decidophobia.core.menu import MenuExample, reorder_menu
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-intents-v3"
+DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v3"
 
 
 @dataclass(frozen=True)

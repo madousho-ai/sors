@@ -12,7 +12,7 @@ import json
 import pathlib
 
 LABEL_STYLES = ("raw", "desc")
-DESC_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "label-descriptions"
+DESC_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "label-descriptions"
 
 
 def label_names(dataset: str, raw_names: list[str], style: str) -> dict[int, str]:

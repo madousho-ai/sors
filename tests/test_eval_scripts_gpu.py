@@ -27,10 +27,10 @@ def _checkpoint() -> str:
     if not _state:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        from decidophobia.model import prepare_model
-        from decidophobia.tokens import install_d_tokens, install_type_tokens
-        from decidophobia.checkpoint import save_trained
-        from decidophobia.train import TrainConfig
+        from decidophobia.core.checkpoint import save_trained
+        from decidophobia.core.model import prepare_model
+        from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+        from decidophobia.training.loop import TrainConfig
 
         tok = AutoTokenizer.from_pretrained(MODEL)
         ids = install_d_tokens(tok) + install_type_tokens(tok)

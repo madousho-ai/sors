@@ -7,7 +7,7 @@ import importlib.util
 import pathlib
 
 from _runner import run
-from decidophobia.synth import synth_eval_examples
+from decidophobia.data.synth import synth_eval_examples
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "eval-invariance.py"
 _spec = importlib.util.spec_from_file_location("eval_invariance", _SCRIPT)

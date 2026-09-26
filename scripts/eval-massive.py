@@ -26,13 +26,13 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.massive import load_massive
-from decidophobia.model import prepare_model
-from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.thermal import ThermalGuard
-from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.checkpoint import prepare_from_checkpoint
-from decidophobia.scoring import EvalSet, evaluate
+from decidophobia.core.checkpoint import prepare_from_checkpoint
+from decidophobia.core.model import prepare_model
+from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
+from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.data.massive import load_massive
+from decidophobia.evaluation.scoring import EvalSet, evaluate
+from decidophobia.training.thermal import ThermalGuard
 
 
 def main() -> None:

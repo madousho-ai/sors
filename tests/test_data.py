@@ -1,4 +1,4 @@
-"""decidophobia.data + decidophobia.prompt 的测试.
+"""decidophobia.core.menu + decidophobia.core.prompt 的测试.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_data.py
 """
@@ -7,10 +7,10 @@ import random
 from dataclasses import replace
 
 from _runner import run
-from decidophobia.data import (LabeledSet, MenuExample, RandomCodes, arrangements, class_split, compose_menu,
+from decidophobia.core.menu import (LabeledSet, MenuExample, RandomCodes, arrangements, class_split, compose_menu,
                                menu_k_range, partner, random_arrangement, random_rows, reassigned_codes, reorder_menu,
                                row_alignment, shuffled_rows, top_rows, with_partners)
-from decidophobia.prompt import render_menu, split_prompt
+from decidophobia.core.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
 

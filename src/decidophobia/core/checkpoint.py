@@ -11,7 +11,7 @@ from dataclasses import asdict
 
 import torch
 
-from decidophobia.model import adapter_config, prepare_model
+from decidophobia.core.model import adapter_config, prepare_model
 
 
 def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:

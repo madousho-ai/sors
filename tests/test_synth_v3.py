@@ -1,4 +1,4 @@
-"""decidophobia.synth_v3 的测试: datasets/synth-intents-v3 读成逐题的 MenuExample, 以及训练时的抽题.
+"""decidophobia.data.synth_v3 的测试: datasets/synth-intents-v3 读成逐题的 MenuExample, 以及训练时的抽题.
 
 跑:  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_synth_v3.py
 """
@@ -17,7 +17,7 @@ import shutil
 import tempfile
 
 from _runner import run
-from decidophobia.synth_v3 import DEFAULT_DIR, load_synth_v3, sample_synth_v3, state_text
+from decidophobia.data.synth_v3 import DEFAULT_DIR, load_synth_v3, sample_synth_v3, state_text
 
 DOMAINS = {"browser_agent", "coding_ci", "hotel", "sec_ops", "telecom"}
 

@@ -28,13 +28,13 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.data import random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows
-from decidophobia.metrics import consistency, summarize
-from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.synth import synth_eval_examples
-from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.checkpoint import prepare_from_checkpoint
-from decidophobia.scoring import score_examples
+from decidophobia.core.checkpoint import prepare_from_checkpoint
+from decidophobia.core.menu import random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows
+from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
+from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.data.synth import synth_eval_examples
+from decidophobia.evaluation.metrics import consistency, summarize
+from decidophobia.evaluation.scoring import score_examples
 
 SHORT = 60
 

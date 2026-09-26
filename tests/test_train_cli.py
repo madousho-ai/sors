@@ -11,10 +11,10 @@ import pathlib
 import random
 
 from _runner import run
-from decidophobia.data import row_alignment
-from decidophobia.label_names import DESC_DIR
-from decidophobia.simple_eval import load_simple_eval
-from decidophobia.synth import load_synth
+from decidophobia.core.menu import row_alignment
+from decidophobia.data.label_names import DESC_DIR
+from decidophobia.data.simple_eval import load_simple_eval
+from decidophobia.data.synth import load_synth
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train.py"
 _spec = importlib.util.spec_from_file_location("train_cli", _SCRIPT)
@@ -313,9 +313,9 @@ def _checkpoint(trainable, r, alpha):
 
     from transformers import Qwen3Config, Qwen3ForCausalLM
 
-    from decidophobia.checkpoint import save_trained
-    from decidophobia.model import prepare_model
-    from decidophobia.train import TrainConfig
+    from decidophobia.core.checkpoint import save_trained
+    from decidophobia.core.model import prepare_model
+    from decidophobia.training.loop import TrainConfig
 
     cfg = Qwen3Config(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
                       num_attention_heads=2, num_key_value_heads=1, head_dim=8)

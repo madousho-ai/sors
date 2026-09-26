@@ -16,8 +16,8 @@ split_prompt 给出两段, 分界处两边都以换行收尾, BPE 不会跨界�
 
 from __future__ import annotations
 
-from decidophobia.data import MenuExample
-from decidophobia.tokens import D_TOKENS
+from decidophobia.core.menu import MenuExample
+from decidophobia.core.tokens import D_TOKENS
 
 LAYOUTS = ("context-first", "menu-first")
 DEFAULT_LAYOUT = "context-first"

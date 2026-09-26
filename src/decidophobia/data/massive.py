@@ -6,7 +6,7 @@
 数据: https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.0.tar.gz (39.5MB, 51 locale)
 取 1.0/data/en-US.jsonl, 分区 test 2974 条 / train 11514 条. tarball 不自动下载, md5 钉死.
 类 id 按原始 intent 名字母序编, 与 banking77 同一约定.
-菜单上显示的文字由 labels 选: raw 原始 intent 名 (默认), desc 写好的 description, 见 decidophobia.label_names.
+菜单上显示的文字由 labels 选: raw 原始 intent 名 (默认), desc 写好的 description, 见 decidophobia.data.label_names.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import json
 import pathlib
 import tarfile
 
-from decidophobia.data import LabeledSet
-from decidophobia.label_names import label_names
+from decidophobia.core.menu import LabeledSet
+from decidophobia.data.label_names import label_names
 
 TARBALL = "amazon-massive-dataset-1.0.tar.gz"
 TARBALL_MD5 = "92fe0007628b31ca02c7bf4035a883e7"

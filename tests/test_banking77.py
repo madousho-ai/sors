@@ -1,4 +1,4 @@
-"""decidophobia.banking77 的测试: 菜单上显示原始 label 名或 description.
+"""decidophobia.data.banking77 的测试: 菜单上显示原始 label 名或 description.
 
 跑:  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_banking77.py
 需要 data/banking77/{train,test}.csv (第一次跑会从上游钉死的 commit 下载).
@@ -7,8 +7,8 @@
 import json
 
 from _runner import run
-from decidophobia.banking77 import load_banking77
-from decidophobia.label_names import DESC_DIR
+from decidophobia.data.banking77 import load_banking77
+from decidophobia.data.label_names import DESC_DIR
 
 
 def test_names_are_the_raw_labels_unchanged():

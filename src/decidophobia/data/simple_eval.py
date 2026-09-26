@@ -12,9 +12,9 @@ from __future__ import annotations
 import json
 import pathlib
 
-from decidophobia.data import MenuExample
+from decidophobia.core.menu import MenuExample
 
-DEFAULT_PATH = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-simple-eval" / "synth-simple-eval.jsonl"
+DEFAULT_PATH = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-simple-eval" / "synth-simple-eval.jsonl"
 SIZES = (5, 10, 20, 40, 60, 100, 255)
 CONTEXT_LABEL = "Customer message"
 _BOOL = {"no": 0, "yes": 1}

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datasets import load_dataset
 
-from decidophobia.data import LabeledSet
+from decidophobia.core.menu import LabeledSet
 
 NAMES = {0: "no", 1: "yes"}
 

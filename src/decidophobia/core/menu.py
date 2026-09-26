@@ -14,7 +14,7 @@ import math
 import random
 from dataclasses import dataclass, field, replace
 
-from decidophobia.tokens import N_SLOTS
+from decidophobia.core.tokens import N_SLOTS
 
 
 @dataclass(frozen=True)

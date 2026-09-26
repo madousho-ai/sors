@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from decidophobia.data import row_alignment
+from decidophobia.core.menu import row_alignment
 
 NLL_EPS = 1e-12
 
@@ -142,8 +142,8 @@ def _entropy(p: list[float]) -> float:
 
 
 def pass_consistency(qs: list[list[list[float]]], passes: list[list]) -> dict[str, float]:
-    """同一批题的几种排法 (data.arrangements) 放在一起比. qs[p][i] 是第 p 份第 i 道题在菜单各行上的概率 (按位置,
-    可以带菜单之外补的 0 列), passes[p][i] 是那一份的菜单. 各份按描述对齐 (data.row_alignment) 到第 0 份的顺序.
+    """同一批题的几种排法 (menu.arrangements) 放在一起比. qs[p][i] 是第 p 份第 i 道题在菜单各行上的概率 (按位置,
+    可以带菜单之外补的 0 列), passes[p][i] 是那一份的菜单. 各份按描述对齐 (menu.row_alignment) 到第 0 份的顺序.
 
       accuracy  每份每题首选是不是正确描述, 全部平均. 首选只能靠读描述选对, 压平分布或乱猜刷不出来
       agree     各份首选都是同一条描述的题占多少

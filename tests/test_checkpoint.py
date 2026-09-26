@@ -11,10 +11,10 @@ import torch
 from torch import nn
 
 from _runner import run
-from decidophobia.data import MenuExample
-from decidophobia.model import adapter_config
-from decidophobia.checkpoint import checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
-from decidophobia.train import TrainConfig, train
+from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
+from decidophobia.core.menu import MenuExample
+from decidophobia.core.model import adapter_config
+from decidophobia.training.loop import TrainConfig, train
 
 
 class _Emb(nn.Module):
@@ -67,7 +67,7 @@ def _tiny_lm():
 
 def _tiny(trainable="attn", r=4, alpha=8):
     """_tiny_lm 走真的 prepare_model (peft LoRA + SlotEmbedding)."""
-    from decidophobia.model import prepare_model
+    from decidophobia.core.model import prepare_model
 
     return prepare_model(_tiny_lm(), TINY_IDS, lora_r=r, lora_alpha=alpha, lora_dropout=0.0, trainable=trainable)
 

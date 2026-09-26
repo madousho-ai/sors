@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from decidophobia.data import MenuExample, row_alignment
-from decidophobia.prompt import DEFAULT_LAYOUT, render_menu
+from decidophobia.core.menu import MenuExample, row_alignment
+from decidophobia.core.prompt import DEFAULT_LAYOUT, render_menu
 
 
 def collate(
@@ -66,8 +66,8 @@ def trim_left_padding(input_ids: torch.Tensor, attention_mask: torch.Tensor) -> 
 
 
 def pair_alignment(examples: list[MenuExample], k_max: int) -> torch.Tensor:
-    """(n, k_max), n = len(examples) // 2. 相邻两条 (2i, 2i+1) 是同一道题的两种排法 (data.with_partners);
-    第 i 行第 j 列 = 第 2i 条菜单第 j 行的描述在第 2i+1 条菜单的第几行 (data.row_alignment). 菜单之外补 -1."""
+    """(n, k_max), n = len(examples) // 2. 相邻两条 (2i, 2i+1) 是同一道题的两种排法 (menu.with_partners);
+    第 i 行第 j 列 = 第 2i 条菜单第 j 行的描述在第 2i+1 条菜单的第几行 (menu.row_alignment). 菜单之外补 -1."""
     if len(examples) % 2:
         raise ValueError(f"{len(examples)} examples cannot be split into pairs")
     out = torch.full((len(examples) // 2, k_max), -1, dtype=torch.long)

@@ -9,7 +9,7 @@
   synth-menu  synth 只要菜单题, 不要二元题 (不与 synth 并用)
   synth-v3    datasets/synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
-              写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/synth_v3.py)
+              写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
@@ -17,7 +17,7 @@
 --eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple (见 build_eval_sets).
 训练中 (step 0 与每 --eval-every 步) 只跑探针: 每个评估集固定 --probe-size 道题, 固定 --probe-passes 种随机排法
 (行打乱、D 码随机), 报 accuracy / agree / js. 最后一步再跑全量评估集: 部署形态 (连续编号) 下的正确率那一套,
-与全量题的同一种一致性. 见 decidophobia.train.eval_record.
+与全量题的同一种一致性. 见 decidophobia.training.loop.eval_record.
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
   PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.safetensors --steps 0   # 只评估: 探针 + 全量
@@ -44,15 +44,15 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.data import RandomCodes, class_split, menu_k_range, with_partners
-from decidophobia.loss import LOSSES
-from decidophobia.model import LORA_TARGETS, prepare_model
-from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.thermal import ThermalGuard
-from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.checkpoint import checkpoint_adapter, load_trained, save_trained
-from decidophobia.scoring import EvalSet
-from decidophobia.train import TrainConfig, train
+from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, save_trained
+from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_partners
+from decidophobia.core.model import LORA_TARGETS, prepare_model
+from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
+from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.evaluation.scoring import EvalSet
+from decidophobia.training.loop import TrainConfig, train
+from decidophobia.training.loss import LOSSES
+from decidophobia.training.thermal import ThermalGuard
 
 KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "massive")
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple")
@@ -82,7 +82,7 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     out = {}
     for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
         if name == "simple":
-            from decidophobia.simple_eval import load_simple_eval
+            from decidophobia.data.simple_eval import load_simple_eval
 
             for sub, exs in load_simple_eval().items():
                 pos = 1 if sub == "simple_bool" else None
@@ -90,22 +90,22 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
             continue
         if name == "banking77":
             if b77_test is None:
-                from decidophobia.banking77 import load_banking77
+                from decidophobia.data.banking77 import load_banking77
 
                 b77_test = load_banking77(args.data_dir)[1]
             te, bs, pos = b77_test, args.eval_batch_size, None
         elif name == "banking77-desc":
-            from decidophobia.banking77 import load_banking77
+            from decidophobia.data.banking77 import load_banking77
 
             te, bs, pos = load_banking77(args.data_dir, labels="desc")[1], args.eval_batch_size, None
         elif name in ("massive", "massive-desc"):
-            from decidophobia.massive import load_massive
+            from decidophobia.data.massive import load_massive
 
             labels = "desc" if name == "massive-desc" else "raw"
             te, bs, pos = load_massive(partition="test", labels=labels), args.eval_batch_size, None
         else:
             if boolq_val is None:
-                from decidophobia.boolq import load_boolq
+                from decidophobia.data.boolq import load_boolq
 
                 boolq_val = load_boolq()[1]
             te, bs, pos = boolq_val, max(1, args.eval_batch_size // 2), 1
@@ -136,7 +136,7 @@ def build_data(args):
     ktr = menu_k_range(args.k_min, args.k_max)
     b77 = None
     if "banking77" in datasets:
-        from decidophobia.banking77 import load_banking77
+        from decidophobia.data.banking77 import load_banking77
 
         b77 = load_banking77(args.data_dir)
         tr, te = b77
@@ -150,7 +150,7 @@ def build_data(args):
     if "synth" in datasets or "synth-menu" in datasets:
         # 每条消息两道题: 菜单题只列正确意图所在领域的意图 (k 256 即整个领域), 二元题问消息里的一个细节.
         # 两种题各占一个 sampler, 于是一批里各一半. synth-menu 只要菜单题, 一批全是它.
-        from decidophobia.synth import load_synth, load_synth_binary, sample_domain_menus
+        from decidophobia.data.synth import load_synth, load_synth_binary, sample_domain_menus
 
         synth, synth_domains = load_synth()
         samplers.append(lambda n, rng: sample_domain_menus(synth, synth_domains, ktr, n, rng))
@@ -161,7 +161,7 @@ def build_data(args):
     if "synth-v3" in datasets:
         # 题自带选项, 不组菜单: 每条先挑领域 (五个领域机会均等) 再挑题, 每次换问法、重新打乱选项.
         # --k-min / --k-max 管不到它, 菜单长度就是题的选项数.
-        from decidophobia.synth_v3 import load_synth_v3, sample_synth_v3
+        from decidophobia.data.synth_v3 import load_synth_v3, sample_synth_v3
 
         v3 = load_synth_v3()
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
@@ -169,14 +169,14 @@ def build_data(args):
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
-        from decidophobia.massive import load_massive
+        from decidophobia.data.massive import load_massive
 
         mtr = load_massive(partition="train")
         m_classes = list(range(len(mtr.names)))
         samplers.append(lambda n, rng: mtr.sample_examples(m_classes, ktr, n, rng))
         split_info["massive_classes"] = len(m_classes)
     if "boolq" in datasets:
-        from decidophobia.boolq import load_boolq
+        from decidophobia.data.boolq import load_boolq
 
         btr, bva = load_boolq()
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))

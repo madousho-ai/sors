@@ -1,7 +1,7 @@
 """评估打分: 一批 MenuExample 过模型, 读出每道题在菜单各行上的概率, 再汇总成指标.
 
 score_examples 逐题打分不汇总; evaluate 在一个评估集上报正确率、NLL、校准与格式遵从;
-consistency_eval 把同一批题的几种排法各打一次分, 按描述对齐比. 训练循环 (decidophobia.train) 的评估点与评估脚本都用它们.
+consistency_eval 把同一批题的几种排法各打一次分, 按描述对齐比. 训练循环 (decidophobia.training.loop) 的评估点与评估脚本都用它们.
 """
 
 from __future__ import annotations
@@ -10,12 +10,12 @@ from dataclasses import dataclass
 
 import torch
 
-from decidophobia.batch import collate
-from decidophobia.data import MenuExample
-from decidophobia.loss import answer_mass, gather_slot_logits, vocab_cross_entropy
-from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
+from decidophobia.core.batch import collate
+from decidophobia.core.menu import MenuExample
+from decidophobia.core.model import last_logits
+from decidophobia.evaluation.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
                                   pass_consistency, summarize)
-from decidophobia.model import last_logits
+from decidophobia.training.loss import answer_mass, gather_slot_logits, vocab_cross_entropy
 
 
 @dataclass

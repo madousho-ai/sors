@@ -1,11 +1,11 @@
-"""decidophobia.schedule 的测试.
+"""decidophobia.training.schedule 的测试.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_schedule.py
 """
 
 import sys
 
-from decidophobia.schedule import lr_scale
+from decidophobia.training.schedule import lr_scale
 
 
 def test_cosine_warmup_ramps_then_decays_to_zero():

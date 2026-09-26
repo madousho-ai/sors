@@ -1,7 +1,7 @@
 """训练循环. 每一步的菜单都是现组的: 同一条 query 每次见到的选项集和位置都不同.
 
 train() 不认识数据集: 拿一个 sample_fn (给 n 和 rng, 还 n 条 MenuExample) 和若干 EvalSet.
-评估点上的打分与指标在 decidophobia.scoring, 这里只决定什么时候评、评哪些.
+评估点上的打分与指标在 decidophobia.evaluation.scoring, 这里只决定什么时候评、评哪些.
 单数据集、双数据集混合、只评估不训练 (steps=0), 都是调用方组 sample_fn 的事.
 """
 
@@ -15,13 +15,13 @@ from dataclasses import dataclass
 
 import torch
 
-from decidophobia.batch import collate, pair_alignment
-from decidophobia.data import MenuExample, arrangements
-from decidophobia.loss import consistency_js, menu_hits, smooth_target, training_loss
-from decidophobia.model import grouped_last_logits, trainable_param_groups
-from decidophobia.prompt import DEFAULT_LAYOUT
-from decidophobia.schedule import lr_scale
-from decidophobia.scoring import EvalSet, consistency_eval, evaluate
+from decidophobia.core.batch import collate, pair_alignment
+from decidophobia.core.menu import MenuExample, arrangements
+from decidophobia.core.model import grouped_last_logits, trainable_param_groups
+from decidophobia.core.prompt import DEFAULT_LAYOUT
+from decidophobia.evaluation.scoring import EvalSet, consistency_eval, evaluate
+from decidophobia.training.loss import consistency_js, menu_hits, smooth_target, training_loss
+from decidophobia.training.schedule import lr_scale
 
 SampleFn = Callable[[int, random.Random], list[MenuExample]]
 
@@ -41,7 +41,7 @@ class TrainConfig:
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
     loss: str = "all-slots"  # loss.LOSSES: vocab 整个词表; all-slots 全部 D 槽; menu 菜单 k 个槽. scripts/train.py 总是显式传, 默认 vocab
     label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
-    consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (data.with_partners)
+    consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (menu.with_partners)
     eval_every: int = 100
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
     probe_size: int = 200  # 训练中的评估点每个评估集抽几道题, 见 probe_passes
@@ -64,7 +64,7 @@ def scalar_items(prefix: str, d: dict) -> list[tuple[str, float]]:
 
 def probe_passes(examples: list[MenuExample], size: int, passes: int, key: str) -> list[list[MenuExample]]:
     """训练中每个评估点都用的那一套: 抽 size 道 (不够就全部, 顺序照旧), 排成 passes 种随机的样子
-    (data.arrangements: 行打乱、码随机). 全由 key 定死, 整场训练每个评估点比的都是同一批题、同样的排法,
+    (menu.arrangements: 行打乱、码随机). 全由 key 定死, 整场训练每个评估点比的都是同一批题、同样的排法,
     曲线上两点的差别只来自模型. 用自己的 rng, 不动训练抽题的那一个."""
     rng = random.Random(key)
     if len(examples) > size:
@@ -104,7 +104,7 @@ def step_loss(
     cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: torch.Tensor, d_ids: list[int],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """一步的 (总损失, 交叉熵, JS). 交叉熵是 training_loss, 对 batch 里每一条取平均.
-    cfg.consistency > 0 时 exs 必须是 data.with_partners 排好的 [a, a', b, b', ...], 总损失再加
+    cfg.consistency > 0 时 exs 必须是 menu.with_partners 排好的 [a, a', b, b', ...], 总损失再加
     consistency · consistency_js (两种排法按描述对齐后的 JS, 按对平均); 不成对就报 ValueError.
     consistency 0 时 JS 是 None、总损失就是交叉熵那个张量."""
     ce = training_loss(cfg.loss, logits, b["slot_ids"], b["gold"], d_ids,

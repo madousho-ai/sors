@@ -12,9 +12,9 @@ import json
 import pathlib
 import random
 
-from decidophobia.data import LabeledSet, MenuExample, compose_menu, draw_k
+from decidophobia.core.menu import LabeledSet, MenuExample, compose_menu, draw_k
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[2] / "datasets" / "synth-intents-v2.5"
+DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v2.5"
 CONTEXT_LABEL = "Customer message"
 
 

@@ -1,4 +1,4 @@
-"""decidophobia.massive 的测试: 只做评估的留出数据集, 训练里一条都不出现.
+"""decidophobia.data.massive 的测试: 只做评估的留出数据集, 训练里一条都不出现.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_massive.py
 需要 data/massive/amazon-massive-dataset-1.0.tar.gz 在盘上 (39.5MB, 不自动下载).
@@ -8,8 +8,8 @@ import json
 import random
 
 from _runner import run
-from decidophobia.label_names import DESC_DIR
-from decidophobia.massive import load_massive
+from decidophobia.data.label_names import DESC_DIR
+from decidophobia.data.massive import load_massive
 
 
 def test_test_split_has_2974_utterances_over_60_intents():
