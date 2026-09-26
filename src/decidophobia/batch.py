@@ -48,6 +48,23 @@ def collate(
     return {"input_ids": input_ids, "attention_mask": attn, "slot_ids": slot_ids, "gold": gold, "target": target}
 
 
+def length_groups(attention_mask: torch.Tensor, n: int) -> list[torch.Tensor]:
+    """把一批的行按真实长度分成 n 组, 每组各自前向时只补齐到组里最长的那条, 不再补到全批最长.
+    行按长度从长到短排 (等长的保持批里的顺序), 再尽量均分地切成 n 段; 行数不够 n 就每行一组.
+    n == 1 时就是整批原样、行序不动 —— 与不分组时喂进模型的是同一个张量."""
+    B = attention_mask.shape[0]
+    if n <= 1:
+        return [torch.arange(B, device=attention_mask.device)]
+    order = torch.sort(attention_mask.sum(dim=1), descending=True, stable=True).indices
+    return list(torch.tensor_split(order, min(n, B)))
+
+
+def trim_left_padding(input_ids: torch.Tensor, attention_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """去掉每一行都是填充的那些左侧列. 左填充下答案位置仍是最后一列."""
+    keep = int(attention_mask.sum(dim=1).max())
+    return input_ids[:, -keep:], attention_mask[:, -keep:]
+
+
 def pair_alignment(examples: list[MenuExample], k_max: int) -> torch.Tensor:
     """(n, k_max), n = len(examples) // 2. 相邻两条 (2i, 2i+1) 是同一道题的两种排法 (data.with_partners);
     第 i 行第 j 列 = 第 2i 条菜单第 j 行的描述在第 2i+1 条菜单的第几行 (data.row_alignment). 菜单之外补 -1."""

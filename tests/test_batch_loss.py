@@ -8,7 +8,7 @@ import sys
 
 import torch
 
-from decidophobia.batch import collate, pair_alignment
+from decidophobia.batch import collate, length_groups, pair_alignment, trim_left_padding
 from decidophobia.data import MenuExample, reorder_menu
 from decidophobia.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, menu_hits,
                                slot_cross_entropy, smooth_target, training_loss, vocab_cross_entropy)
@@ -143,6 +143,40 @@ def test_collate_target_is_each_examples_distribution_or_one_hot_on_gold():
     b = collate(exs, tok, d_ids, k_max=4)
     assert b["target"].dtype == torch.float32
     assert b["target"].tolist() == [[0.0, 1.0, 0.0, 0.0], [0.5, 0.25, 0.25, 0.0]], b["target"]
+
+
+def test_length_groups_put_the_longest_rows_together_and_split_them_evenly():
+    """四行左填充到 7, 真实长度 3 / 7 / 1 / 5. 按长度从长到短排成 1, 3, 0, 2 再切:
+    两组 [1, 3] [0, 2]; 三组 [1, 3] [0] [2]; 组数多于行数时每行一组, 没有空组.
+    一组就是整批原样、行序不动, 于是与不分组时喂进模型的是同一个张量."""
+    mask = torch.tensor([[0] * (7 - n) + [1] * n for n in (3, 7, 1, 5)])
+    assert [g.tolist() for g in length_groups(mask, 2)] == [[1, 3], [0, 2]]
+    assert [g.tolist() for g in length_groups(mask, 3)] == [[1, 3], [0], [2]]
+    assert [g.tolist() for g in length_groups(mask, 9)] == [[1], [3], [0], [2]]
+    assert [g.tolist() for g in length_groups(mask, 1)] == [[0, 1, 2, 3]]
+
+
+def test_length_groups_keep_the_batch_order_among_rows_of_equal_length():
+    mask = torch.tensor([[0, 1, 1], [1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    assert [g.tolist() for g in length_groups(mask, 2)] == [[1, 0], [2, 3]]
+
+
+def test_trim_left_padding_gives_the_rows_as_if_they_were_collated_alone():
+    """从整批里取出两道短题, 去掉这两行全是填充的那些列, 与只拿这两道题 collate 的结果逐位相同."""
+    tok = _tok()
+    d_ids = install_d_tokens(tok)
+    exs = [
+        MenuExample(query="short", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"]),
+        MenuExample(query="a much longer customer message that goes on for quite a few more words than the rest",
+                    options=[0, 1], gold_idx=1, label=1, option_names=["a", "b"]),
+        MenuExample(query="a medium message", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"]),
+    ]
+    whole = collate(exs, tok, d_ids, k_max=2)
+    rows = torch.tensor([0, 2])
+    ids, mask = trim_left_padding(whole["input_ids"][rows], whole["attention_mask"][rows])
+    alone = collate([exs[0], exs[2]], tok, d_ids, k_max=2)
+    assert ids.shape[1] < whole["input_ids"].shape[1]
+    assert torch.equal(ids, alone["input_ids"]) and torch.equal(mask, alone["attention_mask"]), (ids, alone["input_ids"])
 
 
 # --------------------------------------------------------------------------
