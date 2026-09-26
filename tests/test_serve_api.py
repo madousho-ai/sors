@@ -6,7 +6,7 @@
 from pydantic import ValidationError
 
 from _runner import run
-from decidophobia.serve.api import Choice, Noul, Score, SystemOneRequest
+from decidophobia.serve.api import Choice, Noul, Score, SystemOneRequest, answer, confidence
 
 
 def _req(questions, state="Help! My payouts have been failing for 3 days.", model="m"):
@@ -114,6 +114,51 @@ def test_descriptions_are_text_objects_or_arrays_and_only_choice_options_may_lea
     ok = SystemOneRequest.model_validate(_req({"q": {"type": "noul", "instructions": "Urgent?",
                                                      "criteria": {"true": None, "false": "No urgency"}}}))
     assert ok.questions["q"].criteria.true is None
+
+
+# --------------------------------------------------------------------------
+# 答案: 模型给出的菜单分布 -> 线上格式
+# --------------------------------------------------------------------------
+
+
+def _q(body):
+    return SystemOneRequest.model_validate(_req({"q": body})).questions["q"]
+
+
+def _close(a, b, tol=1e-9):
+    return abs(a - b) < tol
+
+
+def test_confidence_is_one_on_a_single_option_zero_when_even_and_linear_in_the_top_probability():
+    """(k · 最大概率 − 1) / (k − 1): TypeSafe 的 Confidence 页三项时就用这个式子. 文档里 {0.88, 0.12, 0.0} 的 0.81
+    是从没舍入的概率算的, 这里按 0.88 算得 0.82."""
+    assert confidence([1.0, 0.0, 0.0]) == 1.0
+    assert _close(confidence([0.25] * 4), 0.0)
+    assert _close(confidence([0.88, 0.12, 0.0]), 0.82)
+    assert _close(confidence([0.5, 0.5]), 0.0)
+
+
+def test_a_choice_answer_names_the_likeliest_option_and_keys_probabilities_by_option_name():
+    q = _q({"type": "choice", "instructions": "Which team?", "criteria": {"billing": "Payments", "technical": None,
+                                                                         "sales": "Pricing"}})
+    a = answer(q, [0.12, 0.88, 0.0])
+    assert a == {"type": "choice", "choice": "technical", "probabilities": {"billing": 0.12, "technical": 0.88, "sales": 0.0},
+                 "confidence": a["confidence"]} and _close(a["confidence"], 0.82)
+    assert answer(q, [0.4, 0.4, 0.2])["choice"] == "billing"  # 并列取 criteria 里靠前的
+
+
+def test_a_score_answer_is_the_expected_level_with_a_legend_of_the_level_descriptions():
+    q = _q({"type": "score", "instructions": "How frustrated?", "criteria": ["Calm", {"level": "Frustrated"}, "Very angry"]})
+    a = answer(q, [0.0, 0.95, 0.05])
+    assert _close(a["score"], 1.05)
+    assert a["legend"] == {"0": "Calm", "1": {"level": "Frustrated"}, "2": "Very angry"}
+    assert a["probabilities"] == {"0": 0.0, "1": 0.95, "2": 0.05}
+    assert a["type"] == "score" and _close(a["confidence"], (3 * 0.95 - 1) / 2)
+
+
+def test_a_noul_answer_is_the_probability_of_yes_and_carries_no_confidence():
+    """菜单上 no 在前、yes 在后, 模型的分布也按这个顺序."""
+    assert answer(_q({"type": "noul", "instructions": "Urgent?"}), [0.05, 0.95]) == {"type": "noul", "noul": 0.95}
 
 
 if __name__ == "__main__":

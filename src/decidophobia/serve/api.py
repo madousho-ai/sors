@@ -79,3 +79,29 @@ class SystemOneRequest(_Strict):
     state: JSONContent
     model: str
     questions: dict[str, Question] = Field(min_length=1)
+
+
+# ---- 答案 --------------------------------------------------------------------
+# probs 是模型在这道题菜单各行上的分布, 行序与 serve.menus 排的菜单相同: choice 按 criteria 的顺序,
+# score 按分级从低到高, noul 是 [no, yes].
+
+
+def confidence(probs: list[float]) -> float:
+    """(k · 最大概率 − 1) / (k − 1), 夹在 0..1: 全在一项上是 1, 均匀是 0. TypeSafe 的 Confidence 页
+    演示三项时用的就是这个式子; 它说真正的算法「由分布的摊开程度导出」, 没写别的式子, 这里所有 k 都用它."""
+    k = len(probs)
+    return min(1.0, max(0.0, (k * max(probs) - 1) / (k - 1)))
+
+
+def answer(q: Noul | Choice | Score, probs: list[float]) -> dict:
+    probs = [float(p) for p in probs]
+    if q.type == "noul":
+        return {"type": "noul", "noul": probs[1]}
+    if q.type == "choice":
+        names = list(q.criteria)
+        top = max(range(len(probs)), key=probs.__getitem__)  # 并列时取靠前的
+        return {"type": "choice", "choice": names[top], "probabilities": dict(zip(names, probs)),
+                "confidence": confidence(probs)}
+    return {"type": "score", "score": sum(i * p for i, p in enumerate(probs)),
+            "legend": {str(i): level for i, level in enumerate(q.criteria)},
+            "probabilities": {str(i): p for i, p in enumerate(probs)}, "confidence": confidence(probs)}
