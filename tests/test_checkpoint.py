@@ -1,4 +1,4 @@
-"""train.save_trained / load_trained 的测试, 以及 train() 训练途中什么时候交出存档. 用假模型或一层的随机 Qwen3, 不碰 GPU.
+"""checkpoint.save_trained / load_trained 的测试, 以及 train() 训练途中什么时候交出存档. 用假模型或一层的随机 Qwen3, 不碰 GPU.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_checkpoint.py
 """
@@ -13,8 +13,8 @@ from torch import nn
 from _runner import run
 from decidophobia.data import MenuExample
 from decidophobia.model import adapter_config
-from decidophobia.train import (TrainConfig, checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained,
-                                train)
+from decidophobia.checkpoint import checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
+from decidophobia.train import TrainConfig, train
 
 
 class _Emb(nn.Module):

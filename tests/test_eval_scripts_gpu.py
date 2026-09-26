@@ -29,7 +29,8 @@ def _checkpoint() -> str:
 
         from decidophobia.model import prepare_model
         from decidophobia.tokens import install_d_tokens, install_type_tokens
-        from decidophobia.train import TrainConfig, save_trained
+        from decidophobia.checkpoint import save_trained
+        from decidophobia.train import TrainConfig
 
         tok = AutoTokenizer.from_pretrained(MODEL)
         ids = install_d_tokens(tok) + install_type_tokens(tok)

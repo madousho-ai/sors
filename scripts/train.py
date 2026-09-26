@@ -50,7 +50,8 @@ from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
-from decidophobia.train import EvalSet, TrainConfig, checkpoint_adapter, load_trained, save_trained, train
+from decidophobia.checkpoint import checkpoint_adapter, load_trained, save_trained
+from decidophobia.train import EvalSet, TrainConfig, train
 
 KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "massive")
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple")

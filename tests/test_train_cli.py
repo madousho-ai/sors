@@ -313,8 +313,9 @@ def _checkpoint(trainable, r, alpha):
 
     from transformers import Qwen3Config, Qwen3ForCausalLM
 
+    from decidophobia.checkpoint import save_trained
     from decidophobia.model import prepare_model
-    from decidophobia.train import TrainConfig, save_trained
+    from decidophobia.train import TrainConfig
 
     cfg = Qwen3Config(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
                       num_attention_heads=2, num_key_value_heads=1, head_dim=8)
