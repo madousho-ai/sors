@@ -5,15 +5,18 @@ requires-python = ">=3.13"
 dependencies = [
     "accelerate>=1.15.0",
     "datasets>=5.0.1",
+    "fastapi>=0.141.1",
     "numpy>=2.5.3",
     "peft>=0.21.0",
     "safetensors>=0.8.0",
     "torch>=2.14.0",
     "transformers>=5.17.0",
+    "uvicorn>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "netcal>=1.4.0",
     "scikit-learn>=1.9.1",
     "tensorboard>=2.21.0",
