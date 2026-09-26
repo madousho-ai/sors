@@ -19,10 +19,12 @@ def test_synth_loads_4096_intents_with_three_utterances_each():
 
 
 def test_synth_class_ids_follow_sorted_intent_ids_and_names_are_descriptions():
-    """类 id 按 intent id 字母序 (与 banking77 / massive 同一约定); 菜单里显示的是描述, 同一领域内不重复."""
+    """类 id 按 intent id 字母序 (与 banking77 / massive 同一约定); 菜单里显示的是描述, 同一领域内不重复.
+    v2.5 的描述是首字母大写、句末无标点的话题名词短语, 2–14 词 (规则见 datasets/synth-intents-v2.5/SPEC.md)."""
     s, domains = load_synth()
     assert domains[0] == "automotive" and domains[4095] == "utilities"
-    assert all(n == n.lower() and 3 <= len(n.split()) <= 12 for n in s.names.values())
+    assert all((n[0].isupper() or n[0].isdigit()) and n[-1].isalnum() and 2 <= len(n.split()) <= 14
+               for n in s.names.values())
     per_domain = collections.defaultdict(set)
     for c, n in s.names.items():
         per_domain[domains[c]].add(n)
@@ -49,7 +51,7 @@ def test_synth_binary_labels_are_the_intents_answers_in_message_order():
     """telecom_report_dropped_calls 的三条消息答案是 [false, true, false], 问句三条相同."""
     s, _ = load_synth()
     b = load_synth_binary()
-    c = next(c for c, n in s.names.items() if n == "report that calls keep dropping")
+    c = next(c for c, n in s.names.items() if n == "Calls that keep dropping")
     rows = [i for i, lab in enumerate(s.labels) if lab == c]
     assert [b.labels[i] for i in rows] == [0, 1, 0]
     assert {b.questions[i] for i in rows} == {"does the customer mention their signal strength?"}
