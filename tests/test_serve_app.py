@@ -1,0 +1,113 @@
+"""decidophobia.serve.app 的测试: 路由、鉴权、错误码与响应格式. 引擎换成假的, 不碰模型.
+
+跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_app.py
+"""
+
+from fastapi.testclient import TestClient
+
+from _runner import run
+from decidophobia.serve.app import create_app
+from decidophobia.serve.engine import Evaluation, RequestTooLong
+
+NAME = "decidophobia-test"
+BODY = {
+    "state": "Help! My payouts have been failing for 3 days.",
+    "model": NAME,
+    "questions": {
+        "department": {"type": "choice", "instructions": "Which team should handle this?",
+                       "criteria": {"billing": "Payments, invoicing, refunds", "technical": "Bugs, outages",
+                                    "sales": "Pricing, upgrades"}},
+        "is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"},
+        "frustration": {"type": "score", "instructions": "How frustrated is the customer?",
+                        "criteria": ["Calm", "Frustrated", "Very angry"]},
+    },
+}
+
+
+class FakeEngine:
+    """每道题回一个写死的分布, 记下收到的请求."""
+
+    def __init__(self, probs=None, error=None):
+        self.probs = probs or {"department": [0.88, 0.12, 0.0], "is_urgent": [0.05, 0.95], "frustration": [0.0, 0.95, 0.05]}
+        self.error = error
+        self.calls = []
+
+    def evaluate(self, state, questions):
+        self.calls.append((state, questions))
+        if self.error:
+            raise self.error
+        return Evaluation({qid: self.probs[qid] for qid in questions}, input_tokens=123)
+
+
+def _client(engine=None, api_key=None):
+    return TestClient(create_app(engine or FakeEngine(), NAME, api_key=api_key, description="a test checkpoint",
+                                 release_date="2026-09-26"))
+
+
+def test_a_request_gets_one_answer_per_question_under_its_own_id_with_the_served_model_name():
+    r = _client().post("/v1/systemone", json=BODY)
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["model"] == NAME and list(got["answers"]) == ["department", "is_urgent", "frustration"]
+    dep = got["answers"]["department"]
+    assert dep["type"] == "choice" and dep["choice"] == "billing"
+    assert dep["probabilities"] == {"billing": 0.88, "technical": 0.12, "sales": 0.0}
+    assert abs(dep["confidence"] - 0.82) < 1e-9
+    assert got["answers"]["is_urgent"] == {"type": "noul", "noul": 0.95}
+    fr = got["answers"]["frustration"]
+    assert abs(fr["score"] - 1.05) < 1e-9 and fr["legend"] == {"0": "Calm", "1": "Frustrated", "2": "Very angry"}
+    assert got["usage"] == {"input_tokens": 123, "output_tokens": 3}
+
+
+def test_the_engine_receives_the_state_and_the_parsed_questions():
+    e = FakeEngine()
+    body = {**BODY, "state": {"ticket": {"subject": "Payouts failing"}}}
+    _client(e).post("/v1/systemone", json=body)
+    state, qs = e.calls[0]
+    assert state == {"ticket": {"subject": "Payouts failing"}} and qs["frustration"].criteria[0] == "Calm"
+
+
+def test_a_request_for_another_model_is_refused_with_422_naming_the_served_one():
+    r = _client().post("/v1/systemone", json={**BODY, "model": "jev-latest"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail[0]["loc"] == ["body", "model"] and NAME in detail[0]["msg"]
+
+
+def test_a_malformed_request_is_422_and_names_the_offending_field():
+    q = {**BODY["questions"]["department"], "criteria": {"only": "one option"}}
+    r = _client().post("/v1/systemone", json={**BODY, "questions": {"department": q}})
+    assert r.status_code == 422
+    assert any(d["loc"][:4] == ["body", "questions", "department", "choice"] for d in r.json()["detail"]), r.text
+
+
+def test_a_request_too_long_for_the_model_is_422():
+    e = FakeEngine(error=RequestTooLong("the state plus the longest question come to 9000 tokens"))
+    r = _client(e).post("/v1/systemone", json=BODY)
+    assert r.status_code == 422 and "9000 tokens" in r.json()["detail"][0]["msg"], r.text
+
+
+def test_with_an_api_key_set_requests_need_the_bearer_token():
+    c = _client(api_key="s3cret")
+    assert c.post("/v1/systemone", json=BODY).status_code == 401
+    assert c.post("/v1/systemone", json=BODY, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert c.get("/v1/models").status_code == 401
+    ok = c.post("/v1/systemone", json=BODY, headers={"Authorization": "Bearer s3cret"})
+    assert ok.status_code == 200, ok.text
+    assert c.get("/v1/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_without_an_api_key_any_authorization_header_is_accepted():
+    """官方 SDK 总会带上自己的 key; 本地服务不设 key 时不管它带的是什么."""
+    r = _client().post("/v1/systemone", json=BODY, headers={"Authorization": "Bearer whatever"})
+    assert r.status_code == 200, r.text
+
+
+def test_models_lists_the_served_model():
+    r = _client().get("/v1/models")
+    assert r.status_code == 200
+    assert r.json() == {"models": [{"name": NAME, "description": "a test checkpoint", "release_date": "2026-09-26"}]}
+
+
+if __name__ == "__main__":
+    run(globals())
