@@ -51,7 +51,8 @@ from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.checkpoint import checkpoint_adapter, load_trained, save_trained
-from decidophobia.train import EvalSet, TrainConfig, train
+from decidophobia.scoring import EvalSet
+from decidophobia.train import TrainConfig, train
 
 KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "massive")
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple")

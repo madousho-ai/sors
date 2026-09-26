@@ -34,7 +34,7 @@ from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.synth import synth_eval_examples
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.checkpoint import prepare_from_checkpoint
-from decidophobia.train import score_examples
+from decidophobia.scoring import score_examples
 
 SHORT = 60
 

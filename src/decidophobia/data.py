@@ -201,7 +201,7 @@ def row_alignment(a: MenuExample, b: MenuExample) -> list[int]:
     return [where[c] for c in a.options]
 
 
-# 一致性评估 (train.consistency_eval): 同一批题排成几种随机的样子, 看选中的描述变不变.
+# 一致性评估 (scoring.consistency_eval): 同一批题排成几种随机的样子, 看选中的描述变不变.
 
 
 def random_arrangement(ex: MenuExample, rng: random.Random) -> MenuExample:

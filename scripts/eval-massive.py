@@ -32,7 +32,7 @@ from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.checkpoint import prepare_from_checkpoint
-from decidophobia.train import EvalSet, evaluate
+from decidophobia.scoring import EvalSet, evaluate
 
 
 def main() -> None:
