@@ -16,6 +16,8 @@ import torch
 import torch.nn as nn
 from peft import LoraConfig, get_peft_model
 
+from decidophobia.batch import length_groups, trim_left_padding
+
 ATTN_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]
 
@@ -134,3 +136,18 @@ def last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> tor
     """只算最后一个位置的 logits, (B, V). logits_to_keep=1 绕开 (B, L, V) 的大张量."""
     out = m(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=1)
     return out.logits[:, -1, :].float()
+
+
+def grouped_last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor, n: int) -> torch.Tensor:
+    """与 last_logits 相同的 (B, V), 但把批按真实长度分成 n 组 (batch.length_groups) 各自前向,
+    每组只补齐到组里最长的那条, 再按原来的行序拼回. 左填充下答案位置总是最后一列, RoPE 只看相对位置,
+    所以每一行的结果与整批一次前向相同 (浮点误差内). 各组的计算图都留着, 调用方照旧对整批的 loss 反传一次.
+    n == 1 就是 last_logits 本身."""
+    groups = length_groups(attention_mask, n)
+    if len(groups) == 1:
+        return last_logits(m, input_ids, attention_mask)
+    parts = [last_logits(m, *trim_left_padding(input_ids[g], attention_mask[g])) for g in groups]
+    order = torch.cat(groups)
+    back = torch.empty_like(order)
+    back[order] = torch.arange(len(order), device=order.device)
+    return torch.cat(parts)[back]

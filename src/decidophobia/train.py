@@ -20,7 +20,7 @@ from decidophobia.loss import (answer_mass, consistency_js, gather_slot_logits, 
                                training_loss, vocab_cross_entropy)
 from decidophobia.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
                                   pass_consistency, summarize)
-from decidophobia.model import adapter_config, last_logits, prepare_model, trainable_param_groups
+from decidophobia.model import adapter_config, grouped_last_logits, last_logits, prepare_model, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
 
@@ -47,6 +47,7 @@ class TrainConfig:
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
     probe_size: int = 200  # 训练中的评估点每个评估集抽几道题, 见 probe_passes
     probe_passes: int = 5  # 每道题排成几种随机的样子 (行打乱、码随机), 训练中与最后一步都用这个数
+    micro_batches: int = 1  # 每步的 prompt 按长度分几组各自前向 (model.grouped_last_logits); 1 = 整批一次, 旧行为
     log_every: int = 20
     seed: int = 0
 
@@ -265,7 +266,7 @@ def train(
         exs = sample_fn(cfg.batch_size, rng)
         b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
         b = {k: v.to(dev) for k, v in b.items()}
-        logits = last_logits(m, b["input_ids"], b["attention_mask"])
+        logits = grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches)
         loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
         hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])  # 更新之前的模型在这一批上的读数
         opt.zero_grad(set_to_none=True)

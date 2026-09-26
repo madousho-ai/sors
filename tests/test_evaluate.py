@@ -12,7 +12,7 @@ from decidophobia.batch import collate, pair_alignment
 from decidophobia.data import MenuExample, arrangements, with_partners
 from decidophobia.loss import consistency_js, menu_hits, training_loss
 from decidophobia.metrics import first_two_slots, pass_consistency
-from decidophobia.model import last_logits, prepare_model
+from decidophobia.model import grouped_last_logits, last_logits, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import (EvalSet, TrainConfig, consistency_eval, eval_record, evaluate, probe_passes,
@@ -224,6 +224,60 @@ def test_train_accuracy_in_the_log_covers_every_step_since_the_previous_eval_poi
     hist = train(m, tok, d_ids, lambda n_, rng: [ex] * n_, {},
                  TrainConfig(steps=3, batch_size=2, k_max=3, loss="vocab", eval_every=3, log_every=1))
     assert [(r["step"], r["train_accuracy_n"]) for r in hist] == [(0, 0), (3, 6)]
+
+
+def _uneven_questions():
+    """四道长短差得很远的题, 批里长短交错."""
+    names = ["change pin", "top up", "card lost"]
+    queries = ["hi", "my card was lost on the train this morning and I need a new one sent to my home address "
+               "as soon as possible please", "top up", "the top up I made yesterday evening never arrived"]
+    return [MenuExample(query=q, options=[0, 1, 2], gold_idx=i % 3, label=i % 3, option_names=names)
+            for i, q in enumerate(queries)]
+
+
+def test_grouped_last_logits_give_each_row_what_one_forward_over_the_whole_batch_gives():
+    """分两组各自前向, 每组只补齐到组里最长; 放回原来的行序后与整批一次前向逐行相同 (浮点误差内),
+    对 logits 求的梯度也相同. 一组就是整批原样一次前向, 逐位相同.
+    梯度的量级在几十, 批形状不同时求和顺序不同, 所以按相对误差比."""
+    tok, d_ids, m = _tiny()
+    b = collate(_uneven_questions(), tok, d_ids, k_max=3)
+    whole = last_logits(m, b["input_ids"], b["attention_mask"])
+    split = grouped_last_logits(m, b["input_ids"], b["attention_mask"], 2)
+    assert torch.allclose(split, whole, atol=1e-6), (split - whole).abs().max()
+    assert torch.equal(grouped_last_logits(m, b["input_ids"], b["attention_mask"], 1), whole)
+
+    weights = torch.randn(whole.shape, generator=torch.Generator().manual_seed(0))
+    grads = []
+    for logits_fn in (lambda: last_logits(m, b["input_ids"], b["attention_mask"]),
+                      lambda: grouped_last_logits(m, b["input_ids"], b["attention_mask"], 2)):
+        m.zero_grad(set_to_none=True)
+        (logits_fn() * weights).sum().backward()
+        grads.append({n: p.grad.clone() for n, p in m.named_parameters() if p.grad is not None})
+    assert grads[0].keys() == grads[1].keys() and len(grads[0]) == 9, grads[0].keys()
+    for n in grads[0]:
+        assert torch.allclose(grads[0][n], grads[1][n], rtol=1e-4, atol=1e-4 * grads[0][n].abs().max()), n
+
+
+def test_train_runs_each_length_group_through_the_model_on_its_own_width():
+    """micro_batches 2: 一步四道题分两次前向, 每次两道; 短的那组只有它自己最长那条的宽度.
+    这一步的训练 loss 与整批一次前向的相同."""
+    exs = _uneven_questions()
+    lengths = collate(exs, *_tiny()[:2], k_max=3)["attention_mask"].sum(1).tolist()
+    losses = {}
+    for mb in (1, 2):
+        tok, d_ids, m = _tiny()
+        shapes = []
+        m.get_input_embeddings().register_forward_pre_hook(lambda mod, args: shapes.append(tuple(args[0].shape)))
+        hist = train(m, tok, d_ids, lambda n_, rng: list(exs), {},
+                     TrainConfig(steps=1, batch_size=4, k_max=3, loss="vocab", eval_every=1, log_every=1,
+                                 micro_batches=mb))
+        losses[mb] = hist[-1]["train_loss"]
+        if mb == 1:
+            assert shapes == [(4, max(lengths))], shapes
+        else:
+            ranked = sorted(lengths, reverse=True)
+            assert shapes == [(2, ranked[0]), (2, ranked[2])], (shapes, lengths)
+    assert abs(losses[1] - losses[2]) < 1e-5, losses
 
 
 if __name__ == "__main__":
