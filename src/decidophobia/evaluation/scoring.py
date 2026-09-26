@@ -14,7 +14,7 @@ from decidophobia.core.batch import collate
 from decidophobia.core.menu import MenuExample
 from decidophobia.core.model import last_logits
 from decidophobia.evaluation.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
-                                  pass_consistency, summarize)
+                                             pass_consistency, summarize)
 from decidophobia.training.loss import answer_mass, gather_slot_logits, vocab_cross_entropy
 
 

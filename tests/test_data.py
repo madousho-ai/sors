@@ -8,8 +8,8 @@ from dataclasses import replace
 
 from _runner import run
 from decidophobia.core.menu import (LabeledSet, MenuExample, RandomCodes, arrangements, class_split, compose_menu,
-                               menu_k_range, partner, random_arrangement, random_rows, reassigned_codes, reorder_menu,
-                               row_alignment, shuffled_rows, top_rows, with_partners)
+                                    menu_k_range, partner, random_arrangement, random_rows, reassigned_codes, reorder_menu,
+                                    row_alignment, shuffled_rows, top_rows, with_partners)
 from decidophobia.core.prompt import render_menu, split_prompt
 
 NAMES = {i: f"n{i}" for i in range(10)}
