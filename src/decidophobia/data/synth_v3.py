@@ -22,6 +22,7 @@ import sys
 from dataclasses import dataclass, replace
 
 from decidophobia.core.menu import MenuExample, reorder_menu
+from decidophobia.core.prompt import state_text
 
 DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v3"
 
@@ -45,10 +46,6 @@ def _module(path: pathlib.Path, name: str, register: bool = False):
         sys.modules[name] = m
     spec.loader.exec_module(m)
     return m
-
-
-def state_text(text) -> str:
-    return text if isinstance(text, str) else json.dumps(text, indent=2, ensure_ascii=False)
 
 
 def _load_domain(data_dir: pathlib.Path, domain: str, schema, item_hash) -> list[V3Item]:

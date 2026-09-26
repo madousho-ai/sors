@@ -10,7 +10,7 @@ from _runner import run
 from decidophobia.core.menu import (LabeledSet, MenuExample, RandomCodes, arrangements, class_split, compose_menu,
                                     menu_k_range, partner, random_arrangement, random_rows, reassigned_codes, reorder_menu,
                                     row_alignment, shuffled_rows, top_rows, with_partners)
-from decidophobia.core.prompt import render_menu, split_prompt
+from decidophobia.core.prompt import render_menu, split_prompt, state_text
 
 NAMES = {i: f"n{i}" for i in range(10)}
 
@@ -469,6 +469,14 @@ def test_context_prefix_is_identical_across_questions():
 def test_menu_first_has_no_shared_prefix():
     ctx, q = split_prompt(_ex("hello"), layout="menu-first")
     assert ctx == "" and "hello" in q and q.endswith("Answer:")
+
+
+def test_state_text_keeps_a_string_and_spreads_json_over_lines_indented_by_two():
+    """state 是字符串就原样进提示; 对象或数组展开成缩进 2 格的 JSON, 非 ASCII 不转义.
+    synth-v3 的 JSON state 训练时就是这个样子, 推理服务收到的对象也照这样写."""
+    assert state_text("plain\ntext") == "plain\ntext"
+    assert state_text({"a": 1, "b": ["x", "é"]}) == '{\n  "a": 1,\n  "b": [\n    "x",\n    "é"\n  ]\n}'
+    assert state_text(["hi", "there"]) == '[\n  "hi",\n  "there"\n]'
 
 
 def test_question_goes_between_context_and_menu():

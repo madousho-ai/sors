@@ -16,12 +16,20 @@ split_prompt 给出两段, 分界处两边都以换行收尾, BPE 不会跨界�
 
 from __future__ import annotations
 
+import json
+
 from decidophobia.core.menu import MenuExample
 from decidophobia.core.tokens import D_TOKENS
 
 LAYOUTS = ("context-first", "menu-first")
 DEFAULT_LAYOUT = "context-first"
 DEFAULT_QUESTION = "Which option best describes the message?"
+
+
+def state_text(state) -> str:
+    """state 在提示里的样子: 字符串原样; 对象或数组展开成缩进 2 格的 JSON, 非 ASCII 不转义.
+    synth-v3 的 JSON state 训练时这样写, 推理服务收到的对象也这样写."""
+    return state if isinstance(state, str) else json.dumps(state, indent=2, ensure_ascii=False)
 
 
 def _menu(ex: MenuExample) -> str:

@@ -17,7 +17,7 @@ import shutil
 import tempfile
 
 from _runner import run
-from decidophobia.data.synth_v3 import DEFAULT_DIR, load_synth_v3, sample_synth_v3, state_text
+from decidophobia.data.synth_v3 import DEFAULT_DIR, load_synth_v3, sample_synth_v3
 
 DOMAINS = {"browser_agent", "coding_ci", "hotel", "sec_ops", "telecom"}
 
@@ -84,7 +84,6 @@ def test_an_example_carries_the_domain_label_the_rendered_state_and_the_question
     assert ex.query.startswith("{\n  ") and json.loads(ex.query)
     assert ex.options == list(range(len(ex.option_names))) and ex.label == ex.options[ex.gold_idx]
     assert ex.question in it.asks
-    assert state_text("plain") == "plain"
 
 
 def test_a_stale_answer_file_is_refused():
