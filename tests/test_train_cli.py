@@ -25,7 +25,7 @@ _spec.loader.exec_module(_mod)
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
-                consistency=0.0, probe_size=200, probe_passes=5, eval="banking77+massive+boolq")
+                consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq")
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -281,6 +281,21 @@ def test_probe_needs_a_question_and_two_arrangements():
 
 def test_loss_defaults_to_the_whole_vocabulary():
     assert _mod.build_parser().parse_args([]).loss == "vocab"
+
+
+def test_micro_batches_default_to_two_and_stay_out_of_the_run_directory():
+    """分组前向只改算法不改数学 (每行的 logits 与整批一次相同), 所以默认就开, 目录名不记它."""
+    p = _mod.build_parser()
+    assert p.parse_args([]).micro_batches == 2
+    assert _mod.run_tag(p.parse_args(["--micro-batches", "4"])) == _mod.run_tag(p.parse_args([]))
+
+
+def test_micro_batches_below_one_are_refused():
+    try:
+        _mod.build_data(_args("boolq", micro_batches=0))
+    except SystemExit:
+        return
+    raise AssertionError("--micro-batches 0 accepted")
 
 
 def test_run_tag_names_the_loss_and_keeps_the_old_names_for_old_losses():

@@ -127,6 +127,8 @@ def build_data(args):
     if args.probe_size < 1 or args.probe_passes < 2:
         raise SystemExit(f"--probe-size must be >= 1 and --probe-passes >= 2 (one arrangement has nothing to compare); "
                          f"got {args.probe_size} and {args.probe_passes}")
+    if args.micro_batches < 1:
+        raise SystemExit(f"--micro-batches is how many length groups a step runs, >= 1; got {args.micro_batches}")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -228,6 +230,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=300, help="0 = 只评估")
     ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument("--micro-batches", type=int, default=2,
+                    help="每步的 prompt 按长度分几组各自前向, 每组只补齐到组里最长的那条 (>= 1). "
+                         "每行的 logits 与整批一次前向相同, loss 照旧对整批算、反传一次; 省下的是填充的计算. "
+                         "1 = 整批一次 (旧行为)")
     ap.add_argument("--max-length", type=int, default=4096,
                     help="超长提示从左截. 实测最长: 256 项菜单 2685, BoolQ 1277, Banking77 全 60 项 444")
     ap.add_argument("--grad-ckpt", action="store_true", help="梯度 checkpointing: 激活 5 GiB -> 0.6 GiB, 时间 +30%%")
@@ -342,7 +348,8 @@ def main() -> None:
 
     k_pad = max([args.k_max, args.k_eval] + [len(e.options) for es in eval_sets.values() for e in es.examples])
     cfg = TrainConfig(
-        steps=args.steps, batch_size=args.batch_size, k_max=k_pad, max_length=args.max_length,
+        steps=args.steps, batch_size=args.batch_size, micro_batches=args.micro_batches, k_max=k_pad,
+        max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
