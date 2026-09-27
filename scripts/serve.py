@@ -9,6 +9,8 @@
 官方 SDK 也能直接连: TYPESAFE_BASE_URL=http://127.0.0.1:8000, TYPESAFE_DEFAULT_MODEL=<服务名>.
 服务名默认是存档所在的 run 目录名 (途中的档再接上 step-<步数>), --model-name 另起; 请求的 model 必须是它.
 基模默认读 run 目录里 result.json 记的 --model; 存档不在 run 目录里时用 --base-model 给.
+--demo 把仓库的 demos/ 挂在 /demo/ 下, 默认不挂. 贪吃蛇: 浏览器打开 http://127.0.0.1:8000/demo/snake/,
+每一步由服务里的模型决定往哪走 (见 demos/snake/). 游戏局面用 --context-label "Game state" 更贴近训练数据.
 端点、答案格式与请求怎么跑见 decidophobia.serve.
 """
 
@@ -20,6 +22,8 @@ import os
 import pathlib
 
 from decidophobia.serve.engine import recorded_base_model
+
+DEMOS = pathlib.Path(__file__).resolve().parents[1] / "demos"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-batch-tokens", type=int, default=16384,
                     help="一次前向的 KV cache 预算: 同组问题数 × (state + 组内最长的问题). 显存紧就调小")
     ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 DECIDOPHOBIA_API_KEY, 也没有就不查")
+    ap.add_argument("--demo", action="store_true", help="把 demos/ 下的演示页挂在 /demo/ (贪吃蛇在 /demo/snake/)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--device", default="cuda")
@@ -59,6 +64,10 @@ def api_key(args) -> str | None:
     return args.api_key or os.environ.get("DECIDOPHOBIA_API_KEY") or None
 
 
+def demo_dir(args) -> pathlib.Path | None:
+    return DEMOS if args.demo else None
+
+
 def main() -> None:
     args = build_parser().parse_args()
     import torch
@@ -73,9 +82,11 @@ def main() -> None:
                          max_tokens=args.max_tokens, max_batch_tokens=args.max_batch_tokens)
     released = datetime.date.fromtimestamp(pathlib.Path(args.init).stat().st_mtime).isoformat()
     app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {base}",
-                     release_date=released)
+                     release_date=released, demo_dir=demo_dir(args))
     print(f"serving {args.init} on {base} as {name!r}, type_marker={engine.type_marker}, "
           f"context label {args.context_label!r}, auth {'on' if api_key(args) else 'off'}", flush=True)
+    if args.demo:
+        print(f"demo: http://{args.host}:{args.port}/demo/snake/", flush=True)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

@@ -65,5 +65,12 @@ def test_it_listens_on_localhost_by_default():
     assert (a.host, a.port) == ("127.0.0.1", 8000)
 
 
+def test_the_demo_pages_are_served_only_with_the_demo_flag():
+    assert _mod.demo_dir(_args("--init", "x")) is None
+    d = _mod.demo_dir(_args("--init", "x", "--demo"))
+    assert d == _SCRIPT.parent.parent / "demos", d
+    assert (d / "snake" / "index.html").is_file()
+
+
 if __name__ == "__main__":
     run(globals())
