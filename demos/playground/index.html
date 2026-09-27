@@ -1,0 +1,164 @@
+<!doctype html>
+<!--
+  手填 System One 请求. 由推理服务在 --demo 下挂出来: scripts/serve.py --init <存档> --demo, 再打开 /demo/playground/.
+  左边表单、右边请求 JSON, 两边互相跟着变; 发送走同源的 POST /v1/systemone, 提示原文取自 POST /demo/prompts.
+  表单与 JSON 的互转、答案怎么画成行见 request.mjs.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System One 手动请求</title>
+<style>
+  :root { --bg: #111418; --panel: #1a1f26; --line: #2b323c; --fg: #e6e9ee; --muted: #8b95a3;
+          --pick: #4f8cff; --warn: #e3a33b; --bad: #e5534b; --field: #0f1317; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  header .model { color: var(--muted); }
+  header a { color: var(--muted); margin-left: auto; }
+  main { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr); gap: 20px; padding: 20px; align-items: start; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .col { display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  h2 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; display: flex; gap: 10px; align-items: baseline; }
+  h2 .sub { font-weight: 400; font-size: 12px; }
+  fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 16px; min-width: 0; }
+  fieldset:disabled { opacity: .45; }
+  input, select, textarea { background: var(--field); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--pick); }
+  textarea { width: 100%; resize: vertical; }
+  .mono, textarea.mono { font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+  button { background: #252c36; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--pick); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--pick); border-color: var(--pick); color: #fff; }
+  button.icon { padding: 3px 8px; color: var(--muted); }
+  label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .row { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; }
+  .row > label.grow { flex: 1; }
+  .row > label.grow input { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .qcard { border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 8px; background: #161a20; }
+  .qhead { display: flex; gap: 8px; align-items: center; }
+  .qhead .qid { flex: 1; font-weight: 600; }
+  .qhead .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .opts { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(120px, 2.2fr) auto; gap: 6px; align-items: center; }
+  .levels { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center; }
+  .levels .lv { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .noul { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+  .banner { padding: 8px 10px; border-radius: 6px; font-size: 13px; white-space: pre-wrap; }
+  .banner.error { background: #2a1616; color: #f0a39e; border: 1px solid #5a2622; }
+  .banner.warn { background: #2a2214; color: #f0c98a; border: 1px solid #5a4620; }
+  .banner:empty { display: none; }
+  #json { min-height: 320px; }
+  .status { min-height: 1.4em; white-space: pre-wrap; color: var(--muted); }
+  .status.error { color: var(--bad); }
+  .result { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; display: grid; gap: 8px; }
+  .result:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .result .title { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .result .title b { font-size: 15px; }
+  .result .type { color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .result .summary { color: var(--muted); }
+  .result .summary b { color: var(--fg); }
+  .result .ask { color: #c9d1d9; }
+  .bars { display: grid; grid-template-columns: minmax(60px, max-content) 1fr 56px; gap: 4px 10px; align-items: center; }
+  .bars .name { font-weight: 600; overflow-wrap: anywhere; }
+  .bars .name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .bar { height: 16px; background: var(--field); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #3a4452; }
+  .bars .picked { color: var(--pick); }
+  .bars .picked .bar i { background: var(--pick); }
+  .bars .pct { text-align: right; font-variant-numeric: tabular-nums; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre { background: #0b0d10; padding: 10px; border-radius: 6px; overflow: auto; max-height: 420px; margin: 6px 0 0; }
+  .prompt { white-space: pre-wrap; word-break: break-word; color: #c9d1d9; }
+  .prompt .line { display: block; }
+  .prompt .line.picked { background: #1d2b45; color: #fff; outline: 1px solid var(--pick); border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>System One 手动请求</h1>
+  <span class="model">服务上的模型：<b id="served">连接中…</b></span>
+  <a href="../snake/">贪吃蛇演示</a>
+</header>
+<main>
+  <div class="col">
+    <section>
+      <div class="row">
+        <label>模板
+          <select id="template">
+            <option value="each-type">三种题型各一道</option>
+          </select>
+        </label>
+        <button id="load-template">载入模板</button>
+        <label>API key <input type="password" id="key" placeholder="服务开了 --api-key 才要" size="18"></label>
+      </div>
+      <p class="hint">载入模板会换掉下面的表单和右边的 JSON。</p>
+    </section>
+    <fieldset id="form">
+      <section>
+        <h2>model <span class="sub">请求里的 model，必须是服务上的那个名字</span></h2>
+        <input id="model" class="mono" style="width:100%">
+      </section>
+      <section>
+        <h2>state <span class="sub">模型要读的内容，所有问题共用一份</span></h2>
+        <div class="row" style="margin-bottom:8px">
+          <label>格式
+            <select id="state-kind">
+              <option value="text">文本</option>
+              <option value="json">JSON 对象或数组</option>
+            </select>
+          </label>
+        </div>
+        <textarea id="state" rows="6"></textarea>
+      </section>
+      <section>
+        <h2>questions <span class="sub">每道题的 id 是回答里的键</span></h2>
+        <div class="col" id="questions"></div>
+        <div class="row" style="margin-top:12px">
+          <span class="hint" style="margin:0">加一道：</span>
+          <button data-add="choice">+ choice 选一项</button>
+          <button data-add="noul">+ noul 是非</button>
+          <button data-add="score">+ score 分级</button>
+        </div>
+      </section>
+    </fieldset>
+    <div class="banner error" id="form-errors"></div>
+  </div>
+  <div class="col">
+    <section>
+      <h2>请求 JSON <span class="sub">跟着表单变；在这里改或粘贴一份请求，表单也会跟着变</span></h2>
+      <div class="banner warn" id="json-status" style="margin-bottom:8px"></div>
+      <textarea id="json" class="mono" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="send">发送</button>
+        <span class="hint" style="margin:0">Ctrl + Enter 也能发</span>
+      </div>
+      <div class="status" id="status" style="margin-top:8px"></div>
+    </section>
+    <section>
+      <h2>回答</h2>
+      <div id="results"><span class="hint">还没有发送。</span></div>
+    </section>
+    <section>
+      <h2>提示词 <span class="sub">模型读到的原文</span></h2>
+      <details open>
+        <summary>① state 段：所有题共用，先前向一次存进 KV cache <span id="state-chars"></span></summary>
+        <pre class="prompt mono" id="prompt-state">还没有发送。</pre>
+      </details>
+      <p class="hint">② 问题段接在 state 段后面，每道题一份，放在上面各题的回答下面；蓝框是模型选中的那一行。</p>
+    </section>
+    <section>
+      <details>
+        <summary>原始请求与回答 JSON</summary>
+        <pre class="mono" id="raw">还没有发送。</pre>
+      </details>
+    </section>
+  </div>
+</main>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>
