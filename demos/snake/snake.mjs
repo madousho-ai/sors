@@ -99,7 +99,8 @@ export function step(g, dir, rng = Math.random) {
 
 // ---- 发给推理服务的请求 ----------------------------------------------------------
 // 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
-// state 里不写朝向 (网格上 H 挨着的 o 就看得出来): 写了 "moving": "right", 1.7B 就挑同名的 right,
+// state 用句子写棋盘: 棋盘多大、蛇头在哪、身子从脖子到尾巴依次在哪、食物在哪, 其余格子是空的. 没有符号网格.
+// state 里不写朝向 (头和脖子的位置就给出了): 写了 "moving": "right", 1.7B 就挑同名的 right,
 // 哪怕它的说明写着 game over —— 头贴右墙时四种行序里 right 占三次; 去掉之后同样的两个贴墙局面八次全挑活路.
 //   board         说明只讲这个方向往哪边走, 与局面无关. 撞不撞、离食物远近都要模型自己从棋盘上推
 //   consequences  说明写这一步的后果: 撞墙 / 撞身子 (game over)、吃到食物、离食物近了还是远了、
@@ -118,22 +119,22 @@ const WAY = {
 
 // 游戏目标. System One 的请求没有 system prompt, 放在 state 的第一个字段: state 排在提示最前, 所有题共用.
 // 不写方向词 (up / down / left / right), 理由同上面的朝向.
-export const GOAL = "Eat the food: move the snake's head onto the F cell. Each food eaten makes the snake one cell "
+export const GOAL = "Eat the food: move the snake's head onto the food's cell. Each food eaten makes the snake one cell "
   + "longer, and new food appears somewhere else. The game ends if the head hits a wall or the snake's own body.";
 
+const cellName = ([r, c]) => `row ${r}, column ${c}`;
+
 export function boardState(g) {
-  const grid = Array.from({ length: g.rows }, () => Array(g.cols).fill("."));
-  if (g.food) grid[g.food[0]][g.food[1]] = "F";
-  g.snake.forEach(([r, c], i) => { grid[r][c] = i === 0 ? "H" : "o"; });
-  const at = (p) => (p ? { row: p[0], column: p[1] } : null);
+  const [head, ...body] = g.snake;
+  const bodyText = body.length
+    ? `Its body, from the neck to the tail, is at ${body.map(cellName).join("; ")}.`
+    : "It has no body besides the head.";
   return {
     goal: GOAL,
-    board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge`,
-    grid: grid.map((row) => row.join("")),
-    legend: "H = snake head, o = snake body, F = food, . = empty cell",
-    snake_head: at(g.snake[0]),
-    snake_length: g.snake.length,
-    food: at(g.food),
+    board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge. `
+      + "Every cell not taken by the snake or the food is empty.",
+    snake: `The snake is ${g.snake.length} cells long. Its head is at ${cellName(head)}. ${bodyText}`,
+    food: g.food ? `The food is at ${cellName(g.food)}.` : "There is no food on the board.",
   };
 }
 

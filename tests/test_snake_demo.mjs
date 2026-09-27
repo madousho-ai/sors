@@ -132,12 +132,11 @@ test("a request asks one choice question over the four directions of the model i
   assert.deepEqual(Object.keys(request(game(), "consequences", "m").questions.move.criteria), ["up", "down", "left", "right"]);
 });
 
-test("the state opens with the goal of the game: eat the F, keep off the walls and the body", () => {
+test("the state opens with the goal of the game: eat the food, keep off the walls and the body", () => {
   // System One 的请求没有 system prompt; state 排在提示最前、所有题共用, 目标写在它的第一个字段
   const s = request(game(), "board", "m").state;
   assert.equal(Object.keys(s)[0], "goal");
-  assert.match(s.goal, /\bF\b/);
-  assert.match(s.goal, /food/);
+  assert.match(s.goal, /head onto the food's cell/);
   assert.match(s.goal, /wall/);
   assert.match(s.goal, /body/);
   // 同 moving 那次: state 里出现方向词, 模型会拿它去对同名的选项
@@ -145,23 +144,25 @@ test("the state opens with the goal of the game: eat the F, keep off the walls a
   assert.equal(request(game(), "consequences", "m").state.goal, s.goal);
 });
 
-test("the state draws the board as a grid of rows and names the head and the food, but not the heading", () => {
+test("the state describes the board in sentences, with no symbol grid", () => {
   const s = request(game({ food: [0, 5] }), "board", "m").state;
-  assert.deepEqual(s.grid, [
-    ".....F",
-    "......",
-    ".ooH..",
-    "......",
-    "......",
-  ]);
-  assert.match(s.board, /5 rows by 6 columns/);
-  assert.match(s.legend, /H = snake head/);
-  assert.deepEqual(s.snake_head, { row: 2, column: 3 });
-  assert.deepEqual(s.food, { row: 0, column: 5 });
-  assert.equal(s.snake_length, 3);
-  // 写了 "moving": "right", 1.7B 就挑名字同为 right 的那个选项, 哪怕它的说明写着 game over. 朝向从网格上看得出来
-  assert.ok(!("moving" in s), Object.keys(s));
+  assert.deepEqual(Object.keys(s), ["goal", "board", "snake", "food"]);
+  assert.equal(s.board, "5 rows by 6 columns; row 0 is the top edge, column 0 is the left edge. "
+    + "Every cell not taken by the snake or the food is empty.");
+  assert.equal(s.snake, "The snake is 3 cells long. Its head is at row 2, column 3. "
+    + "Its body, from the neck to the tail, is at row 2, column 2; row 2, column 1.");
+  assert.equal(s.food, "The food is at row 0, column 5.");
+  // 写了 "moving": "right", 1.7B 就挑名字同为 right 的那个选项, 哪怕它的说明写着 game over.
+  // 朝向由头和脖子的位置给出, 不写方向词
   assert.ok(!JSON.stringify(s).includes("right"), JSON.stringify(s));
+});
+
+test("the body sentence follows the snake from the neck to the tail, and a board without food says so", () => {
+  const coil = [[2, 2], [3, 2], [3, 3], [2, 3], [1, 3]];
+  const s = request({ ...game({ snake: coil, heading: "up" }), food: null }, "board", "m").state;
+  assert.equal(s.snake, "The snake is 5 cells long. Its head is at row 2, column 2. Its body, from the neck to the tail, "
+    + "is at row 3, column 2; row 3, column 3; row 2, column 3; row 1, column 3.");
+  assert.equal(s.food, "There is no food on the board.");
 });
 
 test("in the board style the options only say which way each direction goes", () => {
