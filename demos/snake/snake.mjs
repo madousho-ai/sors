@@ -96,3 +96,60 @@ export function step(g, dir, rng = Math.random) {
   else if (sinceFood >= g.rows * g.cols * 2) status = "starved";
   return { ...g, snake, heading: o.move, food, status, steps, eaten: g.eaten + (eats ? 1 : 0), sinceFood, last: o };
 }
+
+// ---- 发给推理服务的请求 ----------------------------------------------------------
+// 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
+//   board         说明只讲这个方向往哪边走, 与局面无关. 撞不撞、离食物远近都要模型自己从棋盘上推
+//   consequences  说明写这一步的后果: 撞墙 / 撞身子 (game over)、吃到食物、离食物近了还是远了、
+//                 走过去之后还剩多少空格能走; 掉头的那个写明会被忽略, 再接上直走的后果
+
+export const QUESTION = "Which direction should the snake move next?";
+export const STYLES = ["consequences", "board"];
+
+const EDGE = { up: "top", down: "bottom", left: "left", right: "right" };
+const WAY = {
+  up: "Move the head one row up (row number minus 1)",
+  down: "Move the head one row down (row number plus 1)",
+  left: "Move the head one column left (column number minus 1)",
+  right: "Move the head one column right (column number plus 1)",
+};
+
+export function boardState(g) {
+  const grid = Array.from({ length: g.rows }, () => Array(g.cols).fill("."));
+  if (g.food) grid[g.food[0]][g.food[1]] = "F";
+  g.snake.forEach(([r, c], i) => { grid[r][c] = i === 0 ? "H" : "o"; });
+  const at = (p) => (p ? { row: p[0], column: p[1] } : null);
+  return {
+    board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge`,
+    grid: grid.map((row) => row.join("")),
+    legend: "H = snake head, o = snake body, F = food, . = empty cell",
+    snake_head: at(g.snake[0]),
+    snake_length: g.snake.length,
+    moving: g.heading,
+    food: at(g.food),
+  };
+}
+
+function consequence(g, o) {
+  const at = `row ${o.cell[0]}, column ${o.cell[1]}`;
+  if (o.result === "wall") return `Head hits the ${EDGE[o.move]} edge of the board: game over`;
+  if (o.result === "self") return `Head runs into the snake's own body at ${at}: game over`;
+  const room = `${o.reachable} free cells stay reachable`;
+  if (o.result === "food") return `Head eats the food at ${at}: the snake grows by one; ${room}`;
+  const [h0, h1] = g.snake[0];
+  const before = Math.abs(h0 - g.food[0]) + Math.abs(h1 - g.food[1]);
+  const way = o.distance < before ? "closer to" : "farther from";
+  return `Head moves to ${at}, one step ${way} the food (${o.distance} steps away); ${room}`;
+}
+
+function describe(g, dir) {
+  const o = outcome(g, dir);
+  const what = consequence(g, o);
+  return o.ignored ? `Reverses into the snake's neck, so it is ignored and the snake keeps moving ${o.move}. ${what}` : what;
+}
+
+export function request(g, style, model) {
+  if (!STYLES.includes(style)) throw new Error(`unknown style ${style}; expected one of ${STYLES.join(", ")}`);
+  const criteria = Object.fromEntries(DIRECTIONS.map((d) => [d, style === "board" ? WAY[d] : describe(g, d)]));
+  return { state: boardState(g), model, questions: { move: { type: "choice", instructions: QUESTION, criteria } } };
+}

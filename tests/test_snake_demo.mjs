@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { newGame, outcome, step } from "../demos/snake/snake.mjs";
+import { QUESTION, newGame, outcome, request, step } from "../demos/snake/snake.mjs";
 
 // 给一个固定的随机数序列, 用完就从头再来. 食物落在空格里的第 floor(r * 空格数) 个
 const seq = (...xs) => {
@@ -115,4 +115,74 @@ test("outcome counts the free cells the head can still reach after the move", ()
   // 往下到 (1, 5): 尾巴 (4, 4) 让开, 第 5 列剩 (2..4, 5) 三格, 经 (4, 4) 通到左边 4 列 20 格
   assert.equal(outcome(g, "down").reachable, 3 + 1 + 20);
   assert.equal(outcome(g, "up").reachable, null);
+});
+
+// --------------------------------------------------------------------------
+// 发给推理服务的请求: 一道 choice, 选项永远是四个方向
+// --------------------------------------------------------------------------
+
+test("a request asks one choice question over the four directions of the model it names", () => {
+  const body = request(game(), "board", "decidophobia-0.6b");
+  assert.equal(body.model, "decidophobia-0.6b");
+  assert.deepEqual(Object.keys(body.questions), ["move"]);
+  const q = body.questions.move;
+  assert.equal(q.type, "choice");
+  assert.equal(q.instructions, QUESTION);
+  assert.deepEqual(Object.keys(q.criteria), ["up", "down", "left", "right"]);
+  assert.deepEqual(Object.keys(request(game(), "consequences", "m").questions.move.criteria), ["up", "down", "left", "right"]);
+});
+
+test("the state draws the board as a grid of rows and names the head, the heading and the food", () => {
+  const s = request(game({ food: [0, 5] }), "board", "m").state;
+  assert.deepEqual(s.grid, [
+    ".....F",
+    "......",
+    ".ooH..",
+    "......",
+    "......",
+  ]);
+  assert.match(s.board, /5 rows by 6 columns/);
+  assert.match(s.legend, /H = snake head/);
+  assert.deepEqual(s.snake_head, { row: 2, column: 3 });
+  assert.deepEqual(s.food, { row: 0, column: 5 });
+  assert.equal(s.moving, "right");
+  assert.equal(s.snake_length, 3);
+});
+
+test("in the board style the options only say which way each direction goes", () => {
+  const a = request(game(), "board", "m").questions.move.criteria;
+  const b = request(game({ snake: [[0, 3], [1, 3], [2, 3]], heading: "up" }), "board", "m").questions.move.criteria;
+  assert.deepEqual(a, b, "board-style options do not depend on the game");
+  assert.match(a.up, /row/);
+  assert.match(a.left, /column/);
+});
+
+test("in the consequences style each option says what the move leads to", () => {
+  // 头 (2,3) 朝右, 食物 (2,4) 就在右边; 上面 (1,3) 空着; 左边是掉头
+  const c = request(game({ food: [2, 4] }), "consequences", "m").questions.move.criteria;
+  assert.match(c.right, /eats the food at row 2, column 4/);
+  assert.match(c.right, /grows/);
+  assert.match(c.up, /row 1, column 3/);
+  assert.match(c.up, /farther from the food/);
+  assert.match(c.left, /ignored/);
+  assert.match(c.left, /keeps moving right/);
+  assert.match(c.left, /eats the food/, "the ignored reverse carries the consequence of going straight");
+  const n = outcome(game({ food: [2, 4] }), "up").reachable;
+  assert.match(c.up, new RegExp(`${n} free cells`));
+
+  const toward = request(game({ food: [0, 3] }), "consequences", "m").questions.move.criteria;
+  assert.match(toward.up, /closer to the food/);
+
+  const edge = request(game({ snake: [[0, 3], [1, 3], [2, 3]], heading: "up" }), "consequences", "m").questions.move.criteria;
+  assert.match(edge.up, /top edge/);
+  assert.match(edge.up, /game over/);
+
+  const coil = [[2, 2], [3, 2], [3, 3], [2, 3], [1, 3]];
+  const bite = request(game({ snake: coil, heading: "up" }), "consequences", "m").questions.move.criteria;
+  assert.match(bite.right, /own body/);
+  assert.match(bite.right, /game over/);
+});
+
+test("an unknown style is refused", () => {
+  assert.throws(() => request(game(), "ascii", "m"), /style/);
 });
