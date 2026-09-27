@@ -20,7 +20,10 @@ const shown = (d) => (d == null ? null : typeof d === "string" ? d : JSON.string
 /** 三种题型各一道的空壳请求, 每一格里写着该填什么. */
 export function template(model) {
   return {
-    state: "这里写模型要读的内容：一段文字；也可以把 state 格式切到 JSON，写成对象或数组。同一个请求里的所有问题共用这一份 state。",
+    state: "Message: 这里写模型要读的内容，同一个请求里的所有问题共用这一份 state。"
+      + "开头的「Message: 」是标签：训练时每条提示都以「标签: 内容」开头，如 Customer message、Game state。"
+      + "服务把 state 原样放进提示，标签按内容自己改，也可以删掉。"
+      + "state 格式切到 JSON 时写成对象或数组，前面就没有标签了。",
     model,
     questions: {
       which_one: {

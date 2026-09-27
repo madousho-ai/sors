@@ -21,6 +21,10 @@ test("the template asks one choice, one noul and one score question of the model
   assert.deepEqual(Object.values(t.questions).map((x) => x.type), ["choice", "noul", "score"]);
 });
 
+test("the template's state opens with a label of its own, since the server puts the state in as written", () => {
+  assert.match(template("m").state, /^[A-Z][a-z]+( [a-z]+)*: /);
+});
+
 test("the template survives a trip through the form unchanged, question and option order included", () => {
   const t = template("m");
   const back = toRequest(toForm(t).form).request;
