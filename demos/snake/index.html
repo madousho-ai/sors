@@ -53,6 +53,12 @@
   summary { cursor: pointer; color: var(--muted); }
   pre { background: #0b0d10; padding: 10px; border-radius: 6px; overflow: auto; max-height: 360px; font-size: 12px; }
   .right { display: grid; gap: 20px; align-content: start; }
+  .prompt-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .prompt-head span { color: var(--muted); font-size: 12px; }
+  .seg { color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+  .prompt { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: none; font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; color: #c9d1d9; }
+  .prompt .line { display: block; }
+  .prompt .line.picked { background: #1d2b45; color: #fff; outline: 1px solid var(--pick); border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -99,6 +105,13 @@
       <div class="bars" id="bars"></div>
       <div class="decision" id="decision">还没有决策。</div>
       <div class="why" id="why" hidden></div>
+    </section>
+    <section>
+      <div class="prompt-head"><h2>这一步的提示词</h2><span id="prompt-chars"></span></div>
+      <div class="seg">① state 段：棋盘，同一请求里所有题共用，先前向一次存进 KV cache</div>
+      <pre class="prompt" id="prompt-state">还没有提示。</pre>
+      <div class="seg">② 问题段：接在 state 段后面，模型在 Answer: 之后给出一个 D 码，蓝框是它选中的那一行</div>
+      <pre class="prompt" id="prompt-question"></pre>
     </section>
     <section>
       <h2>历史决策</h2>

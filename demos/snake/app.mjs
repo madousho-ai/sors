@@ -1,6 +1,8 @@
 // 页面: 把 snake.mjs 的规则接到推理服务和屏幕上.
 // 每一步: 局面 -> request() -> POST /v1/systemone -> 模型选的方向 -> step() -> 画出来, 再记一行历史.
 // 请求按回合走, 上一个回答回来之前不发下一个.
+// 同一个请求体并行发给 POST /demo/prompts (服务 --demo 时才有), 拿回模型读到的提示原文显示出来;
+// 取不到 (比如老版本的服务) 只是不显示提示, 游戏照走.
 
 import { DIRECTIONS, newGame, request, step } from "./snake.mjs";
 
@@ -112,6 +114,31 @@ function addHistory(n, answer, o, ms) {
   $("history").prepend(tr);
 }
 
+// 提示原文: state 段 (棋盘, 所有题共用, 只前向一次) + 问题段 (问句、四个选项、Answer:).
+// 选项行形如 '<|D2|>. left: ...', 模型选中的那一行标出来.
+async function fetchPrompt(body) {
+  try {
+    const r = await fetch("/demo/prompts", { method: "POST", headers: headers(), body: JSON.stringify(body) });
+    return r.ok ? (await r.json()).prompts.move : null;
+  } catch {
+    return null;
+  }
+}
+
+function showPrompt(p, choice) {
+  if (!p) {
+    $("prompt-state").textContent = "取不到提示原文 (服务要开 --demo 才有 /demo/prompts)。";
+    $("prompt-question").replaceChildren();
+    return;
+  }
+  $("prompt-state").textContent = p.state;
+  $("prompt-question").replaceChildren(...p.question.split("\n").map((line) => {
+    const picked = new RegExp(`^<\\|D\\d+\\|>\\. ${choice}:`).test(line);
+    return Object.assign(document.createElement("span"), { className: picked ? "line picked" : "line", textContent: line || " " });
+  }));
+  $("prompt-chars").textContent = `${p.state.length + p.question.length} 字符`;
+}
+
 // ---- 一步 ----------------------------------------------------------------------
 
 async function tick() {
@@ -122,6 +149,7 @@ async function tick() {
   try {
     const body = request(game, $("style").value, model);
     const t0 = performance.now();
+    const prompt = fetchPrompt(body); // 与决策并行, 只渲染文本, 不占模型
     const r = await fetch("/v1/systemone", { method: "POST", headers: headers(), body: JSON.stringify(body) });
     const json = await r.json();
     const ms = performance.now() - t0;
@@ -129,6 +157,7 @@ async function tick() {
     const answer = json.answers.move;
     game = step(game, answer.choice);
     showDecision(answer, game.last, ms, body.questions.move.criteria);
+    showPrompt(await prompt, answer.choice);
     addHistory(game.steps, answer, game.last, ms);
     $("raw").textContent = JSON.stringify({ request: body, response: json }, null, 2);
     draw();
@@ -175,6 +204,9 @@ function reset() {
   $("decision").textContent = "还没有决策。";
   $("why").hidden = true;
   $("latency").textContent = "–";
+  $("prompt-state").textContent = "还没有提示。";
+  $("prompt-question").replaceChildren();
+  $("prompt-chars").textContent = "";
   showBars(null);
   draw();
   setStatus(model ? "按「开始」让模型来走。" : $("status").textContent);
