@@ -57,6 +57,15 @@ export function blankQuestion(type, taken = []) {
   };
 }
 
+/** choice 新加的一行: 名字取 option_a ... option_z 里第一个没被占的, 用完了从 option_27 往后数. */
+export function blankOption(options) {
+  const taken = new Set(options.map((o) => o.name));
+  const letter = "abcdefghijklmnopqrstuvwxyz".split("").find((c) => !taken.has(`option_${c}`));
+  let n = 27;
+  while (!letter && taken.has(`option_${n}`)) n++;
+  return { name: letter ? `option_${letter}` : `option_${n}`, description: "" };
+}
+
 // ---- 表单 -> 请求 --------------------------------------------------------------
 
 function sendable(x, errors) {

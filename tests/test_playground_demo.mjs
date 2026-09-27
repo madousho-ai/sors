@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { answerRows, blankQuestion, errorText, markPicked, template, toForm, toRequest }
+import { answerRows, blankOption, blankQuestion, errorText, markPicked, template, toForm, toRequest }
   from "../demos/playground/request.mjs";
 
 const form = (questions, over = {}) => ({ model: "m", stateKind: "text", state: "s", questions, ...over });
@@ -83,6 +83,15 @@ test("a blank question takes the first free id q1, q2, ... and starts with two o
   assert.equal(b.options.length, 2);
   assert.equal(b.levels.length, 3);
   assert.equal(blankQuestion("noul").id, "q1");
+});
+
+test("a new option takes the first free name option_a ... option_z, then option_27 on, with no description", () => {
+  const named = (...names) => names.map((name) => ({ name, description: "" }));
+  assert.deepEqual(blankOption(named("option_a", "option_b")), { name: "option_c", description: "" });
+  assert.equal(blankOption(named("option_b")).name, "option_a");
+  const all = named(..."abcdefghijklmnopqrstuvwxyz".split("").map((c) => `option_${c}`));
+  assert.equal(blankOption(all).name, "option_27");
+  assert.equal(blankOption([...all, ...named("option_27")]).name, "option_28");
 });
 
 // ---- 请求 -> 表单 --------------------------------------------------------------
