@@ -7,7 +7,9 @@
 api_key 给了就要求 Authorization: Bearer <key>, 否则 401; 不给就不查 (官方 SDK 总会带自己的 key, 带什么都放行).
 端点是普通函数, FastAPI 放进线程池跑; 引擎自己有锁, 请求在 GPU 上排队.
 demo_dir 给了才把这个目录当静态文件挂在 /demo/ 下 (如 demos/snake/ -> /demo/snake/), 默认不挂;
-演示页本身不要 key, 页面调 API 时照常鉴权.
+演示页本身不要 key, 页面调 API 时照常鉴权. 演示开着时另有 POST /demo/prompts: 请求体同 /v1/systemone,
+回 {prompts: {问题 id: {state, question}}}, 即模型读到的提示原文 (引擎的 prompts, 不跑模型).
+它不在 System One 规范里, 只给演示页显示提示用, 所以跟着 demo_dir 一起开关.
 """
 
 from __future__ import annotations
@@ -36,10 +38,13 @@ def create_app(engine, model_name: str, api_key: str | None = None, description:
         if not hmac.compare_digest(authorization or "", f"Bearer {api_key}"):
             raise HTTPException(401, detail="missing or invalid API key", headers={"WWW-Authenticate": "Bearer"})
 
-    @app.post("/v1/systemone", dependencies=[Depends(authorized)])
-    def systemone(req: SystemOneRequest) -> dict:
+    def served(req: SystemOneRequest) -> None:
         if req.model != model_name:
             raise _unprocessable("model", f"model {req.model!r} is not served here; this server serves {model_name!r}")
+
+    @app.post("/v1/systemone", dependencies=[Depends(authorized)])
+    def systemone(req: SystemOneRequest) -> dict:
+        served(req)
         try:
             ev = engine.evaluate(req.state, req.questions)
         except RequestTooLong as e:
@@ -53,5 +58,11 @@ def create_app(engine, model_name: str, api_key: str | None = None, description:
         return {"models": [{"name": model_name, "description": description, "release_date": release_date}]}
 
     if demo_dir is not None:
+        @app.post("/demo/prompts", dependencies=[Depends(authorized)])  # 先于下面的挂载注册, 否则被静态目录拦住
+        def prompts(req: SystemOneRequest) -> dict:
+            served(req)
+            return {"prompts": {qid: {"state": state, "question": question}
+                                for qid, (state, question) in engine.prompts(req.state, req.questions).items()}}
+
         app.mount("/demo", StaticFiles(directory=demo_dir, html=True), name="demo")
     return app

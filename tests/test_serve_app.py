@@ -41,6 +41,9 @@ class FakeEngine:
             raise self.error
         return Evaluation({qid: self.probs[qid] for qid in questions}, input_tokens=123)
 
+    def prompts(self, state, questions):
+        return {qid: (f"State: {state}\n\n", f"Question: {q.instructions}\nAnswer:") for qid, q in questions.items()}
+
 
 def _client(engine=None, api_key=None):
     return TestClient(create_app(engine or FakeEngine(), NAME, api_key=api_key, description="a test checkpoint",
@@ -132,6 +135,29 @@ def test_with_a_demo_directory_its_pages_are_served_under_demo_without_a_key():
     js = c.get("/demo/snake/snake.mjs")
     assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript"), js.headers
     assert c.post("/v1/systemone", json=BODY).status_code == 401
+
+
+def test_with_the_demo_on_prompts_shows_the_text_the_model_reads_for_each_question():
+    """演示页每一步要显示提示原文. System One API 不返回它, 所以演示开着时另有 POST /demo/prompts:
+    请求体与 /v1/systemone 相同, 回 {问题 id: {state, question}}, 不跑模型."""
+    e = FakeEngine()
+    c = TestClient(create_app(e, NAME, demo_dir=_demo_dir()))
+    r = c.post("/demo/prompts", json=BODY)
+    assert r.status_code == 200, r.text
+    got = r.json()["prompts"]
+    assert list(got) == ["department", "is_urgent", "frustration"]
+    assert got["department"] == {"state": f"State: {BODY['state']}\n\n",
+                                 "question": "Question: Which team should handle this?\nAnswer:"}
+    assert e.calls == [], "rendering the prompt must not run the model"
+
+
+def test_prompts_checks_the_model_and_the_key_like_the_api_and_is_off_without_the_demo():
+    c = TestClient(create_app(FakeEngine(), NAME, api_key="s3cret", demo_dir=_demo_dir()))
+    assert c.post("/demo/prompts", json=BODY).status_code == 401
+    ok = {"Authorization": "Bearer s3cret"}
+    assert c.post("/demo/prompts", json={**BODY, "model": "jev-latest"}, headers=ok).status_code == 422
+    assert c.post("/demo/prompts", json=BODY, headers=ok).status_code == 200
+    assert _client().post("/demo/prompts", json=BODY).status_code == 404
 
 
 if __name__ == "__main__":
