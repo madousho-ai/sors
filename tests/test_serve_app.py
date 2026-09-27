@@ -3,6 +3,9 @@
 跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_app.py
 """
 
+import pathlib
+import tempfile
+
 from fastapi.testclient import TestClient
 
 from _runner import run
@@ -107,6 +110,28 @@ def test_models_lists_the_served_model():
     r = _client().get("/v1/models")
     assert r.status_code == 200
     assert r.json() == {"models": [{"name": NAME, "description": "a test checkpoint", "release_date": "2026-09-26"}]}
+
+
+def _demo_dir() -> pathlib.Path:
+    d = pathlib.Path(tempfile.mkdtemp(prefix="demo-")) / "snake"
+    d.mkdir()
+    (d / "index.html").write_text("<!doctype html><title>snake</title>")
+    (d / "snake.mjs").write_text("export const x = 1;")
+    return d.parent
+
+
+def test_the_demo_pages_are_off_unless_a_demo_directory_is_given():
+    assert _client().get("/demo/snake/").status_code == 404
+
+
+def test_with_a_demo_directory_its_pages_are_served_under_demo_without_a_key():
+    """演示页是静态文件, 不要 key; 页面里调 API 时才带 key."""
+    c = TestClient(create_app(FakeEngine(), NAME, api_key="s3cret", demo_dir=_demo_dir()))
+    page = c.get("/demo/snake/")
+    assert page.status_code == 200 and "<title>snake</title>" in page.text
+    js = c.get("/demo/snake/snake.mjs")
+    assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript"), js.headers
+    assert c.post("/v1/systemone", json=BODY).status_code == 401
 
 
 if __name__ == "__main__":

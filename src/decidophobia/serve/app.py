@@ -6,13 +6,17 @@
 请求的 model 必须是服务的名字 (启动时定), 否则 422, 与请求体校验失败同一种错误格式 (FastAPI 的 detail 列表).
 api_key 给了就要求 Authorization: Bearer <key>, 否则 401; 不给就不查 (官方 SDK 总会带自己的 key, 带什么都放行).
 端点是普通函数, FastAPI 放进线程池跑; 引擎自己有锁, 请求在 GPU 上排队.
+demo_dir 给了才把这个目录当静态文件挂在 /demo/ 下 (如 demos/snake/ -> /demo/snake/), 默认不挂;
+演示页本身不要 key, 页面调 API 时照常鉴权.
 """
 
 from __future__ import annotations
 
 import hmac
+import os
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from decidophobia.serve.api import SystemOneRequest, answer
 from decidophobia.serve.engine import RequestTooLong
@@ -23,7 +27,7 @@ def _unprocessable(field: str, msg: str) -> HTTPException:
 
 
 def create_app(engine, model_name: str, api_key: str | None = None, description: str = "",
-               release_date: str = "") -> FastAPI:
+               release_date: str = "", demo_dir: str | os.PathLike | None = None) -> FastAPI:
     app = FastAPI(title="decidophobia", summary="TypeSafe System One API, served from a decidophobia checkpoint")
 
     def authorized(authorization: str | None = Header(default=None)) -> None:
@@ -48,4 +52,6 @@ def create_app(engine, model_name: str, api_key: str | None = None, description:
     def models() -> dict:
         return {"models": [{"name": model_name, "description": description, "release_date": release_date}]}
 
+    if demo_dir is not None:
+        app.mount("/demo", StaticFiles(directory=demo_dir, html=True), name="demo")
     return app
