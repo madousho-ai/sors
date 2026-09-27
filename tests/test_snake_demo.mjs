@@ -144,11 +144,18 @@ test("the state opens with the goal of the game: eat the food, keep off the wall
   assert.equal(request(game(), "consequences", "m").state.goal, s.goal);
 });
 
-test("the state describes the board in sentences, with no symbol grid", () => {
+test("the state draws the whole board row by row, one word per cell, and says where the snake and the food are", () => {
   const s = request(game({ food: [0, 5] }), "board", "m").state;
-  assert.deepEqual(Object.keys(s), ["goal", "board", "snake", "food"]);
+  assert.deepEqual(Object.keys(s), ["goal", "board", "grid", "snake", "food"]);
   assert.equal(s.board, "5 rows by 6 columns; row 0 is the top edge, column 0 is the left edge. "
-    + "Every cell not taken by the snake or the food is empty.");
+    + "The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column 5.");
+  assert.deepEqual(s.grid, {
+    "row 0": "empty, empty, empty, empty, empty, food",
+    "row 1": "empty, empty, empty, empty, empty, empty",
+    "row 2": "empty, body, body, head, empty, empty",
+    "row 3": "empty, empty, empty, empty, empty, empty",
+    "row 4": "empty, empty, empty, empty, empty, empty",
+  });
   assert.equal(s.snake, "The snake is 3 cells long. Its head is at row 2, column 3. "
     + "Its body, from the neck to the tail, is at row 2, column 2; row 2, column 1.");
   assert.equal(s.food, "The food is at row 0, column 5.");

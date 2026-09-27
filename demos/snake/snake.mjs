@@ -99,7 +99,8 @@ export function step(g, dir, rng = Math.random) {
 
 // ---- 发给推理服务的请求 ----------------------------------------------------------
 // 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
-// state 用句子写棋盘: 棋盘多大、蛇头在哪、身子从脖子到尾巴依次在哪、食物在哪, 其余格子是空的. 没有符号网格.
+// state 用词写棋盘: grid 是整张棋盘, 每行一个字段, 每格一个词 (empty / head / body / food), 不用符号;
+// 另有几句话说蛇多长、头在哪、身子从脖子到尾巴依次在哪、食物在哪.
 // state 里不写朝向 (头和脖子的位置就给出了): 写了 "moving": "right", 1.7B 就挑同名的 right,
 // 哪怕它的说明写着 game over —— 头贴右墙时四种行序里 right 占三次; 去掉之后同样的两个贴墙局面八次全挑活路.
 //   board         说明只讲这个方向往哪边走, 与局面无关. 撞不撞、离食物远近都要模型自己从棋盘上推
@@ -125,6 +126,9 @@ export const GOAL = "Eat the food: move the snake's head onto the food's cell. E
 const cellName = ([r, c]) => `row ${r}, column ${c}`;
 
 export function boardState(g) {
+  const cells = Array.from({ length: g.rows }, () => Array(g.cols).fill("empty"));
+  if (g.food) cells[g.food[0]][g.food[1]] = "food";
+  g.snake.forEach(([r, c], i) => { cells[r][c] = i === 0 ? "head" : "body"; });
   const [head, ...body] = g.snake;
   const bodyText = body.length
     ? `Its body, from the neck to the tail, is at ${body.map(cellName).join("; ")}.`
@@ -132,7 +136,8 @@ export function boardState(g) {
   return {
     goal: GOAL,
     board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge. `
-      + "Every cell not taken by the snake or the food is empty.",
+      + `The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column ${g.cols - 1}.`,
+    grid: Object.fromEntries(cells.map((row, r) => [`row ${r}`, row.join(", ")])),
     snake: `The snake is ${g.snake.length} cells long. Its head is at ${cellName(head)}. ${bodyText}`,
     food: g.food ? `The food is at ${cellName(g.food)}.` : "There is no food on the board.",
   };
