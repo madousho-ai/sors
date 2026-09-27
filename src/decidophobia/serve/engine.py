@@ -7,6 +7,7 @@
      一组的 cache 是 组员数 × (state + 组内最长的问题) 个 token, 不超过 max_batch_tokens; 一题超了就单独一组
   4. 每道题在自己菜单的 k 个 D 码上做 softmax. 与评估 (evaluation.scoring) 读的是同一个分布
 state 加上最长的那道题超过 max_tokens 时整个请求拒收, 不碰模型.
+prompts 给出第 1 步的两段文本 (模型读到的提示原文), 不跑模型; evaluate 用的就是这两段.
 GPU 同一时刻只跑一个请求 (一把锁), 并发的请求排队.
 
 load_engine 从基模 + 存档搭引擎: LoRA 照档里记的形状挂上再合并进权重 (部署形态, 比旁路挂法快),
@@ -57,10 +58,16 @@ class Engine:
     def _encode(self, s: str) -> list[int]:
         return self.tok.encode(s, add_special_tokens=False)
 
+    def prompts(self, state, questions: dict) -> dict[str, tuple[str, str]]:
+        """{问题 id: (state 段, 问题段)}: 模型读到的提示原文, 两段拼起来就是训练模板下的整条提示.
+        state 段所有题相同 (只前向一次), 问题段各题自己的, 以 'Answer:' 收尾. 不碰模型."""
+        return {qid: split_prompt(to_example(q, state, self.context_label), LAYOUT, self.type_marker)
+                for qid, q in questions.items()}
+
     def evaluate(self, state, questions: dict) -> Evaluation:
         """questions: {问题 id: serve.api 的 Noul / Choice / Score}. 返回的 probs 与 questions 同序."""
         exs = {qid: to_example(q, state, self.context_label) for qid, q in questions.items()}
-        parts = {qid: split_prompt(ex, LAYOUT, self.type_marker) for qid, ex in exs.items()}
+        parts = self.prompts(state, questions)
         ctx = self._encode(next(iter(parts.values()))[0])
         segs = {qid: self._encode(seg) for qid, (_, seg) in parts.items()}
         longest = max(len(s) for s in segs.values())

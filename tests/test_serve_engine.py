@@ -15,6 +15,7 @@ import torch
 from _runner import run
 from decidophobia.core.checkpoint import save_trained
 from decidophobia.core.model import prepare_model
+from decidophobia.core.prompt import render_menu
 from decidophobia.core.tokens import install_d_tokens, install_type_tokens
 from decidophobia.evaluation.scoring import score_examples
 from decidophobia.serve.api import SystemOneRequest
@@ -104,12 +105,29 @@ def test_splitting_the_questions_into_small_groups_changes_nothing():
 def test_input_tokens_count_the_state_once_and_each_question_once():
     tok, d_ids, _ = _tok_and_ids()
     qs = _questions()
-    ev = Engine(_tiny_lm(), tok, d_ids, context_label="State").evaluate(STATE, qs)
-    from decidophobia.core.prompt import split_prompt
-
-    exs = [to_example(q, STATE, "State") for q in qs.values()]
-    n = len(tok.encode(split_prompt(exs[0])[0])) + sum(len(tok.encode(split_prompt(e)[1])) for e in exs)
+    e = Engine(_tiny_lm(), tok, d_ids, context_label="State")
+    ev = e.evaluate(STATE, qs)
+    p = e.prompts(STATE, qs)
+    n = len(tok.encode(p["department"][0])) + sum(len(tok.encode(branch)) for _, branch in p.values())
     assert ev.input_tokens == n, (ev.input_tokens, n)
+
+
+def test_prompts_are_the_state_segment_and_each_questions_segment_as_the_model_reads_them():
+    """state 段所有题相同, 前向一次; 问题段各题自己的, 接在后面. 两段拼起来是训练模板 (context-first) 的整条提示,
+    上下文标签与类型标记照引擎的设置. 只渲染文本, 不碰模型."""
+    tok, d_ids, _ = _tok_and_ids()
+    qs = _questions()
+    e = Engine(_tiny_lm(), tok, d_ids, context_label="Game state", type_marker=True)
+    got = e.prompts(STATE, qs)
+    assert list(got) == list(qs)
+    assert len({state for state, _ in got.values()}) == 1
+    for qid, q in qs.items():
+        ex = to_example(q, STATE, "Game state")
+        assert "".join(got[qid]) == render_menu(ex, "context-first", type_marker=True), qid
+    assert got["department"][0].startswith("Game state: {\n")
+    assert got["department"][1].startswith("Question (<|choice|>): Which team should handle this?\nOptions:\n<|D0|>. billing")
+    assert got["is_urgent"][1].startswith("Question (<|bool|>):")
+    assert got["tiny"][1].endswith("\n\nAnswer:")
 
 
 def test_a_state_plus_its_longest_question_over_the_limit_is_refused_before_touching_the_model():
