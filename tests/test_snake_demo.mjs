@@ -132,6 +132,19 @@ test("a request asks one choice question over the four directions of the model i
   assert.deepEqual(Object.keys(request(game(), "consequences", "m").questions.move.criteria), ["up", "down", "left", "right"]);
 });
 
+test("the state opens with the goal of the game: eat the F, keep off the walls and the body", () => {
+  // System One 的请求没有 system prompt; state 排在提示最前、所有题共用, 目标写在它的第一个字段
+  const s = request(game(), "board", "m").state;
+  assert.equal(Object.keys(s)[0], "goal");
+  assert.match(s.goal, /\bF\b/);
+  assert.match(s.goal, /food/);
+  assert.match(s.goal, /wall/);
+  assert.match(s.goal, /body/);
+  // 同 moving 那次: state 里出现方向词, 模型会拿它去对同名的选项
+  assert.doesNotMatch(s.goal, /\b(up|down|left|right)\b/i);
+  assert.equal(request(game(), "consequences", "m").state.goal, s.goal);
+});
+
 test("the state draws the board as a grid of rows and names the head and the food, but not the heading", () => {
   const s = request(game({ food: [0, 5] }), "board", "m").state;
   assert.deepEqual(s.grid, [

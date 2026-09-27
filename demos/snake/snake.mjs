@@ -116,12 +116,18 @@ const WAY = {
   right: "Move the head one column right (column number plus 1)",
 };
 
+// 游戏目标. System One 的请求没有 system prompt, 放在 state 的第一个字段: state 排在提示最前, 所有题共用.
+// 不写方向词 (up / down / left / right), 理由同上面的朝向.
+export const GOAL = "Eat the food: move the snake's head onto the F cell. Each food eaten makes the snake one cell "
+  + "longer, and new food appears somewhere else. The game ends if the head hits a wall or the snake's own body.";
+
 export function boardState(g) {
   const grid = Array.from({ length: g.rows }, () => Array(g.cols).fill("."));
   if (g.food) grid[g.food[0]][g.food[1]] = "F";
   g.snake.forEach(([r, c], i) => { grid[r][c] = i === 0 ? "H" : "o"; });
   const at = (p) => (p ? { row: p[0], column: p[1] } : null);
   return {
+    goal: GOAL,
     board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge`,
     grid: grid.map((row) => row.join("")),
     legend: "H = snake head, o = snake body, F = food, . = empty cell",
