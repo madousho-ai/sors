@@ -101,6 +101,8 @@ export function step(g, dir, rng = Math.random) {
 // 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
 // state 用词写棋盘: grid 是整张棋盘, 每行一个字段, 每格一个词 (empty / head / body / food), 不用符号;
 // 另有几句话说蛇多长、头在哪、身子从脖子到尾巴依次在哪、食物在哪.
+// 服务默认不给 state 加标签, 原样放进提示; 训练时游戏局面的提示以「Game state: 」开头, 所以请求里的 state 是
+// 一段字符串: 这个标签接上 boardState 的缩进 JSON (与服务展开对象 state 的写法相同).
 // state 里不写朝向 (头和脖子的位置就给出了): 写了 "moving": "right", 1.7B 就挑同名的 right,
 // 哪怕它的说明写着 game over —— 头贴右墙时四种行序里 right 占三次; 去掉之后同样的两个贴墙局面八次全挑活路.
 //   board         说明只讲这个方向往哪边走, 与局面无关. 撞不撞、离食物远近都要模型自己从棋盘上推
@@ -108,6 +110,7 @@ export function step(g, dir, rng = Math.random) {
 //                 走过去之后还剩多少空格能走; 掉头的那个写明会被忽略, 再接上直走的后果
 
 export const QUESTION = "Which direction should the snake move next?";
+export const LABEL = "Game state";
 export const STYLES = ["consequences", "board"];
 
 const EDGE = { up: "top", down: "bottom", left: "left", right: "right" };
@@ -164,5 +167,6 @@ function describe(g, dir) {
 export function request(g, style, model) {
   if (!STYLES.includes(style)) throw new Error(`unknown style ${style}; expected one of ${STYLES.join(", ")}`);
   const criteria = Object.fromEntries(DIRECTIONS.map((d) => [d, style === "board" ? WAY[d] : describe(g, d)]));
-  return { state: boardState(g), model, questions: { move: { type: "choice", instructions: QUESTION, criteria } } };
+  const state = `${LABEL}: ${JSON.stringify(boardState(g), null, 2)}`;
+  return { state, model, questions: { move: { type: "choice", instructions: QUESTION, criteria } } };
 }

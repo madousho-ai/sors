@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { QUESTION, newGame, outcome, request, step } from "../demos/snake/snake.mjs";
+import { QUESTION, boardState, newGame, outcome, request, step } from "../demos/snake/snake.mjs";
 
 // 给一个固定的随机数序列, 用完就从头再来. 食物落在空格里的第 floor(r * 空格数) 个
 const seq = (...xs) => {
@@ -132,20 +132,27 @@ test("a request asks one choice question over the four directions of the model i
   assert.deepEqual(Object.keys(request(game(), "consequences", "m").questions.move.criteria), ["up", "down", "left", "right"]);
 });
 
+test("the state is the page's own Game state label followed by the board as JSON indented by two", () => {
+  // 服务默认不加标签, state 原样进提示. 训练时游戏局面的提示以「Game state: 」开头, 页面自己写上;
+  // JSON 与服务展开对象 state 的写法相同, 所以提示与服务替它加 Game state 标签时逐字一样
+  const g = game();
+  assert.equal(request(g, "board", "m").state, `Game state: ${JSON.stringify(boardState(g), null, 2)}`);
+  assert.equal(request(g, "consequences", "m").state, request(g, "board", "m").state);
+});
+
 test("the state opens with the goal of the game: eat the food, keep off the walls and the body", () => {
   // System One 的请求没有 system prompt; state 排在提示最前、所有题共用, 目标写在它的第一个字段
-  const s = request(game(), "board", "m").state;
+  const s = boardState(game());
   assert.equal(Object.keys(s)[0], "goal");
   assert.match(s.goal, /head onto the food's cell/);
   assert.match(s.goal, /wall/);
   assert.match(s.goal, /body/);
   // 同 moving 那次: state 里出现方向词, 模型会拿它去对同名的选项
   assert.doesNotMatch(s.goal, /\b(up|down|left|right)\b/i);
-  assert.equal(request(game(), "consequences", "m").state.goal, s.goal);
 });
 
 test("the state draws the whole board row by row, one word per cell, and says where the snake and the food are", () => {
-  const s = request(game({ food: [0, 5] }), "board", "m").state;
+  const s = boardState(game({ food: [0, 5] }));
   assert.deepEqual(Object.keys(s), ["goal", "board", "grid", "snake", "food"]);
   assert.equal(s.board, "5 rows by 6 columns; row 0 is the top edge, column 0 is the left edge. "
     + "The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column 5.");
@@ -166,7 +173,7 @@ test("the state draws the whole board row by row, one word per cell, and says wh
 
 test("the body sentence follows the snake from the neck to the tail, and a board without food says so", () => {
   const coil = [[2, 2], [3, 2], [3, 3], [2, 3], [1, 3]];
-  const s = request({ ...game({ snake: coil, heading: "up" }), food: null }, "board", "m").state;
+  const s = boardState({ ...game({ snake: coil, heading: "up" }), food: null });
   assert.equal(s.snake, "The snake is 5 cells long. Its head is at row 2, column 2. Its body, from the neck to the tail, "
     + "is at row 3, column 2; row 3, column 3; row 2, column 3; row 1, column 3.");
   assert.equal(s.food, "There is no food on the board.");

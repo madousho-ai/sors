@@ -13,7 +13,7 @@
 左边表单右边 JSON, 发送后显示每项概率与模型读到的提示 (见 demos/playground/). 贪吃蛇: /demo/snake/,
 每一步由服务里的模型决定往哪走 (见 demos/snake/).
 训练时每条提示都以「<标签>: <内容>」开头 (Customer message / Passage / Game state ...). 服务默认不加标签, state
-原样进提示, 要标签就写在 state 开头, 如 "Game state: ...". --context-label 给了才替每个
+原样进提示, 要标签就写在 state 开头, 如 "Game state: ..."; 贪吃蛇页面就是这样写的. --context-label 给了才替每个
 请求加上, 如评估对账时用 --context-label "Customer message".
 端点、答案格式与请求怎么跑见 decidophobia.serve.
 """
