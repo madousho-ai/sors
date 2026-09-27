@@ -1,0 +1,120 @@
+<!doctype html>
+<!--
+  决策模型玩贪吃蛇. 由推理服务在 --demo 下挂出来: scripts/serve.py --init <存档> --demo, 再打开 /demo/snake/.
+  每走一步向同源的 POST /v1/systemone 发一道 choice (上 / 下 / 左 / 右), 按模型选的方向走; 规则与请求见 snake.mjs.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>决策模型玩贪吃蛇</title>
+<style>
+  :root { --bg: #111418; --panel: #1a1f26; --line: #2b323c; --fg: #e6e9ee; --muted: #8b95a3;
+          --snake: #3fb56b; --head: #9be7b4; --food: #e5534b; --pick: #4f8cff; --warn: #e3a33b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  header .model { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(300px, 480px) minmax(320px, 1fr); gap: 20px; padding: 20px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  h2 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; }
+  canvas { width: 100%; aspect-ratio: 1; display: block; border-radius: 6px; background: #0b0d10; }
+  .stats { display: flex; gap: 18px; margin-top: 10px; color: var(--muted); }
+  .stats b { color: var(--fg); font-weight: 600; }
+  .status { margin-top: 8px; min-height: 1.4em; }
+  .status.end { color: var(--warn); font-weight: 600; }
+  .status.error { color: var(--food); }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 12px; }
+  button { background: #252c36; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--pick); }
+  button.primary { background: var(--pick); border-color: var(--pick); color: #fff; }
+  select, input[type=password] { background: #0f1317; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .bars { display: grid; grid-template-columns: 56px 1fr 60px; gap: 8px 10px; align-items: center; }
+  .bars .name { font-weight: 600; }
+  .bar { height: 18px; background: #0f1317; border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #3a4452; width: 0; transition: width .15s; }
+  .bars .picked .bar i { background: var(--pick); }
+  .bars .picked { color: var(--pick); }
+  .bars .pct { text-align: right; font-variant-numeric: tabular-nums; }
+  .decision { margin-top: 12px; color: var(--muted); }
+  .decision b { color: var(--fg); }
+  .decision .ignored { color: var(--warn); }
+  .why { margin-top: 8px; padding: 8px 10px; background: #0f1317; border-radius: 6px; color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  td.probs span { display: inline-block; min-width: 44px; color: var(--muted); }
+  td.probs span.picked { color: var(--pick); font-weight: 600; }
+  .history { max-height: 320px; overflow: auto; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); }
+  pre { background: #0b0d10; padding: 10px; border-radius: 6px; overflow: auto; max-height: 360px; font-size: 12px; }
+  .right { display: grid; gap: 20px; align-content: start; }
+</style>
+</head>
+<body>
+<header>
+  <h1>决策模型玩贪吃蛇</h1>
+  <span class="model">模型：<b id="model">连接中…</b></span>
+</header>
+<main>
+  <section>
+    <canvas id="board" width="480" height="480"></canvas>
+    <div class="stats">
+      <span>长度 <b id="length">3</b></span>
+      <span>吃到 <b id="eaten">0</b></span>
+      <span>步数 <b id="steps">0</b></span>
+      <span>本步用时 <b id="latency">–</b></span>
+    </div>
+    <div class="status" id="status">按「开始」让模型来走。</div>
+    <div class="controls">
+      <button class="primary" id="run">开始</button>
+      <button id="step">单步</button>
+      <button id="reset">重开</button>
+    </div>
+    <div class="controls">
+      <label>局面写法
+        <select id="style">
+          <option value="consequences">写明每个方向的后果</option>
+          <option value="board">只给棋盘</option>
+        </select>
+      </label>
+      <label>棋盘
+        <select id="size">
+          <option value="8">8 × 8</option>
+          <option value="10" selected>10 × 10</option>
+          <option value="12">12 × 12</option>
+        </select>
+      </label>
+      <label>每步间隔 <input type="range" id="delay" min="0" max="1000" step="50" value="150"> <span id="delay-ms">150 ms</span></label>
+      <label>API key <input type="password" id="key" placeholder="服务开了 --api-key 才要" size="16"></label>
+    </div>
+  </section>
+  <div class="right">
+    <section>
+      <h2>这一步的决策</h2>
+      <div class="bars" id="bars"></div>
+      <div class="decision" id="decision">还没有决策。</div>
+      <div class="why" id="why" hidden></div>
+    </section>
+    <section>
+      <h2>历史决策</h2>
+      <div class="history">
+        <table>
+          <thead><tr><th>#</th><th>决策</th><th>四个方向的概率</th><th>confidence</th><th>结果</th><th>用时</th></tr></thead>
+          <tbody id="history"></tbody>
+        </table>
+      </div>
+      <details>
+        <summary>模型看到的请求与原始回答</summary>
+        <pre id="raw">还没有请求。</pre>
+      </details>
+    </section>
+  </div>
+</main>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>
