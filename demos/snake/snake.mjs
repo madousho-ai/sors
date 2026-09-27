@@ -99,6 +99,8 @@ export function step(g, dir, rng = Math.random) {
 
 // ---- 发给推理服务的请求 ----------------------------------------------------------
 // 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
+// state 里不写朝向 (网格上 H 挨着的 o 就看得出来): 写了 "moving": "right", 1.7B 就挑同名的 right,
+// 哪怕它的说明写着 game over —— 头贴右墙时四种行序里 right 占三次; 去掉之后同样的两个贴墙局面八次全挑活路.
 //   board         说明只讲这个方向往哪边走, 与局面无关. 撞不撞、离食物远近都要模型自己从棋盘上推
 //   consequences  说明写这一步的后果: 撞墙 / 撞身子 (game over)、吃到食物、离食物近了还是远了、
 //                 走过去之后还剩多少空格能走; 掉头的那个写明会被忽略, 再接上直走的后果
@@ -125,7 +127,6 @@ export function boardState(g) {
     legend: "H = snake head, o = snake body, F = food, . = empty cell",
     snake_head: at(g.snake[0]),
     snake_length: g.snake.length,
-    moving: g.heading,
     food: at(g.food),
   };
 }

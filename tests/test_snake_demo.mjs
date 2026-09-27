@@ -132,7 +132,7 @@ test("a request asks one choice question over the four directions of the model i
   assert.deepEqual(Object.keys(request(game(), "consequences", "m").questions.move.criteria), ["up", "down", "left", "right"]);
 });
 
-test("the state draws the board as a grid of rows and names the head, the heading and the food", () => {
+test("the state draws the board as a grid of rows and names the head and the food, but not the heading", () => {
   const s = request(game({ food: [0, 5] }), "board", "m").state;
   assert.deepEqual(s.grid, [
     ".....F",
@@ -145,8 +145,10 @@ test("the state draws the board as a grid of rows and names the head, the headin
   assert.match(s.legend, /H = snake head/);
   assert.deepEqual(s.snake_head, { row: 2, column: 3 });
   assert.deepEqual(s.food, { row: 0, column: 5 });
-  assert.equal(s.moving, "right");
   assert.equal(s.snake_length, 3);
+  // 写了 "moving": "right", 1.7B 就挑名字同为 right 的那个选项, 哪怕它的说明写着 game over. 朝向从网格上看得出来
+  assert.ok(!("moving" in s), Object.keys(s));
+  assert.ok(!JSON.stringify(s).includes("right"), JSON.stringify(s));
 });
 
 test("in the board style the options only say which way each direction goes", () => {
