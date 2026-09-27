@@ -12,6 +12,8 @@ step 250 即到 0.88 (menu-first 要 1000 步). 与冻结探针 h_bare 0.880 > h
 唯一输的一项是 ECE 0.041 vs 0.033 (过自信 +3.8 vs +2.9 点), 标定项加进来之后再看.
 
 split_prompt 给出两段, 分界处两边都以换行收尾, BPE 不会跨界合并.
+标签为空串时 <query> 原样放进去, 不带「: 」: 推理服务默认这样, 要标签的调用方自己写在 state 开头.
+训练数据的标签都不为空.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ def _question_block(ex: MenuExample, type_marker: bool) -> str:
 def split_prompt(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: bool = False) -> tuple[str, str]:
     """(context, question). menu-first 下 context 为空串 —— 那种布局没有可共享的前缀.
     type_marker=True 时问句标签写成 'Question (<|bool|>):', 类型 token 挂在 Question 这个锚上."""
-    ctx = f"{ex.context_label}: {ex.query}"
+    ctx = f"{ex.context_label}: {ex.query}" if ex.context_label else ex.query
     qb = _question_block(ex, type_marker)
     if layout == "context-first":
         return ctx + "\n\n", qb + "\n\nAnswer:"

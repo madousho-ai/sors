@@ -471,6 +471,17 @@ def test_menu_first_has_no_shared_prefix():
     assert ctx == "" and "hello" in q and q.endswith("Answer:")
 
 
+def test_an_empty_context_label_puts_the_query_in_as_it_is():
+    """推理服务默认不加标签: state 原样进提示, 要标签的调用方自己写在 state 开头.
+    写成「Game state: …」时, 与服务加上 Game state 标签的提示逐字相同."""
+    bare = _ex("Game state: hp 3", options=(0, 1), gold_idx=0, context_label="")
+    assert split_prompt(bare, layout="context-first")[0] == "Game state: hp 3\n\n"
+    assert split_prompt(bare, layout="menu-first")[1].endswith("\n\nGame state: hp 3\nAnswer:")
+    labelled = _ex("hp 3", options=(0, 1), gold_idx=0, context_label="Game state")
+    for layout in ("context-first", "menu-first"):
+        assert render_menu(bare, layout=layout) == render_menu(labelled, layout=layout), layout
+
+
 def test_state_text_keeps_a_string_and_spreads_json_over_lines_indented_by_two():
     """state 是字符串就原样进提示; 对象或数组展开成缩进 2 格的 JSON, 非 ASCII 不转义.
     synth-v3 的 JSON state 训练时就是这个样子, 推理服务收到的对象也照这样写."""
