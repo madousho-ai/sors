@@ -43,7 +43,7 @@ class Evaluation:
 
 
 class Engine:
-    def __init__(self, lm, tok, d_ids: list[int], context_label: str = "State", type_marker: bool = False,
+    def __init__(self, lm, tok, d_ids: list[int], context_label: str = "", type_marker: bool = False,
                  max_tokens: int = 8192, max_batch_tokens: int = 16384):
         self.lm = lm.eval()
         self.tok = tok
@@ -60,7 +60,8 @@ class Engine:
 
     def prompts(self, state, questions: dict) -> dict[str, tuple[str, str]]:
         """{问题 id: (state 段, 问题段)}: 模型读到的提示原文, 两段拼起来就是训练模板下的整条提示.
-        state 段所有题相同 (只前向一次), 问题段各题自己的, 以 'Answer:' 收尾. 不碰模型."""
+        state 段所有题相同 (只前向一次), 问题段各题自己的, 以 'Answer:' 收尾. 不碰模型.
+        标签默认为空, state 段就是 state 本身; 给了 context_label 才在前面加「<标签>: 」."""
         return {qid: split_prompt(to_example(q, state, self.context_label), LAYOUT, self.type_marker)
                 for qid, q in questions.items()}
 
@@ -107,7 +108,7 @@ def recorded_base_model(checkpoint) -> str | None:
     return None
 
 
-def load_engine(checkpoint, base_model, context_label: str = "State", device: str = "cuda",
+def load_engine(checkpoint, base_model, context_label: str = "", device: str = "cuda",
                 dtype: torch.dtype = torch.bfloat16, max_tokens: int = 8192, max_batch_tokens: int = 16384) -> Engine:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 

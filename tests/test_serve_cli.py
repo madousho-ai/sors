@@ -65,6 +65,11 @@ def test_it_listens_on_localhost_by_default():
     assert (a.host, a.port) == ("127.0.0.1", 8000)
 
 
+def test_the_state_gets_no_label_unless_the_flag_names_one():
+    assert _args("--init", "x").context_label == ""
+    assert _args("--init", "x", "--context-label", "Customer message").context_label == "Customer message"
+
+
 def test_the_demo_pages_are_served_only_with_the_demo_flag():
     assert _mod.demo_dir(_args("--init", "x")) is None
     d = _mod.demo_dir(_args("--init", "x", "--demo"))

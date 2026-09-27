@@ -130,6 +130,15 @@ def test_prompts_are_the_state_segment_and_each_questions_segment_as_the_model_r
     assert got["tiny"][1].endswith("\n\nAnswer:")
 
 
+def test_without_a_label_the_state_segment_is_the_state_as_the_caller_wrote_it():
+    """标签默认不加: 调用方要标签就自己写在 state 开头, 对象 state 照样展开成 JSON, 前面什么都没有."""
+    tok, d_ids, _ = _tok_and_ids()
+    e = Engine(_tiny_lm(), tok, d_ids)
+    text = SystemOneRequest.model_validate({"state": "Game state: hp 3", "model": "m", "questions": QUESTIONS})
+    assert {s for s, _ in e.prompts(text.state, text.questions).values()} == {"Game state: hp 3\n\n"}
+    assert e.prompts(STATE, _questions())["tiny"][0].startswith('{\n  "ticket": "Help!')
+
+
 def test_a_state_plus_its_longest_question_over_the_limit_is_refused_before_touching_the_model():
     tok, d_ids, _ = _tok_and_ids()
     qs = _questions()

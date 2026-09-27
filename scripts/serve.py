@@ -11,7 +11,10 @@
 基模默认读 run 目录里 result.json 记的 --model; 存档不在 run 目录里时用 --base-model 给.
 --demo 把仓库的 demos/ 挂在 /demo/ 下, 默认不挂. 手填请求: http://127.0.0.1:8000/demo/playground/,
 左边表单右边 JSON, 发送后显示每项概率与模型读到的提示 (见 demos/playground/). 贪吃蛇: /demo/snake/,
-每一步由服务里的模型决定往哪走 (见 demos/snake/). 游戏局面用 --context-label "Game state" 更贴近训练数据.
+每一步由服务里的模型决定往哪走 (见 demos/snake/).
+训练时每条提示都以「<标签>: <内容>」开头 (Customer message / Passage / Game state ...). 服务默认不加标签, state
+原样进提示, 要标签就写在 state 开头, 如 "Game state: ...". --context-label 给了才替每个
+请求加上, 如评估对账时用 --context-label "Customer message".
 端点、答案格式与请求怎么跑见 decidophobia.serve.
 """
 
@@ -33,7 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--base-model", default=None, help="存档训练时的基模. 不给 = run 目录里 result.json 记的那个")
     ap.add_argument("--model-name", default=None,
                     help="服务名: 响应里的 model, 也是请求的 model 必须写的值. 不给 = run 目录名 (途中的档接上 step-<步数>)")
-    ap.add_argument("--context-label", default="State", help="提示里 state 前面的标签, 如 'Customer message'")
+    ap.add_argument("--context-label", default="",
+                    help="给了就在每个请求的 state 前面加「<标签>: 」, 如 'Customer message'. 不给 = 不加, state 原样进提示")
     ap.add_argument("--max-tokens", type=int, default=8192,
                     help="state 加最长那道题的 token 上限, 超了 422. 训练时的提示最长 4096")
     ap.add_argument("--max-batch-tokens", type=int, default=16384,
@@ -85,7 +89,7 @@ def main() -> None:
     app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {base}",
                      release_date=released, demo_dir=demo_dir(args))
     print(f"serving {args.init} on {base} as {name!r}, type_marker={engine.type_marker}, "
-          f"context label {args.context_label!r}, auth {'on' if api_key(args) else 'off'}", flush=True)
+          f"context label {repr(args.context_label) if args.context_label else 'none'}, auth {'on' if api_key(args) else 'off'}", flush=True)
     if args.demo:
         for page in ("playground", "snake"):
             print(f"demo: http://{args.host}:{args.port}/demo/{page}/", flush=True)
