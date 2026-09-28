@@ -10,6 +10,10 @@
   synth-v3    datasets/synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
+  synth-v5    datasets/synth-intents-v5: v2.5 的客户消息、v3 的材料、v4 的规则材料统一成「材料 + 绑定的题」.
+              选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
+              edge_case), 再领域、题型、材料各自均分. --mask-descriptions 按比例遮掉可遮的题的选项说明;
+              --consistency 下材料有几种说法时, 配对的第二份读另一种说法 (见 decidophobia/data/synth_v5.py)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
@@ -37,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import hashlib
 import random
 import time
 
@@ -54,7 +59,7 @@ from decidophobia.training.loop import TrainConfig, train
 from decidophobia.training.loss import LOSSES
 from decidophobia.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "massive")
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5", "massive")
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench")
 
 
@@ -140,6 +145,10 @@ def build_data(args):
                          f"got {args.probe_size} and {args.probe_passes}")
     if args.micro_batches < 1:
         raise SystemExit(f"--micro-batches is how many length groups a step runs, >= 1; got {args.micro_batches}")
+    if not 0.0 <= args.mask_descriptions <= 1.0:
+        raise SystemExit(f"--mask-descriptions is a share of maskable questions, 0..1; got {args.mask_descriptions}")
+    if "synth-v5" not in datasets and (args.mix or args.mask_descriptions):
+        raise SystemExit("--mix and --mask-descriptions only apply to --dataset synth-v5")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -175,6 +184,18 @@ def build_data(args):
         v3 = load_synth_v3()
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
         split_info["synth_v3_items"] = sum(len(v) for v in v3.values())
+    if "synth-v5" in datasets:
+        # 各训练目标按 --mix 的配比 (可随步数分段), 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
+        from decidophobia.data.synth_v5 import V5Sampler, load_synth_v5, parse_mix
+
+        v5 = load_synth_v5()
+        try:
+            mix = parse_mix(args.mix, {it.goal for it in v5})
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        samplers.append(V5Sampler(v5, mix, args.mask_descriptions))
+        split_info["synth_v5_items"] = len(v5)
+        split_info["synth_v5_mix"] = mix
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
@@ -249,8 +270,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="每步的 prompt 按长度分几组各自前向, 每组只补齐到组里最长的那条 (>= 1). "
                          "每行的 logits 与整批一次前向相同, loss 照旧对整批算、反传一次; 省下的是填充的计算. "
                          "1 = 整批一次 (旧行为)")
-    ap.add_argument("--max-length", type=int, default=4096,
-                    help="超长提示从左截. 实测最长: 256 项菜单 2685, BoolQ 1277, Banking77 全 60 项 444")
+    ap.add_argument("--max-length", type=int, default=8192,
+                    help="超长提示从左截. 实测最长: synth 256 项菜单 2880, synth-v5 256 行「键: 说明」约 4150, "
+                         "JevBench hard 3838, BoolQ 1277")
     ap.add_argument("--grad-ckpt", action="store_true", help="梯度 checkpointing: 激活 5 GiB -> 0.6 GiB, 时间 +30%%")
     ap.add_argument("--k-min", type=int, default=None,
                     help="不给 = 全量菜单: 池子里的选项全放进去, 最多 --k-max 项. 给了才在 k-min..k-max 随机抽长度 (旧行为)")
@@ -289,6 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="一致性项的权重 λ (>= 0): 每道训练题在同一批里再出一份, 行序重新打乱 (两项就是对调), "
                          "两份的菜单分布按描述对齐后求 Jensen-Shannon 散度, 损失 = 交叉熵 + λ · JS. "
                          "--batch-size 仍是每步几道题, 一步因此是两倍的 prompt. 0 = 不配对 (旧行为)")
+    ap.add_argument("--mix", default=None,
+                    help="synth-v5 各训练目标的配比, 相对权重: long_menu=4,breadth=2,complex=1,edge_case=1; "
+                         "分段写成 '0: long_menu=6,...; 1000: long_menu=3,...', 到那一步换配比. "
+                         "数据里有的目标每一段都要给正权重. 不给 = 各目标相同. 写进目录名 (-mix<hash>)")
+    ap.add_argument("--mask-descriptions", type=float, default=0.0,
+                    help="synth-v5 里绑定写了 maskable 的题, 以这个比例遮掉全部选项说明只留键 (0..1); "
+                         "一致性配对的两份一起遮. 0 = 不遮. 写进目录名")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")
     ap.add_argument("--seed", type=int, default=0)
@@ -340,6 +369,8 @@ def run_tag(args) -> str:
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
         + (f"-ls{args.label_smoothing:g}" if args.label_smoothing > 0 else "") \
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
+        + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
+        + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")
 
 

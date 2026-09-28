@@ -26,7 +26,8 @@ _spec.loader.exec_module(_mod)
 def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
-                consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq")
+                consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq",
+                mix=None, mask_descriptions=0.0)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -215,6 +216,105 @@ def test_synth_v3_trains_its_five_domains_alongside_synth():
         assert all(2 <= len(e.options) <= 107 for e in v3)
         seen |= {e.context_label for e in v3}
     assert seen == labels
+
+
+
+V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser agent state", "Security on-call screen",
+             "Code and CI state", ""}
+
+
+def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
+    """--dataset synth-v5: 不给 --mix 时四个有数据的目标机会相同. intent 题是 256 行「键: 描述」,
+    v4 的材料 (label 空串) 与 v3 的各种 label 都会出现."""
+    sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
+    assert info["synth_v5_items"] == 49923, info
+    assert info["synth_v5_mix"] == [(0, {"breadth": 1.0, "complex": 1.0, "edge_case": 1.0, "long_menu": 1.0})]
+    rng = random.Random(0)
+    labels, sizes = set(), collections.Counter()
+    for _ in range(60):
+        for e in sample_fn(8, rng):
+            labels.add(e.context_label)
+            sizes["256" if len(e.options) == 256 else "other"] += 1
+            if len(e.options) == 256:
+                assert all(": " in n for n in e.option_names) and e.question == "Which option best describes the message?"
+    assert labels <= V5_LABELS and "" in labels and "Customer message" in labels, labels
+    assert 0.2 < sizes["256"] / sum(sizes.values()) < 0.3, sizes
+
+
+def test_synth_v5_mix_sets_the_goal_shares():
+    sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive",
+                                               mix="long_menu=7,breadth=1,complex=1,edge_case=1"))
+    rng = random.Random(0)
+    n = long = 0
+    for _ in range(100):
+        for e in sample_fn(10, rng):
+            n += 1
+            long += len(e.options) == 256
+    assert 0.65 < long / n < 0.75, long / n
+
+
+def test_a_mix_that_drops_a_goal_or_comes_without_synth_v5_is_refused():
+    for ds, mix in (("synth-v5", "long_menu=1,breadth=1"), ("synth", "long_menu=1")):
+        try:
+            _mod.build_data(_args(ds, eval="massive", mix=mix))
+        except SystemExit:
+            continue
+        raise AssertionError(f"--dataset {ds} --mix {mix!r} accepted")
+
+
+def test_mask_descriptions_must_be_a_share_and_needs_synth_v5():
+    for ds, rate in (("synth-v5", 1.5), ("synth-v5", -0.1), ("synth", 0.5)):
+        try:
+            _mod.build_data(_args(ds, eval="massive", mask_descriptions=rate))
+        except SystemExit:
+            continue
+        raise AssertionError(f"--dataset {ds} --mask-descriptions {rate} accepted")
+
+
+def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
+    """--mask-descriptions 1 --consistency 1: intent 题 (maskable) 的两份都只剩键, 按描述对齐照样成立."""
+    sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", mask_descriptions=1.0, consistency=1.0,
+                                            mix="long_menu=97,breadth=1,complex=1,edge_case=1"))
+    rng = random.Random(0)
+    pairs = 0
+    for _ in range(10):
+        batch = sample_fn(8, rng)
+        for a, b in zip(batch[0::2], batch[1::2]):
+            if len(a.options) == 256:
+                pairs += 1
+                assert not any(": " in n for n in a.option_names + b.option_names)
+                assert [b.options[j] for j in row_alignment(a, b)] == a.options
+    assert pairs > 60, pairs
+
+
+def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
+    """v4 的材料带两种说法: --consistency 下配对的两份读的是不同说法, 问句与选项集合相同."""
+    sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", consistency=1.0,
+                                            mix="long_menu=1,breadth=1,complex=49,edge_case=49"))
+    rng = random.Random(0)
+    reworded = 0
+    for _ in range(20):
+        batch = sample_fn(8, rng)
+        for a, b in zip(batch[0::2], batch[1::2]):
+            assert a.question == b.question and sorted(a.options) == sorted(b.options)
+            assert [b.options[j] for j in row_alignment(a, b)] == a.options
+            reworded += a.query != b.query
+    assert reworded > 120, reworded
+
+
+def test_synth_v5_options_are_named_in_the_run_directory():
+    p = _mod.build_parser()
+    args = p.parse_args(["--dataset", "synth-v5", "--mask-descriptions", "0.5", "--mix", "long_menu=4,breadth=1"])
+    vars(args).update(_mod.resolve_adapter(args))
+    tag = _mod.run_tag(args)
+    assert "-mask0.5" in tag and "-mix" in tag, tag
+    other = p.parse_args(["--dataset", "synth-v5", "--mask-descriptions", "0.5", "--mix", "long_menu=3,breadth=1"])
+    vars(other).update(_mod.resolve_adapter(other))
+    assert _mod.run_tag(other) != tag
+
+
+def test_max_length_defaults_to_8192():
+    assert _mod.build_parser().parse_args([]).max_length == 8192
 
 
 def test_label_smoothing_defaults_to_zero_and_is_named_in_the_run_directory():
