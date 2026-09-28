@@ -307,6 +307,13 @@ def test_run_tag_names_the_loss_and_keeps_the_old_names_for_old_losses():
     assert tag("--loss", "menu", "--k-min", "2", "--k-max", "10") == "-k2-10"
 
 
+def test_context_marker_defaults_off_and_is_named_in_the_run_directory_after_the_type_marker():
+    p = _mod.build_parser()
+    assert p.parse_args([]).context_marker is False
+    assert _mod.run_tag(p.parse_args(["--context-marker"])) == "-ctx-kfull256-vocab"
+    assert _mod.run_tag(p.parse_args(["--type-marker", "--context-marker"])) == "-qtype-ctx-kfull256-vocab"
+
+
 def _checkpoint(trainable, r, alpha):
     """用一层的随机 Qwen3 走真的 prepare_model / save_trained 存一份档."""
     import tempfile

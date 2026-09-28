@@ -48,7 +48,7 @@ from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, save_
 from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_partners
 from decidophobia.core.model import TRAINABLE, prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.evaluation.scoring import EvalSet
 from decidophobia.training.loop import TrainConfig, train
 from decidophobia.training.loss import LOSSES
@@ -219,6 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
     ap.add_argument("--type-marker", action="store_true",
                     help="问句标签写成 'Question (<|bool|>):', 类型 token 随 D 行一起训")
+    ap.add_argument("--context-marker", action="store_true",
+                    help="state 两头包 <|context_start|> <|context_end|>, 两个 token 随 D 行一起训; 超长只截包裹里的 state")
     ap.add_argument("--loss", default="vocab", choices=LOSSES,
                     help="vocab: 分母是整个词表, 普通 token 每步被压低, 答题位置只说 D 码; "
                          "all-slots: 分母是全部 256 个 D 槽; menu: 只在菜单 k 个槽上归一 (后两种是旧版)")
@@ -318,7 +320,8 @@ def checkpoint_path(out: pathlib.Path, step: int) -> pathlib.Path:
 def run_tag(args) -> str:
     """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现.
     rank / alpha 离开 8 / 16 才写, 旧 run 全是 8 / 16; --lr-lora 离开 1e-4 才写, 旧 run 全是 1e-4."""
-    return ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
+    return ("-qtype" if args.type_marker else "") + ("-ctx" if args.context_marker else "") \
+        + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
         + (f"-r{args.lora_r}" if args.lora_r not in (None, 8) else "") \
         + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
         + (f"-lr{args.lr_lora:g}" if args.lr_lora != 1e-4 else "") \
@@ -345,7 +348,9 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.model)
     d_ids = install_d_tokens(tok)
     t_ids = install_type_tokens(tok)
-    train_ids = d_ids + t_ids  # 类型行永远放开; 不带 --type-marker 时它们不出现在提示里, 梯度为零、原地不动
+    c_ids = install_context_tokens(tok)
+    # 类型行与上下文行永远放开; 不带 --type-marker / --context-marker 时它们不出现在提示里, 梯度为零、原地不动
+    train_ids = d_ids + t_ids + c_ids
     lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
                       trainable=args.trainable, grad_ckpt=args.grad_ckpt)
@@ -357,6 +362,7 @@ def main() -> None:
         max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
+        context_marker=args.context_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
         eval_every=args.eval_every, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,

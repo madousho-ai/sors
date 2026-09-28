@@ -29,7 +29,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from decidophobia.core.checkpoint import prepare_from_checkpoint
 from decidophobia.core.model import prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.data.massive import load_massive
 from decidophobia.evaluation.scoring import EvalSet, evaluate
 from decidophobia.training.thermal import ThermalGuard
@@ -43,6 +43,7 @@ def main() -> None:
     ap.add_argument("--k", type=int, nargs="+", default=[10, 20, 60])
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS)
     ap.add_argument("--type-marker", action="store_true")
+    ap.add_argument("--context-marker", action="store_true", help="state 两头包 <|context_start|> <|context_end|>, 与训练时相同")
     ap.add_argument("--max-length", type=int, default=1024, help="k=60 的菜单约 500 token, 512 会从左截掉指令")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--limit", type=int, default=0, help="最多评几条 (0 = 全部 2974)")
@@ -65,7 +66,7 @@ def main() -> None:
 
     tok = AutoTokenizer.from_pretrained(args.model)
     d_ids = install_d_tokens(tok)
-    train_ids = d_ids + install_type_tokens(tok)
+    train_ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
 
     def build(path):
@@ -90,7 +91,7 @@ def main() -> None:
             guard.wait()
             t0 = time.time()
             r = evaluate(m, tok, d_ids, es, k_max=k, max_length=args.max_length,
-                         layout=args.layout, type_marker=args.type_marker)
+                         layout=args.layout, type_marker=args.type_marker, context_marker=args.context_marker)
             rec = {"init": path, "tag": tag, "k": k, "chance": 1 / k, "train_config": cfg, **r, "t": round(time.time() - t0, 1)}
             records.append(rec)
             print(f"{tag:52s} k={k:2d}  acc {r['accuracy']:.4f}  nll {r['nll']:.3f}  ece {r['ece']:.3f}  "

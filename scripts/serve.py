@@ -89,6 +89,7 @@ def main() -> None:
     app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {base}",
                      release_date=released, demo_dir=demo_dir(args))
     print(f"serving {args.init} on {base} as {name!r}, type_marker={engine.type_marker}, "
+          f"context_marker={engine.context_marker}, "
           f"context label {repr(args.context_label) if args.context_label else 'none'}, auth {'on' if api_key(args) else 'off'}", flush=True)
     if args.demo:
         for page in ("playground", "snake"):

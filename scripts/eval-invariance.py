@@ -31,7 +31,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from decidophobia.core.checkpoint import prepare_from_checkpoint
 from decidophobia.core.menu import random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.data.synth import synth_eval_examples
 from decidophobia.evaluation.metrics import consistency, summarize
 from decidophobia.evaluation.scoring import score_examples
@@ -72,7 +72,7 @@ def main() -> None:
         base = base[: args.limit]
     tok = AutoTokenizer.from_pretrained(args.model)
     d_ids = install_d_tokens(tok)
-    train_ids = d_ids + install_type_tokens(tok)
+    train_ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
     lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
     m, cfg = prepare_from_checkpoint(lm, train_ids, args.init)  # LoRA 形状照档里记的
 
@@ -83,7 +83,8 @@ def main() -> None:
             random.Random(shuffle_seed).shuffle(order)
         k = max(len(e.options) for e in exs)
         bs = args.batch_size if k > SHORT else args.batch_size * 4
-        s = score_examples(m, tok, d_ids, [exs[i] for i in order], bs, k, args.max_length, args.layout)
+        s = score_examples(m, tok, d_ids, [exs[i] for i in order], bs, k, args.max_length, args.layout,
+                           context_marker=bool(cfg.get("context_marker", False)))  # 档里记的
         back = [0] * len(order)
         for j, i in enumerate(order):
             back[i] = j
