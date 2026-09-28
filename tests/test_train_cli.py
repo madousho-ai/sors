@@ -224,11 +224,12 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """--dataset synth-v5: 不给 --mix 时四个有数据的目标机会相同. intent 题是 256 行「键: 描述」,
+    """--dataset synth-v5: 不给 --mix 时五个有数据的目标机会相同. intent 题是 256 行「键: 描述」,
     v4 的材料 (label 空串) 与 v3 的各种 label 都会出现."""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 49923, info
-    assert info["synth_v5_mix"] == [(0, {"breadth": 1.0, "complex": 1.0, "edge_case": 1.0, "long_menu": 1.0})]
+    assert info["synth_v5_items"] == 62598, info
+    assert info["synth_v5_mix"] == [(0, {"breadth": 1.0, "complex": 1.0, "edge_case": 1.0, "long_context": 1.0,
+                                         "long_menu": 1.0})]
     rng = random.Random(0)
     labels, sizes = set(), collections.Counter()
     for _ in range(60):
@@ -238,12 +239,12 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
             if len(e.options) == 256:
                 assert all(": " in n for n in e.option_names) and e.question == "Which option best describes the message?"
     assert labels <= V5_LABELS and "" in labels and "Customer message" in labels, labels
-    assert 0.2 < sizes["256"] / sum(sizes.values()) < 0.3, sizes
+    assert 0.15 < sizes["256"] / sum(sizes.values()) < 0.25, sizes
 
 
 def test_synth_v5_mix_sets_the_goal_shares():
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive",
-                                               mix="long_menu=7,breadth=1,complex=1,edge_case=1"))
+                                               mix="long_menu=14,breadth=2,complex=2,edge_case=1,long_context=1"))
     rng = random.Random(0)
     n = long = 0
     for _ in range(100):
@@ -274,7 +275,7 @@ def test_mask_descriptions_must_be_a_share_and_needs_synth_v5():
 def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
     """--mask-descriptions 1 --consistency 1: intent 题 (maskable) 的两份都只剩键, 按描述对齐照样成立."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", mask_descriptions=1.0, consistency=1.0,
-                                            mix="long_menu=97,breadth=1,complex=1,edge_case=1"))
+                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1"))
     rng = random.Random(0)
     pairs = 0
     for _ in range(10):
@@ -290,7 +291,7 @@ def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
 def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
     """v4 的材料带两种说法: --consistency 下配对的两份读的是不同说法, 问句与选项集合相同."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", consistency=1.0,
-                                            mix="long_menu=1,breadth=1,complex=49,edge_case=49"))
+                                            mix="long_menu=1,breadth=1,complex=33,edge_case=33,long_context=32"))
     rng = random.Random(0)
     reworded = 0
     for _ in range(20):
