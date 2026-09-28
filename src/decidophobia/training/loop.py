@@ -51,6 +51,37 @@ class TrainConfig:
     seed: int = 0
 
 
+class Fp32Master:
+    """低精度 (bf16 / fp16) 的可训参数各配一份 fp32 主权重, 优化器只更新主权重.
+
+    bf16 在 1.0 附近的间距是 2^-8, 单步 1e-5 量级的改动直接写回 bf16 会被舍入掉, 权重原地不动;
+    在 fp32 上累积, 攒够一个间距 bf16 那份才跟着变. 全参时的 bf16 主干要这个.
+    fp32 的参数原样留在 params 里 (peft 的 LoRA 权重本来就是 fp32), 旧 run 逐位不变.
+
+    每步: backward 之后 pull_grads() 把梯度搬到主权重上 (模型上那份清掉, 否则下一次 backward 累加上去),
+    opt.step() 之后 push() 把主权重写回模型."""
+
+    def __init__(self, params: list[torch.Tensor]):
+        self.pairs: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self.params: list[torch.Tensor] = []
+        for p in params:
+            if p.dtype in (torch.bfloat16, torch.float16):
+                w = p.detach().float().clone().requires_grad_(True)
+                self.pairs.append((p, w))
+                self.params.append(w)
+            else:
+                self.params.append(p)
+
+    def pull_grads(self) -> None:
+        for p, w in self.pairs:
+            w.grad = None if p.grad is None else p.grad.float()
+            p.grad = None
+
+    @torch.no_grad()
+    def push(self) -> None:
+        for p, w in self.pairs:
+            p.copy_(w)
+
 def scalar_items(prefix: str, d: dict) -> list[tuple[str, float]]:
     """把 evaluate() 的结果拍平成 TensorBoard 标量: 嵌套 dict 接成 a/b/c, None 丢掉."""
     out = []
@@ -188,9 +219,10 @@ def train(
             log_f.close()
         return history
 
-    opt = torch.optim.AdamW(
-        trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed), weight_decay=cfg.weight_decay
-    )
+    groups = trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed)
+    master = Fp32Master(groups[0]["params"])  # 主干那一组 (LoRA 或 full 的主干); rows 那一组照旧
+    groups[0]["params"] = master.params
+    opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )
@@ -207,7 +239,9 @@ def train(
         hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])  # 更新之前的模型在这一批上的读数
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        master.pull_grads()
         opt.step()
+        master.push()
         sched.step()
         running += ce.item()
         running_hits, running_n = running_hits + hits, running_n + n
