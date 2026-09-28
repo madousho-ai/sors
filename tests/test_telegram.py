@@ -1,11 +1,17 @@
 """decidophobia.data.telegram 的测试: arashdn/telegram-research 的 v2 (Telegram 频道的走红消息, 波斯语, 带类别与情感标注).
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_telegram.py
-读语料的那几项要 data/telegram/tg_v2_public.zip 在盘上 (不自动下载, md5 钉死).
+读语料的那几项要用 data/telegram/tg_v2_public.zip; 不在盘上时第一次用到会自动下载 (54MB, md5 钉死).
 """
 
+import pathlib
+import shutil
+import tempfile
+import urllib.request
+
 from _runner import run
-from decidophobia.data.telegram import cache_path, load_telegram_viral, merge_copies, post_text
+from decidophobia.data.spam import DEFAULT_DATA_DIR
+from decidophobia.data.telegram import URL, ZIP, cache_path, load_telegram_viral, merge_copies, post_text
 
 
 # --------------------------------------------------------------------------
@@ -99,9 +105,6 @@ def test_the_parsed_corpus_is_cached_and_reread_identically():
 
 
 def test_a_dump_with_the_wrong_md5_is_refused():
-    import pathlib
-    import tempfile
-
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "telegram").mkdir()
         (pathlib.Path(d) / "telegram" / "tg_v2_public.zip").write_bytes(b"not the zip")
@@ -111,6 +114,25 @@ def test_a_dump_with_the_wrong_md5_is_refused():
             assert "md5" in str(e)
         else:
             raise AssertionError("wrong md5 was accepted")
+
+
+def test_a_missing_dump_is_downloaded_from_the_authors_dropbox_link():
+    """空目录里第一次读: 从 telegram-research README 里 v2 的 Dropbox 链接下原始包 (换成拷贝盘上那份), 读出相同的语料."""
+    urls = []
+
+    def fake(url, dest):
+        urls.append(url)
+        shutil.copy(DEFAULT_DATA_DIR / ZIP, dest)
+
+    with tempfile.TemporaryDirectory() as d:
+        real, urllib.request.urlretrieve = urllib.request.urlretrieve, fake
+        try:
+            c = load_telegram_viral(data_dir=d)
+        finally:
+            urllib.request.urlretrieve = real
+        assert (pathlib.Path(d) / ZIP).exists()
+    assert urls == [URL] and URL.startswith("https://www.dropbox.com/s/sokcxz35e4ta91l/tg_v2_public.zip")
+    assert c == load_telegram_viral()
 
 
 if __name__ == "__main__":

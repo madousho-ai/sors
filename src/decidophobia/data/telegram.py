@@ -1,7 +1,8 @@
 """arashdn/telegram-research 的 v2: Telegram 公开频道里走红的消息, 波斯语为主, 每条人工标了类别与情感.
 (v1 那张广告 / 非广告标注表是二元的 spam 语料, 在 decidophobia.data.spam 里, 名字 "telegram".)
 
-原始包 data/telegram/tg_v2_public.zip (Dropbox, 54MB, md5 钉死, 不自动下载) 里是一份 MySQL dump.
+原始包 data/telegram/tg_v2_public.zip (作者 README 里的 Dropbox 链接, 54MB, md5 钉死) 里是一份 MySQL dump,
+第一次用时自动下载 (见 decidophobia.data.download).
 只读其中三张表: viral_messages (18566 条带标注的消息), tags (24 个类别), super_tags (类别上面的 8 个大类).
 posts 表的 45 万条消息没有标注, 不读.
 
@@ -16,18 +17,19 @@ sentiment 只有 -1 / 0 / 1 (负面 / 中性 / 正面); 库里各有一条 2 与
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import pathlib
 import zipfile
 from dataclasses import dataclass
 
+from decidophobia.data.download import fetch
 from decidophobia.data.mysqldump import dump_tables
 from decidophobia.data.spam import DEFAULT_DATA_DIR, MAX_BODY, tidy
 
 ZIP = "telegram/tg_v2_public.zip"
 ZIP_MD5 = "302c13511699f51aed674b891f3e795e"
+URL = "https://www.dropbox.com/s/sokcxz35e4ta91l/tg_v2_public.zip?dl=1"
 MEMBER = "tg_v2_public.sql"
 PARSE_VERSION = 1
 SENTIMENTS = (-1, 0, 1)
@@ -95,15 +97,11 @@ def _parse(zip_path: pathlib.Path) -> TelegramCorpus:
 
 
 def load_telegram_viral(data_dir=DEFAULT_DATA_DIR) -> TelegramCorpus:
-    """第一次读原始包 (核对 md5) 并写缓存, 之后读缓存."""
+    """第一次读原始包 (没有就下载, 核对 md5) 并写缓存, 之后读缓存."""
     cache = cache_path(data_dir)
     if cache.exists():
         return _from_json(json.loads(cache.read_text(encoding="utf-8")))
-    zip_path = pathlib.Path(data_dir) / ZIP
-    got = hashlib.md5(zip_path.read_bytes()).hexdigest()
-    if got != ZIP_MD5:
-        raise RuntimeError(f"{zip_path}: md5 {got} != {ZIP_MD5}")
-    c = _parse(zip_path)
+    c = _parse(fetch(pathlib.Path(data_dir) / ZIP, URL, ZIP_MD5))
     cache.write_text(json.dumps({"tags": c.tags, "super_tags": c.super_tags, "posts": c.posts}, ensure_ascii=False),
                      encoding="utf-8")
     return _from_json(json.loads(cache.read_text(encoding="utf-8")))
