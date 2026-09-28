@@ -6,6 +6,18 @@ import torch
 
 from decidophobia.core.menu import MenuExample, row_alignment
 from decidophobia.core.prompt import DEFAULT_LAYOUT, encode_prompts, prompt_pieces
+from decidophobia.core.tokens import CONTEXT_TOKENS
+
+
+def fit(ids: list[int], max_length: int, bounds: tuple[int, int] | None = None) -> list[int]:
+    """超过 max_length 时截短, 最后一个 token (答案位置) 永远保住.
+    bounds 给出上下文起止标记的 id 时, 先截两个标记之间 state 的左边, 标记与问题整段不动;
+    state 截空了还超长, 再从整条的左边截. 不给 bounds 就直接从整条的左边截 (旧行为, BoolQ 的 passage 在最前面)."""
+    over = len(ids) - max_length
+    if over > 0 and bounds is not None:
+        a, b = ids.index(bounds[0]) + 1, ids.index(bounds[1])
+        ids = ids[:a] + ids[a + min(over, b - a):]
+    return ids[-max_length:]
 
 
 def collate(
@@ -16,6 +28,7 @@ def collate(
     layout: str = DEFAULT_LAYOUT,
     max_length: int = 512,
     type_marker: bool = False,
+    context_marker: bool = False,
 ) -> dict[str, torch.Tensor]:
     """返回
       input_ids      (B, L)  左填充
@@ -25,12 +38,12 @@ def collate(
       gold           (B,)        正确选项在菜单里的位置
       target         (B, k_max)  菜单各行的目标概率: 样本带软标签 (MenuExample.target) 就是它, 否则 gold 那格 1;
                                  超出菜单长度的位置 0
-    提示照 core.prompt 的片段编码: 文字里写着的保留 token 名是普通文字.
+    提示照 core.prompt 的片段编码: 文字里写着的保留 token 名是普通文字. 超长的截法见 fit.
     """
-    pieces = [sum(prompt_pieces(ex, layout, type_marker), []) for ex in examples]
+    pieces = [sum(prompt_pieces(ex, layout, type_marker, context_marker), []) for ex in examples]
     pad = tokenizer.pad_token_id
-    # 超长的从左边截 (BoolQ 的 passage 在最前面), 答案位置永远保住
-    encs = [e[-max_length:] for e in encode_prompts(tokenizer, pieces)]
+    bounds = tuple(tokenizer.convert_tokens_to_ids(CONTEXT_TOKENS)) if context_marker else None
+    encs = [fit(e, max_length, bounds) for e in encode_prompts(tokenizer, pieces)]
     L = max(len(e) for e in encs)
     input_ids = torch.full((len(encs), L), pad, dtype=torch.long)
     attn = torch.zeros((len(encs), L), dtype=torch.long)

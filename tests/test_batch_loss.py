@@ -8,7 +8,7 @@ import sys
 
 import torch
 
-from decidophobia.core.batch import collate, length_groups, pair_alignment, trim_left_padding
+from decidophobia.core.batch import collate, fit, length_groups, pair_alignment, trim_left_padding
 from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import encode_prompts, prompt_pieces, render_menu
 from decidophobia.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
@@ -221,6 +221,44 @@ def test_collate_reads_reserved_token_names_in_the_query_as_plain_text():
     ex = MenuExample(query="pick <|D0|> please", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"])
     row = collate([ex], tok, d_ids, k_max=2)["input_ids"][0].tolist()
     assert row.count(d_ids[0]) == 1, tok.convert_ids_to_tokens(row)
+
+
+def test_collate_without_the_context_marker_cuts_an_overlong_prompt_from_the_left():
+    """旧行为: 超过 max_length 就从整条的左边截, 答案位置保住."""
+    tok = _tok()
+    d_ids = install_d_tokens(tok)
+    ex = MenuExample(query="word " * 200, options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"])
+    row = collate([ex], tok, d_ids, k_max=2, max_length=60)["input_ids"][0].tolist()
+    assert row == tok.encode(render_menu(ex), add_special_tokens=False)[-60:]
+
+
+def test_collate_with_the_context_marker_cuts_an_overlong_state_inside_the_markers():
+    """开了上下文标记: 超长时只截两个标记之间 state 的左边, 两个标记和后面的问题整段保住, 总长正好 max_length."""
+    tok, d, _, c = _all_tokens()
+    ex = MenuExample(query=" ".join(f"w{i}" for i in range(300)), options=[0, 1], gold_idx=0, label=0,
+                     option_names=["a", "b"])
+    row = collate([ex], tok, d, k_max=2, max_length=60, context_marker=True)["input_ids"][0].tolist()
+    s = render_menu(ex, context_marker=True)
+    assert len(row) == 60 and row[0] == c[0] and row.count(c[1]) == 1, tok.convert_ids_to_tokens(row)
+    assert tok.decode(row[row.index(c[1]):]) == s[s.index("<|context_end|>"):], tok.decode(row)
+    assert tok.decode(row[1:row.index(c[1])]).endswith(" w298 w299"), tok.decode(row)
+
+
+def test_fit_cuts_the_state_first_and_the_whole_prompt_only_once_the_state_is_gone():
+    """8 = 起, 9 = 止. 超 2 个: 截掉 state 最左的 2 个; 超 5 个而 state 只有 3 个: state 截空, 再从整条左边截 2 个."""
+    ids = [1, 8, 20, 21, 22, 9, 30, 31]
+    assert fit(ids, 6, (8, 9)) == [1, 8, 22, 9, 30, 31]
+    assert fit(ids, 3, (8, 9)) == [9, 30, 31]
+    assert fit(ids, 6) == [20, 21, 22, 9, 30, 31]
+    assert fit(ids, 8, (8, 9)) == ids
+
+
+def test_collate_with_the_context_marker_leaves_a_prompt_that_fits_untouched():
+    tok, d, _, c = _all_tokens()
+    ex = MenuExample(query="short one", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"])
+    row = collate([ex], tok, d, k_max=2, max_length=60, context_marker=True)["input_ids"][0].tolist()
+    ctx, q = prompt_pieces(ex, context_marker=True)
+    assert row == encode_prompts(tok, [ctx + q])[0]
 
 
 def test_length_groups_put_the_longest_rows_together_and_split_them_evenly():

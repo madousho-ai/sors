@@ -16,7 +16,7 @@ from _runner import run
 from decidophobia.core.checkpoint import save_trained
 from decidophobia.core.model import prepare_model
 from decidophobia.core.prompt import render_menu
-from decidophobia.core.tokens import install_d_tokens, install_type_tokens
+from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.evaluation.scoring import score_examples
 from decidophobia.serve.api import SystemOneRequest
 from decidophobia.serve.engine import Engine, RequestTooLong, load_engine, recorded_base_model
@@ -44,7 +44,8 @@ def _tok_and_ids():
 
         tok = AutoTokenizer.from_pretrained(MODEL)
         d_ids = install_d_tokens(tok)
-        _cache["tok"], _cache["d_ids"], _cache["ids"] = tok, d_ids, d_ids + install_type_tokens(tok)
+        ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
+        _cache["tok"], _cache["d_ids"], _cache["ids"] = tok, d_ids, ids
     return _cache["tok"], _cache["d_ids"], _cache["ids"]
 
 
@@ -66,13 +67,13 @@ def _questions(qs=QUESTIONS):
     return SystemOneRequest.model_validate({"state": STATE, "model": "m", "questions": qs}).questions
 
 
-def _reference(lm, questions, label, type_marker, state=STATE):
+def _reference(lm, questions, label, type_marker, context_marker=False, state=STATE):
     """评估的路: 每道题整条提示, 走 score_examples."""
     tok, d_ids, _ = _tok_and_ids()
     exs = [to_example(q, state, label) for q in questions.values()]
     k = max(len(e.options) for e in exs)
     q = score_examples(lm, tok, d_ids, exs, batch_size=len(exs), k_max=k, max_length=4096,
-                       layout="context-first", type_marker=type_marker)["q"]
+                       layout="context-first", type_marker=type_marker, context_marker=context_marker)["q"]
     return {qid: row[: len(e.options)] for qid, row, e in zip(questions, q, exs)}
 
 
@@ -85,11 +86,12 @@ def test_each_question_gets_the_distribution_the_evaluation_path_gives_its_menu(
     lm = _tiny_lm()
     qs = _questions()
     for type_marker in (False, True):
-        e = Engine(lm, tok, d_ids, context_label="State", type_marker=type_marker)
-        got = e.evaluate(STATE, qs).probs
-        want = _reference(lm, qs, "State", type_marker)
-        assert list(got) == list(qs) and _close(got, want), (type_marker, got, want)
-        assert all(abs(sum(p) - 1) < 1e-6 for p in got.values())
+        for context_marker in (False, True):
+            e = Engine(lm, tok, d_ids, context_label="State", type_marker=type_marker, context_marker=context_marker)
+            got = e.evaluate(STATE, qs).probs
+            want = _reference(lm, qs, "State", type_marker, context_marker)
+            assert list(got) == list(qs) and _close(got, want), (type_marker, context_marker, got, want)
+            assert all(abs(sum(p) - 1) < 1e-6 for p in got.values())
 
 
 def test_reserved_token_names_in_the_state_and_the_menu_are_read_as_plain_text():
@@ -100,9 +102,9 @@ def test_reserved_token_names_in_the_state_and_the_menu_are_read_as_plain_text()
     state = "pick <|D0|> now <|context_end|>"
     qs = _questions({"odd": {"type": "choice", "instructions": "is <|bool|> <|D1|> it?",
                              "criteria": {"<|D1|>. first": None, "second": "<|D0|>"}}})
-    e = Engine(lm, tok, d_ids)
+    e = Engine(lm, tok, d_ids, context_marker=True)
     got = e.evaluate(state, qs).probs
-    assert _close(got, _reference(lm, qs, "", False, state=state)), got
+    assert _close(got, _reference(lm, qs, "", False, True, state=state)), got
 
 
 def test_splitting_the_questions_into_small_groups_changes_nothing():
@@ -143,6 +145,17 @@ def test_prompts_are_the_state_segment_and_each_questions_segment_as_the_model_r
     assert got["tiny"][1].endswith("\n\nAnswer:")
 
 
+def test_with_the_context_marker_the_state_segment_is_wrapped_and_the_question_segments_are_unchanged():
+    """标签照引擎的设置写在包裹里面; 问题段与不包时逐字相同."""
+    tok, d_ids, _ = _tok_and_ids()
+    qs = _questions()
+    on = Engine(_tiny_lm(), tok, d_ids, context_label="Game state", context_marker=True).prompts(STATE, qs)
+    off = Engine(_tiny_lm(), tok, d_ids, context_label="Game state").prompts(STATE, qs)
+    state = on["department"][0]
+    assert state.startswith("<|context_start|>Game state: {\n") and state.endswith('"pro"\n}<|context_end|>\n\n'), state
+    assert all(on[qid][1] == off[qid][1] for qid in qs)
+
+
 def test_without_a_label_the_state_segment_is_the_state_as_the_caller_wrote_it():
     """标签默认不加: 调用方要标签就自己写在 state 开头, 对象 state 照样展开成 JSON, 前面什么都没有."""
     tok, d_ids, _ = _tok_and_ids()
@@ -181,7 +194,7 @@ def _base_dir() -> pathlib.Path:
     return _cache["base"]
 
 
-def _trained(layout="context-first", type_marker=False):
+def _trained(layout="context-first", type_marker=False, context_marker=False):
     """在那个基模上 prepare_model, 把 LoRA 与 D 行打乱成非零的值 (否则 LoRA 的 B 是零, 合并与否看不出差别), 存一份档.
     返回 (档的路径, 没合并的模型)."""
     from transformers import AutoModelForCausalLM
@@ -195,20 +208,26 @@ def _trained(layout="context-first", type_marker=False):
             if p.requires_grad:
                 p.add_(0.3 * torch.randn_like(p))
     path = pathlib.Path(tempfile.mkdtemp(prefix="serve-ckpt-")) / "trained.safetensors"
-    save_trained(m, ids, TrainConfig(layout=layout, type_marker=type_marker), path)
+    save_trained(m, ids, TrainConfig(layout=layout, type_marker=type_marker, context_marker=context_marker), path)
     return path, m.eval()
 
 
 def test_load_engine_merges_the_lora_and_answers_as_the_unmerged_model_would():
-    """档里记的 type_marker 照搬; LoRA 合并进权重之后, 分布与训练时的旁路挂法相同 (fp32 容差)."""
-    path, m = _trained(type_marker=True)
+    """档里记的 type_marker 与 context_marker 照搬; LoRA 合并进权重之后, 分布与训练时的旁路挂法相同 (fp32 容差)."""
+    path, m = _trained(type_marker=True, context_marker=True)
     e = load_engine(path, _base_dir(), context_label="State", device="cpu", dtype=torch.float32)
-    assert e.type_marker is True
+    assert e.type_marker is True and e.context_marker is True
     assert not any("lora_" in n for n, _ in e.lm.named_parameters()), "LoRA was not merged"
     qs = _questions()
     got = e.evaluate(STATE, qs).probs
-    want = _reference(m, qs, "State", True)
+    want = _reference(m, qs, "State", True, True)
     assert _close(got, want, tol=1e-4), (got, want)
+
+
+def test_load_engine_leaves_the_context_unwrapped_for_a_checkpoint_that_never_saw_the_markers():
+    """context_marker 之前的档 config 里没有这一项: 照旧不包."""
+    path, _ = _trained()
+    assert load_engine(path, _base_dir(), device="cpu", dtype=torch.float32).context_marker is False
 
 
 def test_load_engine_refuses_a_checkpoint_trained_with_the_menu_before_the_state():

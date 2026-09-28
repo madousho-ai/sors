@@ -39,6 +39,7 @@ class TrainConfig:
     warmup_steps: int = 0
     layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
+    context_marker: bool = False  # state 两头包 <|context_start|> <|context_end|>, 超长只截包裹里的 state
     loss: str = "all-slots"  # loss.LOSSES: vocab 整个词表; all-slots 全部 D 槽; menu 菜单 k 个槽. scripts/train.py 总是显式传, 默认 vocab
     label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
     consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (menu.with_partners)
@@ -110,7 +111,7 @@ def eval_record(m, tok, d_ids, eval_sets: dict[str, EvalSet], probes: dict[str, 
       final=True 时再加两样, 都用全量评估集:
       eval              部署形态 (连续编号) 下的 evaluate(): 正确率、NLL、校准等
       consistency_full  cfg.probe_passes 种随机排法下的一致性, 排法由 seed 和集名定死"""
-    args = (cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker)
+    args = (cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker, cfg.context_marker)
     rec = {"consistency": {name: consistency_eval(m, tok, d_ids, probes[name], es.batch_size, *args)
                            for name, es in eval_sets.items()}}
     if final:
@@ -232,7 +233,7 @@ def train(
         if guard:
             waits += guard.wait()
         exs = sample_fn(cfg.batch_size, rng)
-        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
+        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker, cfg.context_marker)
         b = {k: v.to(dev) for k, v in b.items()}
         logits = grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches)
         loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)

@@ -27,7 +27,7 @@ class EvalSet:
 
 @torch.no_grad()
 def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, k_max: int, max_length: int,
-                   layout: str, type_marker: bool = False) -> dict[str, list]:
+                   layout: str, type_marker: bool = False, context_marker: bool = False) -> dict[str, list]:
     """逐题打分, 不汇总.
       q          每道题在自己菜单 k 个槽上的概率 (位置空间, 长 k_max, 菜单之外补 0)
       gold       正确选项的位置
@@ -39,7 +39,7 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
     dev = next(m.parameters()).device
     out = {"q": [], "gold": [], "vocab_ce": [], "m_answer": [], "m_offmenu": [], "top1_in": []}
     for s in range(0, len(examples), batch_size):
-        b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker)
+        b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker, context_marker)
         b = {k: v.to(dev) for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
@@ -55,12 +55,13 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
     return out
 
 
-def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False) -> dict:
+def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False,
+             context_marker: bool = False) -> dict:
     """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一.
     另报格式遵从 (answer_mass_summary): 全词表下有多少概率落在菜单的槽上, 与 baseline 脚本的 m_answer 同一个量.
     vocab_ce 是评估集上的 loss, 分母是整个词表, 与 train/loss (--loss vocab) 直接可比;
     nll 只在菜单上归一, 与 ece / brier / accuracy 同一个分布, 也与旧 run 的曲线同一个量."""
-    s = score_examples(m, tok, d_ids, es.examples, es.batch_size, k_max, max_length, layout, type_marker)
+    s = score_examples(m, tok, d_ids, es.examples, es.batch_size, k_max, max_length, layout, type_marker, context_marker)
     Q, Y = s["q"], s["gold"]
     out = summarize(Q, Y)
     out["vocab_ce"] = sum(s["vocab_ce"]) / len(Y)
@@ -75,7 +76,8 @@ def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: st
 
 
 def consistency_eval(m, tok, d_ids, passes: list[list[MenuExample]], batch_size: int, k_max: int, max_length: int,
-                     layout: str, type_marker: bool = False) -> dict:
+                     layout: str, type_marker: bool = False, context_marker: bool = False) -> dict:
     """每一份各打一次分, 再按描述对齐比 (metrics.pass_consistency): accuracy / agree / js."""
-    qs = [score_examples(m, tok, d_ids, exs, batch_size, k_max, max_length, layout, type_marker)["q"] for exs in passes]
+    qs = [score_examples(m, tok, d_ids, exs, batch_size, k_max, max_length, layout, type_marker, context_marker)["q"]
+          for exs in passes]
     return pass_consistency(qs, passes)
