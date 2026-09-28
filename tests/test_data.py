@@ -411,6 +411,31 @@ def test_row_alignment_finds_each_row_of_the_first_menu_on_the_second():
     assert [b.options[j] for j in row_alignment(a, b)] == a.options
 
 
+def test_partner_of_a_question_with_a_second_phrasing_reads_that_phrasing():
+    """partner_query 是同一份材料的另一种说法 (synth-v5 的 text 数组). 第二份换成它, 行序照样重排;
+    问句、选项说明跟着原题走. 第二份自己不再带 partner_query."""
+    e = replace(_menu5(), query="calls keep cutting out", partner_query="my calls keep dropping", question="which?")
+    p = partner(e, random.Random(0))
+    assert p.query == "my calls keep dropping" and p.partner_query is None and p.question == "which?"
+    assert p.options != e.options and sorted(p.options) == sorted(e.options)
+    assert dict(zip(p.options, p.option_names)) == dict(zip(e.options, e.option_names))
+
+
+def test_row_alignment_accepts_a_pair_whose_second_copy_reads_the_second_phrasing():
+    e = replace(_menu5(), partner_query="another phrasing")
+    p = partner(e, random.Random(0))
+    assert [p.options[j] for j in row_alignment(e, p)] == e.options
+
+
+def test_row_alignment_refuses_a_second_copy_that_reads_neither_phrasing():
+    e = replace(_menu5(), partner_query="another phrasing")
+    try:
+        row_alignment(e, replace(partner(e, random.Random(0)), query="a third text"))
+    except ValueError:
+        return
+    raise AssertionError("paired a copy that reads neither phrasing")
+
+
 def test_row_alignment_refuses_two_different_questions():
     a = _menu5()
     for b in (reorder_menu(a, [0, 1, 2]), replace(a, query="another message"), replace(a, question="another?")):
