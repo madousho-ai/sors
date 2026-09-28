@@ -1,10 +1,11 @@
-"""decidophobia.data.spam 的测试: 一封原始邮件读成给模型看的一段文本.
+"""decidophobia.data.spam 的测试: 三个来源的 spam 语料 (SMS Spam Collection / Enron-Spam / TREC) 读成 (文本, 是否 spam).
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_spam.py
+读语料的那几项要 data/sms-spam、data/enron-spam、data/trec-spam 下的原始包在盘上 (不自动下载, md5 钉死).
 """
 
 from _runner import run
-from decidophobia.data.spam import email_text
+from decidophobia.data.spam import MAX_GARBLED, cache_path, dedupe, email_text, garbled, load_spam
 
 
 def _mail(headers: str, body: str | bytes) -> bytes:
@@ -131,6 +132,110 @@ def test_a_long_body_is_cut_to_max_body_characters():
 
 def test_an_email_with_neither_subject_nor_body_is_empty():
     assert email_text(_mail("From: a@b.c\n", "\n\n")) == ""
+
+
+# --------------------------------------------------------------------------
+# 去重
+# --------------------------------------------------------------------------
+
+
+def test_dedupe_keeps_the_first_copy_and_drops_texts_seen_under_both_labels():
+    texts = ["a", "b", "a", "c", "b", "d"]
+    labels = [0, 1, 0, 1, 0, 0]
+    assert dedupe(texts, labels) == (["a", "c", "d"], [0, 1, 0])
+
+
+def test_garbled_counts_replacement_and_private_use_characters():
+    assert garbled("clean text") == 0.0
+    assert garbled("ab\ufffd\ue42d") == 0.5
+
+
+# --------------------------------------------------------------------------
+# 语料 (要原始包在盘上)
+# --------------------------------------------------------------------------
+
+
+def _check_corpus(c, name):
+    assert c.name == name
+    assert len(c.texts) == len(c.labels) == len(c.ids)
+    assert set(c.labels) == {0, 1}
+    assert len(set(c.texts)) == len(c.texts), "去过重, 一段文本只剩一份"
+    assert all(t and garbled(t) <= MAX_GARBLED for t in c.texts), "空文本与乱码文本都已丢掉"
+
+
+def test_sms_is_the_uci_file_with_html_entities_restored_and_duplicates_dropped():
+    c = load_spam("sms")
+    _check_corpus(c, "sms")
+    assert not any("&lt;" in t or "&gt;" in t or "&amp;" in t for t in c.texts)
+    assert "Ok lar... Joking wif u oni..." in c.texts
+    n_spam = sum(c.labels)
+    assert (len(c.texts) - n_spam, n_spam) == (4518, 642), \
+        "原文件 4827 ham / 747 spam; 实体还原、空白并一后去重剩 4518 / 642"
+
+
+def test_enron_reads_the_raw_mailboxes_as_subject_plus_body_without_headers():
+    c = load_spam("enron")
+    _check_corpus(c, "enron")
+    ham_boxes = {i.split("/")[0] for i, lab in zip(c.ids, c.labels) if lab == 0}
+    spam_boxes = {i.split("/")[0] for i, lab in zip(c.ids, c.labels) if lab == 1}
+    assert ham_boxes == {"beck-s", "farmer-d", "kaminski-v", "kitchen-l", "lokay-m", "williams-w3"}
+    assert spam_boxes == {"BG", "GP", "SH"}
+    heady = sum(t.startswith(("Message-ID:", "Return-Path:", "Received:")) for t in c.texts)
+    assert heady < 0.001 * len(c.texts), f"只有正文里本身贴着一段信头的畸形邮件才会这样开头, 得到 {heady}"
+    n_spam = sum(c.labels)
+    assert 15000 < len(c.texts) - n_spam <= 19088 and 25000 < n_spam <= 32988, (len(c.texts) - n_spam, n_spam)
+
+
+def test_trec_labels_come_from_the_full_index():
+    """同一轮群发的 spam 只有信头不同, 去掉信头就是同一段文本: trec06p 的 24912 封 spam 只有约 6250 段不同的,
+    trec06c 的 42854 封 spam 只有约 10450 段 (另有约 5850 封是原件里双字节字被截断后整段错位的乱码, 丢掉).
+    下限按实测给, 防的是解析把大批正文读丢."""
+    for name, n_ham, n_spam, min_ham, min_spam in (("trec06p", 12910, 24912, 12000, 6000),
+                                                    ("trec07p", 25220, 50199, 24000, 30000),
+                                                    ("trec06c", 21766, 42854, 20000, 10000)):
+        c = load_spam(name)
+        _check_corpus(c, name)
+        got_ham, got_spam = len(c.texts) - sum(c.labels), sum(c.labels)
+        assert min_ham < got_ham <= n_ham and min_spam < got_spam <= n_spam, (name, got_ham, got_spam)
+
+
+def test_trec06c_bodies_are_mostly_there():
+    c = load_spam("trec06c")
+    subject_only = sum(1 for t in c.texts if "\n\n" not in t)
+    assert subject_only < 0.02 * len(c.texts), subject_only
+
+
+def test_trec07p_keeps_a_known_ham_mail_under_its_own_id():
+    c = load_spam("trec07p")
+    i = c.ids.index("inmail.934")
+    assert c.labels[i] == 0 and c.texts[i].startswith("Subject: [sugar] Error starting up sugar\n\n")
+
+
+def test_trec06c_is_read_as_chinese():
+    c = load_spam("trec06c")
+    han = sum(1 for t in c.texts if any("\u4e00" <= ch <= "\u9fff" for ch in t))
+    assert han > 0.9 * len(c.texts), han
+
+
+def test_the_parsed_texts_are_cached_and_reread_identically():
+    a = load_spam("sms")
+    assert cache_path("sms").exists()
+    assert load_spam("sms") == a
+
+
+def test_a_source_file_with_the_wrong_md5_is_refused():
+    import pathlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "sms-spam").mkdir()
+        (pathlib.Path(d) / "sms-spam" / "sms+spam+collection.zip").write_bytes(b"not the zip")
+        try:
+            load_spam("sms", data_dir=d)
+        except RuntimeError as e:
+            assert "md5" in str(e)
+        else:
+            raise AssertionError("wrong md5 was accepted")
 
 
 if __name__ == "__main__":

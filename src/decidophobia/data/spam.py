@@ -1,19 +1,65 @@
-"""spam 语料的解析: 一封原始邮件 (RFC 822 字节) 读成给模型看的一段文本 (email_text).
+"""三个来源的 spam 语料读成 (文本, 是否 spam): SMS Spam Collection / Enron-Spam / TREC Public Spam Corpus.
 
-邮件统一成同一个样子: 一行 "Subject: <标题>", 空一行, 然后是正文. 其余信头全部丢掉 ——
-Received / Message-ID / 发件服务器这些在各个语料里各有各的来源特征, 留着就等于把答案写在题面上.
+语料 (load_spam 的名字), 原始包放在 data/ 下, 不自动下载, md5 钉死:
+  sms      data/sms-spam/sms+spam+collection.zip        UCI, 5574 条英文短信
+  enron    data/enron-spam/raw/{ham,spam}/*.tar.gz      Enron-Spam 原始形态: 6 个 Enron 员工邮箱的 ham + 3 个来源的 spam
+  trec06p  data/trec-spam/trec06p.tgz                   TREC 2006 英文, 37822 封
+  trec06c  data/trec-spam/trec06c.tgz                   TREC 2006 中文, 64620 封
+  trec07p  data/trec-spam/trec07p.tgz                   TREC 2007, 75419 封
+TREC 的三个包取自 web.archive.org 存的 plg.uwaterloo.ca 原件 (官网已 404); TREC 2005 那份存档里没有文件本体.
+
+邮件统一成同一个样子 (email_text): 一行 "Subject: <标题>", 空一行, 然后是正文. 其余信头全部丢掉 ——
+Received / Message-ID / 发件服务器这些在三个语料里各有各的来源特征, 留着就等于把答案写在题面上.
 正文取 text/plain, 没有才取 text/html 并去掉标签; 正文截到 max_body 个字符.
+短信没有标题, 文本就是短信本身, 同样收拾空白.
+之后丢掉空文本和乱码文本 (garbled 超过 MAX_GARBLED), 再去重 (dedupe).
+解析一遍要几十秒, 结果缓存在原始包旁边的 <名字>.v<PARSE_VERSION>.jsonl; 改了解析规则就把 PARSE_VERSION 加一.
+
+类 id 0 = ham, 1 = spam.
 """
 
 from __future__ import annotations
 
 import email
 import email.header
+import hashlib
+import html
+import io
+import json
+import pathlib
 import re
+import tarfile
+import zipfile
+from dataclasses import dataclass
 from email import policy
 from html.parser import HTMLParser
 
 MAX_BODY = 2000  # 正文最多几个字符
+MAX_GARBLED = 0.01  # 乱码字符 (U+FFFD 与私用区) 占比超过它的文本丢掉
+PARSE_VERSION = 1
+DEFAULT_DATA_DIR = pathlib.Path(__file__).resolve().parents[3] / "data"
+
+# 相对 data/ 的路径 -> md5
+SOURCES = {
+    "sms": {"sms-spam/sms+spam+collection.zip": "ab53f9571d479ee677e7b283a06a661a"},
+    "enron": {
+        "enron-spam/raw/ham/beck-s.tar.gz": "13bc73f1ce9e0e33f604fdf611d0321a",
+        "enron-spam/raw/ham/farmer-d.tar.gz": "a71d306c4ac5e52e6718b3cc03f2acdb",
+        "enron-spam/raw/ham/kaminski-v.tar.gz": "e78c0b848349618a313dd9fbdadaf36f",
+        "enron-spam/raw/ham/kitchen-l.tar.gz": "2eb263cfbcc3dc8cab89c2c57b9d960e",
+        "enron-spam/raw/ham/lokay-m.tar.gz": "6248a755bc56a15093c7f2260339432d",
+        "enron-spam/raw/ham/williams-w3.tar.gz": "25fd530e2e49940a5c3b27734c67c9ec",
+        "enron-spam/raw/spam/BG.tar.gz": "91a94c1206301ee2f9c3f2b03328e52f",
+        "enron-spam/raw/spam/GP.tar.gz": "f8a94e42e3f4ee847336b7ae22f0dc5c",
+        "enron-spam/raw/spam/SH.tar.gz": "5ab5360072b34bc290517ce0c13d0975",
+    },
+    "trec06p": {"trec-spam/trec06p.tgz": "882d5de429562adf9071c130ddbf0936"},
+    "trec06c": {"trec-spam/trec06c.tgz": "655d7e7a58f2b8f0d7382ebb16ae23df"},
+    "trec07p": {"trec-spam/trec07p.tgz": "59c3df3efeb2fbd23babc18136bd466a"},
+}
+CORPORA = tuple(SOURCES)
+FALLBACK = {"trec06c": "gb18030"}  # 没声明字符集的正文先按它读
+
 _SKIP_TAGS = {"script", "style", "title"}
 _BLOCK_TAGS = {"p", "br", "div", "tr", "li", "ul", "ol", "table", "h1", "h2", "h3", "h4", "h5", "h6", "hr",
                "blockquote", "pre", "center", "form"}
@@ -147,3 +193,121 @@ def email_text(raw: bytes, max_body: int = MAX_BODY, fallback: str | None = None
         body = tidy(body)[:max_body].rstrip()
     head = f"Subject: {subject}" if subject else ""
     return "\n\n".join(x for x in (head, body) if x)
+
+
+def dedupe(texts: list[str], labels: list[int]) -> tuple[list[str], list[int]]:
+    """同一段文本只留第一份; 同一段文本在 ham 与 spam 两边都出现过的, 一份不留."""
+    kept = _dedupe(texts, labels, texts)
+    return [t for t, _, _ in kept], [lab for _, lab, _ in kept]
+
+
+def _dedupe(texts, labels, ids) -> list[tuple[str, int, str]]:
+    seen: dict[str, set[int]] = {}
+    for t, lab in zip(texts, labels, strict=True):
+        seen.setdefault(t, set()).add(lab)
+    out, kept = [], set()
+    for t, lab, i in zip(texts, labels, ids, strict=True):
+        if len(seen[t]) > 1 or t in kept:
+            continue
+        kept.add(t)
+        out.append((t, lab, i))
+    return out
+
+
+_GARBLE = re.compile("[\ufffd\ue000-\uf8ff]")
+
+
+def garbled(s: str) -> float:
+    """乱码字符 (解码失败留下的 U+FFFD, 以及错位的双字节读出来的私用区字) 占全文的比例."""
+    return len(_GARBLE.findall(s)) / len(s) if s else 0.0
+
+
+# --------------------------------------------------------------------------
+# 语料
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SpamCorpus:
+    name: str
+    texts: list[str]
+    labels: list[int]  # 0 = ham, 1 = spam
+    ids: list[str]  # 每条在原始包里的出处: sms 是行号, enron 是 <邮箱>/<路径>, trec 是 data/ 下的文件名
+
+
+def _checked(data_dir: pathlib.Path, rel: str, md5: str) -> pathlib.Path:
+    path = data_dir / rel
+    got = hashlib.md5(path.read_bytes()).hexdigest()
+    if got != md5:
+        raise RuntimeError(f"{path}: md5 {got} != {md5}")
+    return path
+
+
+def _sms(data_dir: pathlib.Path):
+    (rel, md5), = SOURCES["sms"].items()
+    with zipfile.ZipFile(_checked(data_dir, rel, md5)) as z:
+        lines = z.read("SMSSpamCollection").decode("utf-8").splitlines()
+    for n, line in enumerate(lines, 1):
+        lab, text = line.split("\t", 1)
+        yield tidy(html.unescape(text)), int(lab == "spam"), str(n)
+
+
+def _tar_files(path: pathlib.Path):
+    with tarfile.open(path) as t:
+        for m in t:
+            if m.isfile():
+                yield m.name, t.extractfile(m).read()
+
+
+def _enron(data_dir: pathlib.Path):
+    for rel, md5 in SOURCES["enron"].items():
+        lab = int("/spam/" in rel)
+        for name, raw in _tar_files(_checked(data_dir, rel, md5)):
+            yield email_text(raw), lab, name
+
+
+def _trec(data_dir: pathlib.Path, corpus: str):
+    (rel, md5), = SOURCES[corpus].items()
+    label_of: dict[str, int] = {}
+    texts: dict[str, str] = {}
+    for name, raw in _tar_files(_checked(data_dir, rel, md5)):
+        if name == f"{corpus}/full/index":
+            for line in raw.decode().splitlines():
+                lab, p = line.split()  # "spam ../data/inmail.1"
+                label_of[p.split("data/", 1)[1]] = int(lab == "spam")
+        elif "/data/" in name:
+            texts[name.split("/data/", 1)[1]] = email_text(raw, fallback=FALLBACK.get(corpus))
+    for i in sorted(label_of, key=_natural):  # 按投递顺序
+        yield texts[i], label_of[i], i
+
+
+def _natural(s: str):
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", s)]
+
+
+def cache_path(name: str, data_dir=DEFAULT_DATA_DIR) -> pathlib.Path:
+    rel = next(iter(SOURCES[name]))
+    return pathlib.Path(data_dir) / rel.split("/")[0] / f"{name}.v{PARSE_VERSION}.jsonl"
+
+
+_READERS = {"sms": _sms, "enron": _enron}
+
+
+def load_spam(name: str, data_dir=DEFAULT_DATA_DIR) -> SpamCorpus:
+    """一个语料 (CORPORA 之一): 解析、丢空与乱码、去重之后的全部文本. 第一次读原始包并写缓存, 之后读缓存."""
+    if name not in SOURCES:
+        raise ValueError(f"unknown spam corpus {name!r}; expected one of {CORPORA}")
+    data_dir = pathlib.Path(data_dir)
+    cache = cache_path(name, data_dir)
+    if cache.exists():
+        # 只按 \n 切: splitlines 还会在 U+2028、\x1c、\x85 这些字符处切, 把一条 JSON 切成两半
+        rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").split("\n") if line]
+        return SpamCorpus(name, [r["text"] for r in rows], [r["label"] for r in rows], [r["id"] for r in rows])
+    rows = _READERS[name](data_dir) if name in _READERS else _trec(data_dir, name)
+    rows = [(t, lab, i) for t, lab, i in rows if t and garbled(t) <= MAX_GARBLED]
+    kept = _dedupe([r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows])
+    buf = io.StringIO()
+    for t, lab, i in kept:
+        buf.write(json.dumps({"id": i, "label": lab, "text": t}, ensure_ascii=False) + "\n")
+    cache.write_text(buf.getvalue(), encoding="utf-8")
+    return SpamCorpus(name, [r[0] for r in kept], [r[1] for r in kept], [r[2] for r in kept])
