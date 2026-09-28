@@ -3,24 +3,26 @@
 60 个 intent、18 个 scenario, 语音助手指令 (闹钟 / 灯 / 音乐 / 天气 ...), 与 Banking77 零重叠.
 不训它时回答: 在 Banking77 + BoolQ 上训的 LoRA, 换一个领域的意图分类还会不会读菜单.
 
-数据: https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.0.tar.gz (39.5MB, 51 locale)
-取 1.0/data/en-US.jsonl, 分区 test 2974 条 / train 11514 条. tarball 不自动下载, md5 钉死.
+数据: URL 那个 tarball (39.5MB, 51 locale), 取 1.0/data/en-US.jsonl, 分区 test 2974 条 / train 11514 条.
+第一次用时下载到 data/massive (md5 钉死, 见 decidophobia.data.download), 解出的 en-US.jsonl 放在旁边, 之后只读它.
 类 id 按原始 intent 名字母序编, 与 banking77 同一约定.
 菜单上显示的文字由 labels 选: raw 原始 intent 名 (默认), desc 写好的 description, 见 decidophobia.data.label_names.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import pathlib
 import tarfile
 
 from decidophobia.core.menu import LabeledSet
+from decidophobia.data.download import fetch
 from decidophobia.data.label_names import label_names
 
+DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "data" / "massive"
 TARBALL = "amazon-massive-dataset-1.0.tar.gz"
 TARBALL_MD5 = "92fe0007628b31ca02c7bf4035a883e7"
+URL = f"https://amazon-massive-nlu-dataset.s3.amazonaws.com/{TARBALL}"
 MEMBER = "1.0/data/en-US.jsonl"
 CONTEXT_LABEL = "Voice command"
 
@@ -29,17 +31,13 @@ def _read_rows(cache_dir) -> list[dict]:
     cache_dir = pathlib.Path(cache_dir)
     jsonl = cache_dir / "en-US.jsonl"
     if not jsonl.exists():
-        tb = cache_dir / TARBALL
-        got = hashlib.md5(tb.read_bytes()).hexdigest()
-        if got != TARBALL_MD5:
-            raise RuntimeError(f"{tb}: md5 {got} != {TARBALL_MD5}")
-        with tarfile.open(tb) as t:
+        with tarfile.open(fetch(cache_dir / TARBALL, URL, TARBALL_MD5)) as t:
             jsonl.write_bytes(t.extractfile(MEMBER).read())
     with jsonl.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f]
 
 
-def load_massive(cache_dir="data/massive", partition: str = "test", labels: str = "raw") -> LabeledSet:
+def load_massive(cache_dir=DEFAULT_DIR, partition: str = "test", labels: str = "raw") -> LabeledSet:
     rows = _read_rows(cache_dir)
     raw_names = sorted({r["intent"] for r in rows})
     idx = {c: i for i, c in enumerate(raw_names)}

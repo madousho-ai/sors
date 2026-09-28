@@ -1,15 +1,19 @@
 """decidophobia.data.massive 的测试: 只做评估的留出数据集, 训练里一条都不出现.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_massive.py
-需要 data/massive/amazon-massive-dataset-1.0.tar.gz 在盘上 (39.5MB, 不自动下载).
+data/massive/amazon-massive-dataset-1.0.tar.gz 不在盘上时第一次用到会自动下载 (39.5MB).
 """
 
 import json
+import pathlib
 import random
+import shutil
+import tempfile
+import urllib.request
 
 from _runner import run
 from decidophobia.data.label_names import DESC_DIR
-from decidophobia.data.massive import load_massive
+from decidophobia.data.massive import DEFAULT_DIR, TARBALL, URL, load_massive
 
 
 def test_test_split_has_2974_utterances_over_60_intents():
@@ -44,6 +48,25 @@ def test_full_menu_lists_every_intent_exactly_once():
     assert len(exs) == 2974
     assert all(sorted(ex.options) == list(range(60)) for ex in exs[:50])
     assert all(ex.options[ex.gold_idx] == ex.label for ex in exs[:50])
+
+
+def test_a_missing_tarball_is_downloaded_from_amazon():
+    """空目录里第一次读: 从 Amazon 的 S3 下 tarball (换成拷贝盘上那份), 解出 en-US.jsonl, 读出与默认目录相同的数据."""
+    urls = []
+
+    def fake(url, dest):
+        urls.append(url)
+        shutil.copy(DEFAULT_DIR / TARBALL, dest)
+
+    with tempfile.TemporaryDirectory() as d:
+        real, urllib.request.urlretrieve = urllib.request.urlretrieve, fake
+        try:
+            te = load_massive(pathlib.Path(d) / "massive")
+        finally:
+            urllib.request.urlretrieve = real
+        assert (pathlib.Path(d) / "massive" / TARBALL).exists()
+    assert urls == [URL] and URL.startswith("https://amazon-massive-nlu-dataset.s3.amazonaws.com/")
+    assert te.queries == load_massive().queries
 
 
 if __name__ == "__main__":
