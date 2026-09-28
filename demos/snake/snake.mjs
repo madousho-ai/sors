@@ -124,7 +124,8 @@ const WAY = {
 // 游戏目标. System One 的请求没有 system prompt, 放在 state 的第一个字段: state 排在提示最前, 所有题共用.
 // 不写方向词 (up / down / left / right), 理由同上面的朝向.
 export const GOAL = "Eat the food: move the snake's head onto the food's cell. Each food eaten makes the snake one cell "
-  + "longer, and new food appears somewhere else. The game ends if the head hits a wall or the snake's own body.";
+  + "longer, and new food appears somewhere else. The game ends if the head hits a wall or the snake's own body. "
+  + "Make the head move toward the food.";
 
 const cellName = ([r, c]) => `row ${r}, column ${c}`;
 

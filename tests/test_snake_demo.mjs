@@ -151,6 +151,10 @@ test("the state opens with the goal of the game: eat the food, keep off the wall
   assert.doesNotMatch(s.goal, /\b(up|down|left|right)\b/i);
 });
 
+test("the goal ends by telling the model to move the head toward the food", () => {
+  assert.match(boardState(game()).goal, /Make the head move toward the food\.$/);
+});
+
 test("the state draws the whole board row by row, one word per cell, and says where the snake and the food are", () => {
   const s = boardState(game({ food: [0, 5] }));
   assert.deepEqual(Object.keys(s), ["goal", "board", "grid", "snake", "food"]);
