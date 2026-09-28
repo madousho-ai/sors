@@ -366,6 +366,17 @@ def test_run_tag_names_rank_and_alpha_only_when_they_leave_8_and_16():
     assert tag("--trainable", "d-only") == "-kfull256-vocab"
 
 
+def test_trainable_full_has_no_rank_and_names_its_learning_rate():
+    """full 没有 LoRA, rank 与 alpha 同 d-only 记 None. 主干学习率与 LoRA 共用 --lr-lora,
+    离开默认的 1e-4 时写进目录名 (全参要小一个量级, 不写的话目录名看不出来)."""
+    p = _mod.build_parser()
+    args = p.parse_args(["--trainable", "full", "--lr-lora", "1e-5"])
+    vars(args).update(_mod.resolve_adapter(args))
+    assert (args.trainable, args.lora_r, args.lora_alpha) == ("full", None, None)
+    assert _mod.run_tag(args) == "-lr1e-05-kfull256-vocab"
+    assert _mod.run_tag(p.parse_args(["--lr-lora", "1e-4"])) == "-kfull256-vocab"
+
+
 def test_save_every_defaults_to_every_eval_point():
     """不给 --save-every 时每个评估点存一次, 与 --eval-every 同步; 给了就照给的步数, 0 = 途中不存."""
     p = _mod.build_parser()

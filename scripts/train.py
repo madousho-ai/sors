@@ -46,7 +46,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, save_trained
 from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_partners
-from decidophobia.core.model import LORA_TARGETS, prepare_model
+from decidophobia.core.model import TRAINABLE, prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.core.tokens import install_d_tokens, install_type_tokens
 from decidophobia.evaluation.scoring import EvalSet
@@ -211,8 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
                     help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
-    ap.add_argument("--trainable", default=None, choices=sorted(LORA_TARGETS),
-                    help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA. "
+    ap.add_argument("--trainable", default=None, choices=sorted(TRAINABLE),
+                    help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA; "
+                         "full 主干全参 (每层全部权重 + 最后的 norm, 词表矩阵照旧只放 D 行, --lr-lora 管主干). "
                          "不给 = attn; 配 --init 时取档里记的")
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS,
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
@@ -225,7 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--lora-alpha", type=int, default=None,
                     help="不给 = 16; 配 --init 时取档里记的. peft 按 alpha / r 缩放, 改 r 时一起改才可比")
     ap.add_argument("--lora-dropout", type=float, default=0.05)
-    ap.add_argument("--lr-lora", type=float, default=1e-4)
+    ap.add_argument("--lr-lora", type=float, default=1e-4,
+                    help="主干那一组的学习率: LoRA 权重, --trainable full 时是主干全部权重. 离开 1e-4 时写进目录名")
     ap.add_argument("--lr-embed", type=float, default=1e-3)
     ap.add_argument("--lr-schedule", default="cosine", choices=["constant", "cosine"])
     ap.add_argument("--warmup", type=int, default=100, help="线性 warmup 步数")
@@ -285,7 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_adapter(args) -> dict:
     """LoRA 的形状 {"trainable", "lora_r", "lora_alpha"}. 给了 --init 就用档里记的, 命令行上与它矛盾的直接退出;
-    没给就是命令行的值, 不写的取 attn / 8 / 16. d-only 没有 LoRA, rank 与 alpha 记 None, 与存档一致."""
+    没给就是命令行的值, 不写的取 attn / 8 / 16. d-only 与 full 没有 LoRA, rank 与 alpha 记 None, 与存档一致."""
     given = {"trainable": args.trainable, "lora_r": args.lora_r, "lora_alpha": args.lora_alpha}
     if args.init:
         ck = checkpoint_adapter(args.init)
@@ -294,7 +296,7 @@ def resolve_adapter(args) -> dict:
             raise SystemExit(f"{bad} contradicts {args.init}, which was trained with {ck}; drop the flags to use it")
         return ck
     trainable = given["trainable"] or "attn"
-    if trainable == "d-only":
+    if trainable in ("d-only", "full"):
         return {"trainable": trainable, "lora_r": None, "lora_alpha": None}
     return {"trainable": trainable, "lora_r": given["lora_r"] or 8, "lora_alpha": given["lora_alpha"] or 16}
 
@@ -315,10 +317,11 @@ def checkpoint_path(out: pathlib.Path, step: int) -> pathlib.Path:
 
 def run_tag(args) -> str:
     """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现.
-    rank / alpha 离开 8 / 16 才写, 旧 run 全是 8 / 16."""
+    rank / alpha 离开 8 / 16 才写, 旧 run 全是 8 / 16; --lr-lora 离开 1e-4 才写, 旧 run 全是 1e-4."""
     return ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
         + (f"-r{args.lora_r}" if args.lora_r not in (None, 8) else "") \
         + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
+        + (f"-lr{args.lr_lora:g}" if args.lr_lora != 1e-4 else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
