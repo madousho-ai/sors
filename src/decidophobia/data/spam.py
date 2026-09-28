@@ -1,17 +1,19 @@
-"""三个来源的 spam 语料读成 (文本, 是否 spam): SMS Spam Collection / Enron-Spam / TREC Public Spam Corpus.
+"""spam 语料读成 (文本, 是否 spam): SMS Spam Collection / Enron-Spam / TREC Public Spam Corpus / Telegram 广告标注.
 
 语料 (load_spam 的名字), 原始包放在 data/ 下, 不自动下载, md5 钉死:
-  sms      data/sms-spam/sms+spam+collection.zip        UCI, 5574 条英文短信
-  enron    data/enron-spam/raw/{ham,spam}/*.tar.gz      Enron-Spam 原始形态: 6 个 Enron 员工邮箱的 ham + 3 个来源的 spam
-  trec06p  data/trec-spam/trec06p.tgz                   TREC 2006 英文, 37822 封
-  trec06c  data/trec-spam/trec06c.tgz                   TREC 2006 中文, 64620 封
-  trec07p  data/trec-spam/trec07p.tgz                   TREC 2007, 75419 封
+  sms       data/sms-spam/sms+spam+collection.zip        UCI, 5574 条英文短信
+  enron     data/enron-spam/raw/{ham,spam}/*.tar.gz      Enron-Spam 原始形态: 6 个 Enron 员工邮箱的 ham + 3 个来源的 spam
+  trec06p   data/trec-spam/trec06p.tgz                   TREC 2006 英文, 37822 封
+  trec06c   data/trec-spam/trec06c.tgz                   TREC 2006 中文, 64620 封
+  trec07p   data/trec-spam/trec07p.tgz                   TREC 2007, 75419 封
+  telegram  data/telegram/tg_public.zip                  arashdn/telegram-research v1 (Dropbox), 波斯语频道帖子,
+                                                         adv_tags 表里 5270 条人工标了是不是广告
 TREC 的三个包取自 web.archive.org 存的 plg.uwaterloo.ca 原件 (官网已 404); TREC 2005 那份存档里没有文件本体.
 
 邮件统一成同一个样子 (email_text): 一行 "Subject: <标题>", 空一行, 然后是正文. 其余信头全部丢掉 ——
 Received / Message-ID / 发件服务器这些在三个语料里各有各的来源特征, 留着就等于把答案写在题面上.
 正文取 text/plain, 没有才取 text/html 并去掉标签; 正文截到 max_body 个字符.
-短信没有标题, 文本就是短信本身, 同样收拾空白.
+短信与 Telegram 帖子没有标题, 文本就是正文本身, 同样收拾空白、截到 max_body.
 之后丢掉空文本和乱码文本 (garbled 超过 MAX_GARBLED), 再去重 (dedupe).
 解析一遍要几十秒, 结果缓存在原始包旁边的 <名字>.v<PARSE_VERSION>.jsonl; 改了解析规则就把 PARSE_VERSION 加一.
 
@@ -33,6 +35,8 @@ import zipfile
 from dataclasses import dataclass
 from email import policy
 from html.parser import HTMLParser
+
+from decidophobia.data.mysqldump import dump_tables
 
 MAX_BODY = 2000  # 正文最多几个字符
 MAX_GARBLED = 0.01  # 乱码字符 (U+FFFD 与私用区) 占比超过它的文本丢掉
@@ -56,6 +60,7 @@ SOURCES = {
     "trec06p": {"trec-spam/trec06p.tgz": "882d5de429562adf9071c130ddbf0936"},
     "trec06c": {"trec-spam/trec06c.tgz": "655d7e7a58f2b8f0d7382ebb16ae23df"},
     "trec07p": {"trec-spam/trec07p.tgz": "59c3df3efeb2fbd23babc18136bd466a"},
+    "telegram": {"telegram/tg_public.zip": "f07268981fe1d544cceeb2c757ef38ed"},
 }
 CORPORA = tuple(SOURCES)
 FALLBACK = {"trec06c": "gb18030"}  # 没声明字符集的正文先按它读
@@ -232,7 +237,7 @@ class SpamCorpus:
     name: str
     texts: list[str]
     labels: list[int]  # 0 = ham, 1 = spam
-    ids: list[str]  # 每条在原始包里的出处: sms 是行号, enron 是 <邮箱>/<路径>, trec 是 data/ 下的文件名
+    ids: list[str]  # 每条在原始包里的出处: sms 是行号, enron 是 <邮箱>/<路径>, trec 是 data/ 下的文件名, telegram 是帖子 id
 
 
 def _checked(data_dir: pathlib.Path, rel: str, md5: str) -> pathlib.Path:
@@ -285,12 +290,25 @@ def _natural(s: str):
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", s)]
 
 
+def _telegram(data_dir: pathlib.Path):
+    """v1 的 adv_tags (post_id, is_adv) 配 posts 表的 body. posts 的列: id, tg_id, flags, date, body, from, to, org_messager.
+    body 里的换行在 dump 里是正常的 \\n 转义, 读出来就是换行 (v2 那种字面 \\n 在 v1 里没有).
+    users 表带手机号, 不解析."""
+    (rel, md5), = SOURCES["telegram"].items()
+    with zipfile.ZipFile(_checked(data_dir, rel, md5)) as z, io.TextIOWrapper(z.open("tg_public.sql"),
+                                                                               encoding="utf-8") as f:
+        tables = dump_tables(f, ("adv_tags", "posts"))
+    body = {r[0]: r[4] for r in tables["posts"]}
+    for post_id, is_adv in tables["adv_tags"]:  # 按标注表的顺序
+        yield tidy(tidy(body[post_id] or "")[:MAX_BODY]), int(is_adv), str(post_id)
+
+
 def cache_path(name: str, data_dir=DEFAULT_DATA_DIR) -> pathlib.Path:
     rel = next(iter(SOURCES[name]))
     return pathlib.Path(data_dir) / rel.split("/")[0] / f"{name}.v{PARSE_VERSION}.jsonl"
 
 
-_READERS = {"sms": _sms, "enron": _enron}
+_READERS = {"sms": _sms, "enron": _enron, "telegram": _telegram}
 
 
 def load_spam(name: str, data_dir=DEFAULT_DATA_DIR) -> SpamCorpus:

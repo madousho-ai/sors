@@ -1,11 +1,11 @@
-"""decidophobia.data.spam 的测试: 三个来源的 spam 语料 (SMS Spam Collection / Enron-Spam / TREC) 读成 (文本, 是否 spam).
+"""decidophobia.data.spam 的测试: spam 语料 (SMS Spam Collection / Enron-Spam / TREC / Telegram 广告标注) 读成 (文本, 是否 spam).
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_spam.py
-读语料的那几项要 data/sms-spam、data/enron-spam、data/trec-spam 下的原始包在盘上 (不自动下载, md5 钉死).
+读语料的那几项要 data/sms-spam、data/enron-spam、data/trec-spam、data/telegram 下的原始包在盘上 (不自动下载, md5 钉死).
 """
 
 from _runner import run
-from decidophobia.data.spam import MAX_GARBLED, cache_path, dedupe, email_text, garbled, load_spam
+from decidophobia.data.spam import MAX_BODY, MAX_GARBLED, cache_path, dedupe, email_text, garbled, load_spam
 
 
 def _mail(headers: str, body: str | bytes) -> bytes:
@@ -209,6 +209,23 @@ def test_trec07p_keeps_a_known_ham_mail_under_its_own_id():
     c = load_spam("trec07p")
     i = c.ids.index("inmail.934")
     assert c.labels[i] == 0 and c.texts[i].startswith("Subject: [sugar] Error starting up sugar\n\n")
+
+
+def test_telegram_is_the_hand_tagged_posts_of_telegram_research_v1():
+    """v1 的 adv_tags 表: 5270 条帖子人工标了是不是广告 (3167 是 / 2103 否). 帖子正文来自 posts 表, id 是帖子 id."""
+    c = load_spam("telegram")
+    _check_corpus(c, "telegram")
+    n_spam = sum(c.labels)
+    assert 1900 < len(c.texts) - n_spam <= 2103 and 2300 < n_spam <= 3167, (len(c.texts) - n_spam, n_spam)
+    i = c.ids.index("139236")
+    assert c.labels[i] == 1 and c.texts[i].startswith("?کــــانــــال شارژ رایگان\nکانال اطلاع از طرحها")
+    i = c.ids.index("9758")
+    assert c.labels[i] == 0 and c.texts[i].startswith("نصیحت چندم:\nسعی کنید")
+
+
+def test_telegram_texts_are_cut_to_max_body():
+    """Telegram 一条消息最长 4096 字符, 与邮件一样截到 MAX_BODY."""
+    assert max(len(t) for t in load_spam("telegram").texts) <= MAX_BODY
 
 
 def test_trec06c_is_read_as_chinese():
