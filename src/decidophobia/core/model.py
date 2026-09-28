@@ -1,4 +1,5 @@
-"""可训练的部分: attention 上的 LoRA + 嵌入矩阵里放开的行 (256 个 D 行 + 类型 token 行). 其余冻结.
+"""可训练的部分: attention 上的 LoRA (或主干全参, 见 TRAINABLE) + 嵌入矩阵里放开的行 (256 个 D 行 + 类型 token 行).
+其余冻结.
 
 改的是路由 (哪一行匹配) 和槽标记 (D-token 的向量), 知识那部分不碰.
 
@@ -21,13 +22,18 @@ from decidophobia.core.batch import length_groups, trim_left_padding
 ATTN_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]
 
-# 放开的范围, 三档. 全参不在其中: 0.6B 全参 AdamW 的优化器状态 8GB 卡放不下,
-# 更要紧的是它让模型有能力记住数据集的事实, 留出类的成绩就不再说明泛化.
+# 放开的范围. 前三档挂 LoRA (d-only 什么都不挂), 第四档 full 是主干全参.
 LORA_TARGETS: dict[str, list[str]] = {
     "d-only": [],  # 基模全冻, 只训 rows —— 纯读出
     "attn": ATTN_TARGETS,
     "attn-mlp": ATTN_TARGETS + MLP_TARGETS,
 }
+# full: 每一层的全部权重 (attention、MLP、norm) 加最后的 norm 都放开, 不套 LoRA; 词嵌入与输出层的那张
+# 151936 行的矩阵照旧冻结、只放 D 行, 与 LoRA 各档只差「主干怎么改」这一个变量.
+# 0.6B 的主干约 4.4 亿参数, AdamW 状态加 fp32 主权重 (training.loop.Fp32Master) 约 7 GB, 8GB 卡放不下, 在 A100 上跑.
+# 早先不做全参还有一个理由: 它让模型有能力记住数据集的事实, 留出类的成绩就不再说明泛化.
+# 现在的评估集 (Banking77 / MASSIVE / BoolQ) 整个不进训练, 这一条不再拦着.
+TRAINABLE = (*LORA_TARGETS, "full")
 
 
 class SlotEmbedding(nn.Module):
@@ -83,10 +89,13 @@ def prepare_model(
     trainable: str = "attn", grad_ckpt: bool = False,
 ):
     """train_ids: 嵌入矩阵里放开的行 —— 256 个 D 行, 加上类型 token 行.
+    trainable: TRAINABLE 之一. full 时 lora_r / lora_alpha / lora_dropout 不起作用.
 
     grad_ckpt: 反传时逐层重算前向, 不存激活. 实测 batch 8 × 512 token 的激活从 5+ GiB 降到 0.58 GiB,
     代价约 +30% 时间. 8GB 卡上 BoolQ passage 进 batch 8 必须开.
     """
+    if trainable not in TRAINABLE:
+        raise ValueError(f"unknown trainable {trainable!r}; expected one of {TRAINABLE}")
     for p in lm.parameters():
         p.requires_grad_(False)
     emb = SlotEmbedding(lm.get_input_embeddings(), train_ids)
@@ -94,13 +103,18 @@ def prepare_model(
     lm.lm_head = SlotHead(lm.lm_head, emb)
     if grad_ckpt:
         lm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    targets = LORA_TARGETS[trainable]
-    if not targets:
+    if trainable == "full":
+        vocab = {id(emb.base.weight), *(id(p) for p in lm.lm_head.base.parameters())}
+        for p in lm.parameters():
+            if id(p) not in vocab:
+                p.requires_grad_(True)
+        m = lm
+    elif not LORA_TARGETS[trainable]:
         m = lm
     else:
         cfg = LoraConfig(
             r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
-            target_modules=targets, bias="none", task_type="CAUSAL_LM",
+            target_modules=LORA_TARGETS[trainable], bias="none", task_type="CAUSAL_LM",
         )
         m = get_peft_model(lm, cfg)
         emb.rows.requires_grad_(True)  # get_peft_model 会把 LoRA 之外的全部冻上, rows 要在它之后放开
@@ -111,11 +125,12 @@ def prepare_model(
 
 
 def adapter_config(m) -> dict:
-    """m 身上 LoRA 的形状, 键名与 prepare_model 的参数同名: 挂在哪档 (LORA_TARGETS 的键)、rank、alpha.
-    没套 peft 的就是 d-only, rank 与 alpha 无意义记 None."""
+    """m 放开的范围, 键名与 prepare_model 的参数同名: 哪一档 (TRAINABLE 之一)、LoRA 的 rank、alpha.
+    没套 peft 的看 rows 之外还有没有可训参数: 有就是 full, 没有就是 d-only; 两者 rank 与 alpha 无意义记 None."""
     peft_cfg = getattr(m, "peft_config", {}).get("default")
     if peft_cfg is None:
-        return {"trainable": "d-only", "lora_r": None, "lora_alpha": None}
+        full = any(p.requires_grad for n, p in m.named_parameters() if not n.endswith(".rows"))
+        return {"trainable": "full" if full else "d-only", "lora_r": None, "lora_alpha": None}
     targets = set(peft_cfg.target_modules)
     name = next((k for k, v in LORA_TARGETS.items() if v and set(v) == targets), None)
     if name is None:
@@ -124,12 +139,13 @@ def adapter_config(m) -> dict:
 
 
 def trainable_param_groups(m, lr_lora: float, lr_embed: float) -> list[dict]:
-    lora, embed = [], []
+    """两组: 主干 (LoRA 权重; full 时是主干全部权重) 用 lr_lora, rows 用 lr_embed."""
+    body, embed = [], []
     for n, p in m.named_parameters():
         if not p.requires_grad:
             continue
-        (embed if n.endswith(".rows") else lora).append(p)
-    return [{"params": lora, "lr": lr_lora}, {"params": embed, "lr": lr_embed}]
+        (embed if n.endswith(".rows") else body).append(p)
+    return [{"params": body, "lr": lr_lora}, {"params": embed, "lr": lr_embed}]
 
 
 def last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
