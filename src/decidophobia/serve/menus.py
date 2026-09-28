@@ -24,17 +24,18 @@ def _one_line(v) -> str:
     return re.sub(r"\s*[\r\n]+\s*", " ", s)
 
 
-def _option(name: str, description) -> str:
+def option_row(name: str, description) -> str:
+    """菜单一行: 「名字: 说明」, 说明为 None 时只写名字, 压成一行. 训练数据 (synth-v5) 也用它排选项."""
     return _one_line(name) if description is None else f"{_one_line(name)}: {_one_line(description)}"
 
 
 def to_example(q: Noul | Choice | Score, state, context_label: str) -> MenuExample:
     """q 在 state 上的菜单样本. 选项的类 id 就是行号, gold 只是占位 (推理没有标准答案)."""
     if q.type == "choice":
-        names, qtype = [_option(n, d) for n, d in q.criteria.items()], "choice"
+        names, qtype = [option_row(n, d) for n, d in q.criteria.items()], "choice"
     elif q.type == "noul":
         c = q.criteria
-        names, qtype = [_option(YES_NO[0], c and c.false), _option(YES_NO[1], c and c.true)], "bool"
+        names, qtype = [option_row(YES_NO[0], c and c.false), option_row(YES_NO[1], c and c.true)], "bool"
     else:
         names, qtype = [_one_line(level) for level in q.criteria], "choice"
     k = len(names)

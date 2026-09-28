@@ -1,0 +1,175 @@
+"""synth-intents v5 适配: datasets/synth-intents-v5/ 的材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
+
+格式与检查见 datasets/synth-intents-v5/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
+这里一个绑定读成一个 V5Item, 数据目录里的 schema.py 先把每个领域检查一遍, 有问题就报 ValueError.
+
+  选项   模型看到的样子与推理服务相同 (serve.menus.option_row): 键写法「键: 说明」, 说明为 null 只有键;
+         是非题 no / yes 两行; 列表写法与分级说明原样. 绑定写了 maskable 的题另存一份只有键的样子 (bare)
+  答案   硬标签 -> target None, gold 是那一行; 分布 -> 归一化成 target, gold 是概率最大的一行
+
+抽一道题 (V5Sampler) 分四步: 按当前步的配比挑训练目标 -> 有这个目标的领域里等概率挑一个 ->
+这个领域里等概率挑一个题型 -> 等概率挑一份材料 (再在它这个题型的绑定里挑一个). 大领域、材料多的题型不会挤掉别人.
+配比 (parse_mix) 可以随训练步数分段变化, 但数据里有的每个目标在每一段都要有份额.
+
+出成样本 (item_example): 随机挑一种问法; 材料有几种说法时挑两种不同的, 一种当上下文, 另一种放进 partner_query
+(开一致性配对时第二份读它); 按比例遮掉说明 (只对 maskable 的题, 两份跟着同一次抽签); 最后打乱行序.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import random
+from dataclasses import dataclass
+
+from decidophobia.core.menu import MenuExample, reorder_menu
+from decidophobia.core.prompt import state_text
+from decidophobia.serve.menus import option_row
+
+DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v5"
+
+
+@dataclass(frozen=True)
+class V5Item:
+    domain: str
+    context_id: str
+    question_id: str
+    kind: str  # 题型, 抽题时领域内按它均分
+    goal: str  # 训练目标, 绑定上写了就用绑定的, 否则用材料的
+    label: str  # 上下文标题
+    texts: list[str]  # 材料的几种说法, 已写成提示里的样子 (JSON 展开成缩进 2 格)
+    asks: list[str]
+    rows: list[str]  # 菜单各行, 带说明
+    bare: list[str] | None  # 遮掉说明后的各行; None = 这个绑定不许遮
+    qtype: str  # choice | bool
+    target: list[float] | None  # 分布答案归一化后的各行概率; None = 硬标签
+    gold: int
+
+
+def _schema(data_dir: pathlib.Path):
+    spec = importlib.util.spec_from_file_location(f"synth_v5_schema_{abs(hash(str(data_dir)))}", data_dir / "schema.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
+    kind = schema.option_kind(q)
+    if kind in ("keyed", "yes_no"):
+        rows = [option_row(k, d) for k, d in q["options"].items()]
+        bare = [option_row(k, None) for k in q["options"]] if b.get("maskable") else None
+    else:
+        rows, bare = [option_row(s, None) for s in q["options"]], None
+    names = schema.option_names(q)
+    a = b["answer"]
+    if isinstance(a, dict):
+        w = [float(a.get(n, 0)) for n in names]
+        target = [x / sum(w) for x in w]
+        gold = max(range(len(w)), key=w.__getitem__)
+    else:
+        target, gold = None, (a if kind == "score" else names.index(a))
+    return V5Item(domain=domain, context_id=c["id"], question_id=q["id"], kind=q.get("kind", q["id"]),
+                  goal=schema.goal_of(c, b), label=c["label"], texts=[state_text(t) for t in schema.variants(c["text"])],
+                  asks=list(q["ask"]), rows=rows, bare=bare, qtype="bool" if kind == "yes_no" else "choice",
+                  target=target, gold=gold)
+
+
+def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
+    """全部领域的全部绑定, 领域按名字排序、领域内按材料与绑定的顺序. 格式检查过不了的领域报 ValueError."""
+    data_dir = pathlib.Path(data_dir)
+    schema = _schema(data_dir)
+    out = []
+    for domain in schema.domains(data_dir):
+        bank, contexts = schema.load(domain, data_dir)
+        errs = schema.problems(domain, bank, contexts)
+        if errs:
+            raise ValueError(f"{domain}: {len(errs)} format problems, e.g. {errs[:2]}; "
+                             f"run datasets/synth-intents-v5/schema.py {domain} to see them all")
+        by_id = {q["id"]: q for q in bank}
+        out += [_item(schema, domain, c, b, by_id[b["question"]]) for c in contexts for b in c["questions"]]
+    return out
+
+
+def item_example(it: V5Item, rng: random.Random, mask_rate: float) -> MenuExample:
+    """一个绑定出一道题. 抽随机数的顺序固定: 遮不遮 (只在 maskable 且 rate > 0 时抽) -> 说法 -> 问法 -> 行序."""
+    rows = it.bare if it.bare is not None and mask_rate > 0 and rng.random() < mask_rate else it.rows
+    if len(it.texts) > 1:
+        query, other = rng.sample(it.texts, 2)
+    else:
+        query, other = it.texts[0], None
+    k = len(rows)
+    ex = MenuExample(query=query, options=list(range(k)), gold_idx=it.gold, label=it.gold, option_names=list(rows),
+                     context_label=it.label, question=rng.choice(it.asks), qtype=it.qtype, target=it.target,
+                     partner_query=other)
+    return reorder_menu(ex, rng.sample(range(k), k))
+
+
+# ---------------------------------------------------------------- 目标配比
+
+Mix = list[tuple[int, dict[str, float]]]  # [(从第几步起, {目标: 权重})], 按步数升序, 第一段从 0 起
+
+
+def parse_mix(spec: str | None, goals: set[str]) -> Mix:
+    """--mix 的值. 不给 = 数据里的每个目标同样多. 写法:
+         long_menu=4,breadth=2,complex=1                      全程一个配比
+         0: long_menu=6,breadth=2; 1000: long_menu=3,...      分段, 到第 1000 步换成后一个
+    权重是相对值, 要是正数. 数据里有的目标每一段都要写 (每种目标从头到尾都保留份额); 写了数据里没有的目标报错."""
+    if not spec:
+        return [(0, {g: 1.0 for g in sorted(goals)})]
+    stages = []
+    for part in (p.strip() for p in spec.split(";")):
+        if not part:
+            continue
+        start, sep, body = part.partition(":")
+        if not sep:
+            start, body = "0", part
+        try:
+            step = int(start)
+            weights = {g.strip(): float(w) for g, w in (e.split("=") for e in body.split(","))}
+        except ValueError as e:
+            raise ValueError(f"--mix: cannot read {part!r} (write goal=weight,goal=weight, optionally after 'step:')") from e
+        stages.append((step, weights))
+    steps = [s for s, _ in stages]
+    if steps != sorted(set(steps)) or steps[0] != 0:
+        raise ValueError(f"--mix: stages must start at step 0 and go up, got steps {steps}")
+    for step, weights in stages:
+        extra = sorted(set(weights) - goals)
+        if extra:
+            raise ValueError(f"--mix: no data for goal(s) {extra}; the data has {sorted(goals)}")
+        missing = sorted(g for g in goals if weights.get(g, 0) <= 0)
+        if missing or any(w <= 0 for w in weights.values()):
+            raise ValueError(f"--mix: every goal in the data keeps a positive share in every stage; "
+                             f"the stage from step {step} leaves out {missing or weights}")
+    return stages
+
+
+def mix_at(stages: Mix, step: int) -> dict[str, float]:
+    return next(w for s, w in reversed(stages) if s <= step)
+
+
+class V5Sampler:
+    """训练批里 v5 的那一份. 每调用一次算训练的一步 (train() 每步调一次 sample_fn), 配比按这个步数取.
+    rate 是遮说明的比例 (只作用在绑定写了 maskable 的题上)."""
+
+    def __init__(self, items: list[V5Item], mix: Mix, mask_rate: float = 0.0):
+        self.items, self.mix, self.mask_rate, self.step = items, mix, mask_rate, 0
+        tree: dict = {}
+        for i, it in enumerate(items):
+            ctx = tree.setdefault(it.goal, {}).setdefault(it.domain, {}).setdefault(it.kind, {})
+            ctx.setdefault(it.context_id, []).append(i)
+        # 目标 -> [领域 -> [题型 -> [材料 -> [绑定下标]]]], 各层按名字排序, 抽样与 dict 的插入顺序无关
+        self.tree = {g: [[list(ks[k].values()) for k in sorted(ks)] for _, ks in sorted(ds.items())]
+                     for g, ds in tree.items()}
+        missing = set(mix_at(mix, 0)) ^ set(self.tree)
+        if missing:
+            raise ValueError(f"the mix and the data disagree on goals {sorted(missing)}")
+
+    def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
+        self.step += 1
+        weights = mix_at(self.mix, self.step)
+        goals = sorted(weights)
+        out = []
+        for g in rng.choices(goals, [weights[x] for x in goals], k=n):
+            ctxs = rng.choice(rng.choice(self.tree[g]))
+            out.append(item_example(self.items[rng.choice(rng.choice(ctxs))], rng, self.mask_rate))
+        return out
