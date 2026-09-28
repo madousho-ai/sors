@@ -1,6 +1,6 @@
 """spam 语料读成 (文本, 是否 spam): SMS Spam Collection / Enron-Spam / TREC Public Spam Corpus / Telegram 广告标注.
 
-语料 (load_spam 的名字), 原始包放在 data/ 下, 不自动下载, md5 钉死:
+语料 (load_spam 的名字), 原始包放在 data/ 下; 第一次用到时从 URLS 下载 (md5 钉死, 见 decidophobia.data.download):
   sms       data/sms-spam/sms+spam+collection.zip        UCI, 5574 条英文短信
   enron     data/enron-spam/raw/{ham,spam}/*.tar.gz      Enron-Spam 原始形态: 6 个 Enron 员工邮箱的 ham + 3 个来源的 spam
   trec06p   data/trec-spam/trec06p.tgz                   TREC 2006 英文, 37822 封
@@ -9,6 +9,7 @@
   telegram  data/telegram/tg_public.zip                  arashdn/telegram-research v1 (Dropbox), 波斯语频道帖子,
                                                          adv_tags 表里 5270 条人工标了是不是广告
 TREC 的三个包取自 web.archive.org 存的 plg.uwaterloo.ca 原件 (官网已 404); TREC 2005 那份存档里没有文件本体.
+Enron-Spam 的原站 www2.aueb.gr 还在, 但证书链不全, urllib 验不过, 同样取 web.archive.org 的存档 (与原件 md5 相同).
 
 邮件统一成同一个样子 (email_text): 一行 "Subject: <标题>", 空一行, 然后是正文. 其余信头全部丢掉 ——
 Received / Message-ID / 发件服务器这些在三个语料里各有各的来源特征, 留着就等于把答案写在题面上.
@@ -24,7 +25,6 @@ from __future__ import annotations
 
 import email
 import email.header
-import hashlib
 import html
 import io
 import json
@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from email import policy
 from html.parser import HTMLParser
 
+from decidophobia.data.download import fetch
 from decidophobia.data.mysqldump import dump_tables
 
 MAX_BODY = 2000  # 正文最多几个字符
@@ -63,6 +64,22 @@ SOURCES = {
     "telegram": {"telegram/tg_public.zip": "f07268981fe1d544cceeb2c757ef38ed"},
 }
 CORPORA = tuple(SOURCES)
+
+# 相对 data/ 的路径 -> 下载地址. Wayback 的地址带 id_, 取存档的原始字节; 时间戳是每个文件自己那份存档的
+_ENRON = "https://web.archive.org/web/{}id_/https://www2.aueb.gr/users/ion/data/enron-spam/{}.tar.gz"
+_TREC = "https://web.archive.org/web/{}id_/https://plg.uwaterloo.ca/cgi-bin/cgiwrap/gvcormac/{}.tgz"
+URLS = {
+    "sms-spam/sms+spam+collection.zip": "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip",
+    **{f"enron-spam/{p}.tar.gz": _ENRON.format(ts, p) for p, ts in (
+        ("raw/ham/beck-s", "20260213112247"), ("raw/ham/farmer-d", "20260213112251"),
+        ("raw/ham/kaminski-v", "20260213112243"), ("raw/ham/kitchen-l", "20260213112249"),
+        ("raw/ham/lokay-m", "20260213112243"), ("raw/ham/williams-w3", "20260213112245"),
+        ("raw/spam/BG", "20260213112241"), ("raw/spam/GP", "20260213112243"), ("raw/spam/SH", "20260213112253"))},
+    "trec-spam/trec06p.tgz": _TREC.format("20250819075600", "trec06p"),
+    "trec-spam/trec06c.tgz": _TREC.format("20250819075650", "trec06c"),
+    "trec-spam/trec07p.tgz": _TREC.format("20250813102119", "trec07p"),
+    "telegram/tg_public.zip": "https://www.dropbox.com/s/szcjfo5k4cxycxz/tg_public.zip?dl=1",
+}
 FALLBACK = {"trec06c": "gb18030"}  # 没声明字符集的正文先按它读
 
 _SKIP_TAGS = {"script", "style", "title"}
@@ -241,11 +258,8 @@ class SpamCorpus:
 
 
 def _checked(data_dir: pathlib.Path, rel: str, md5: str) -> pathlib.Path:
-    path = data_dir / rel
-    got = hashlib.md5(path.read_bytes()).hexdigest()
-    if got != md5:
-        raise RuntimeError(f"{path}: md5 {got} != {md5}")
-    return path
+    """data/ 下的原始包, 没有就从 URLS 下载; 两种情形都核对 md5."""
+    return fetch(data_dir / rel, URLS[rel], md5)
 
 
 def _sms(data_dir: pathlib.Path):

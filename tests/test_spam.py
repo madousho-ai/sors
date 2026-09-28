@@ -1,11 +1,17 @@
 """decidophobia.data.spam 的测试: spam 语料 (SMS Spam Collection / Enron-Spam / TREC / Telegram 广告标注) 读成 (文本, 是否 spam).
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_spam.py
-读语料的那几项要 data/sms-spam、data/enron-spam、data/trec-spam、data/telegram 下的原始包在盘上 (不自动下载, md5 钉死).
+读语料的那几项要用 data/sms-spam、data/enron-spam、data/trec-spam、data/telegram 下的原始包; 不在盘上时第一次用到会自动下载 (md5 钉死).
 """
 
+import pathlib
+import shutil
+import tempfile
+import urllib.request
+
 from _runner import run
-from decidophobia.data.spam import MAX_BODY, MAX_GARBLED, cache_path, dedupe, email_text, garbled, load_spam
+from decidophobia.data.spam import (DEFAULT_DATA_DIR, MAX_BODY, MAX_GARBLED, SOURCES, URLS, cache_path, dedupe,
+                                    email_text, garbled, load_spam)
 
 
 def _mail(headers: str, body: str | bytes) -> bytes:
@@ -241,9 +247,6 @@ def test_the_parsed_texts_are_cached_and_reread_identically():
 
 
 def test_a_source_file_with_the_wrong_md5_is_refused():
-    import pathlib
-    import tempfile
-
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "sms-spam").mkdir()
         (pathlib.Path(d) / "sms-spam" / "sms+spam+collection.zip").write_bytes(b"not the zip")
@@ -253,6 +256,35 @@ def test_a_source_file_with_the_wrong_md5_is_refused():
             assert "md5" in str(e)
         else:
             raise AssertionError("wrong md5 was accepted")
+
+
+def test_every_source_file_has_a_download_url():
+    """每个原始包都有下载地址. Enron-Spam 的原站证书链不全 (urllib 验不过), TREC 的原站已 404, 两者都取 Wayback 存档,
+    带 id_ 取原始字节; 时间戳钉死, 不经重定向."""
+    rels = {rel for files in SOURCES.values() for rel in files}
+    assert set(URLS) == rels
+    assert all(u.startswith("https://") for u in URLS.values())
+    assert all("web.archive.org/web/" in u and "id_/" in u for r, u in URLS.items() if r.startswith(("enron", "trec")))
+
+
+def test_a_missing_source_file_is_downloaded_from_its_url():
+    """空目录里第一次读 sms: 从它的地址下原始包 (换成拷贝盘上那份), 读出与默认目录相同的语料."""
+    rel = "sms-spam/sms+spam+collection.zip"
+    urls = []
+
+    def fake(url, dest):
+        urls.append(url)
+        shutil.copy(DEFAULT_DATA_DIR / rel, dest)
+
+    with tempfile.TemporaryDirectory() as d:
+        real, urllib.request.urlretrieve = urllib.request.urlretrieve, fake
+        try:
+            c = load_spam("sms", data_dir=d)
+        finally:
+            urllib.request.urlretrieve = real
+        assert (pathlib.Path(d) / rel).exists()
+    assert urls == [URLS[rel]]
+    assert c == load_spam("sms")
 
 
 if __name__ == "__main__":
