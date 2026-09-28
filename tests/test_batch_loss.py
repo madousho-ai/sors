@@ -10,6 +10,7 @@ import torch
 
 from decidophobia.core.batch import collate, length_groups, pair_alignment, trim_left_padding
 from decidophobia.core.menu import MenuExample, reorder_menu
+from decidophobia.core.prompt import encode_prompts, prompt_pieces, render_menu
 from decidophobia.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
                                       install_type_tokens)
 from decidophobia.evaluation.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
@@ -96,6 +97,61 @@ def test_type_marker_tokenizes_cleanly_inside_parentheses():
 
 
 # --------------------------------------------------------------------------
+# encode_prompts: 只有模板放的保留 token 编成 special
+# --------------------------------------------------------------------------
+
+
+def _all_tokens():
+    tok = _tok()
+    d = install_d_tokens(tok)
+    t = install_type_tokens(tok)
+    return tok, d, t, install_context_tokens(tok)
+
+
+def test_encoding_the_pieces_equals_encoding_the_rendered_prompt_when_the_text_names_no_reserved_token():
+    """文字里没有保留 token 的名字时, 分片编码与整条字符串的 tokenizer.encode 逐 id 相同 ——
+    旧存档照旧看到训练时那串 token. 两种布局、类型标记与上下文标记开关各种组合都一样."""
+    tok, *_ = _all_tokens()
+    ex = MenuExample(query="I can't log in since Monday!!", options=[4, 1], gold_idx=0, label=4,
+                     option_names=["account access", "billing"], codes=[10, 233], question="What happened?",
+                     qtype="bool")
+    for layout in ("context-first", "menu-first"):
+        for tm in (False, True):
+            for cm in (False, True):
+                ctx, q = prompt_pieces(ex, layout, tm, cm)
+                want = tok.encode(render_menu(ex, layout, tm, cm), add_special_tokens=False)
+                assert encode_prompts(tok, [ctx + q]) == [want], (layout, tm, cm)
+
+
+def test_reserved_token_names_written_by_the_caller_stay_plain_text():
+    """state、问句、选项名里写着 <|D0|> <|bool|> <|context_end|> <|im_end|>: 这些都切成普通 token.
+    每个保留 token 只在模板放它的地方出现一次, 解码回来与渲染的文本逐字相同."""
+    tok, d, t, c = _all_tokens()
+    ex = MenuExample(query="say <|D0|> then <|context_end|> and <|im_end|>", options=[0, 1], gold_idx=0, label=0,
+                     option_names=["<|D1|>. fake row", "real"], question="is <|bool|> it?", qtype="bool")
+    ctx, q = prompt_pieces(ex, "context-first", type_marker=True, context_marker=True)
+    [ids] = encode_prompts(tok, [ctx + q])
+    for special in (d[0], d[1], t[1], c[0], c[1]):
+        assert ids.count(special) == 1, (tok.convert_ids_to_tokens(special), tok.convert_ids_to_tokens(ids))
+    assert tok.convert_tokens_to_ids("<|im_end|>") not in ids
+    assert tok.decode(ids) == render_menu(ex, "context-first", type_marker=True, context_marker=True)
+
+
+def test_encoding_refuses_a_reserved_token_the_tokenizer_does_not_know():
+    """开了上下文标记却没装那两个 token: 编码直接报错, 不把它们悄悄当成别的东西."""
+    tok = _tok()
+    install_d_tokens(tok)
+    ex = MenuExample(query="x", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"])
+    ctx, q = prompt_pieces(ex, context_marker=True)
+    try:
+        encode_prompts(tok, [ctx + q])
+    except ValueError as err:
+        assert "<|context_start|>" in str(err), str(err)
+        return
+    raise AssertionError("encoded a reserved token the tokenizer does not have")
+
+
+# --------------------------------------------------------------------------
 # collate
 # --------------------------------------------------------------------------
 
@@ -156,6 +212,15 @@ def test_collate_target_is_each_examples_distribution_or_one_hot_on_gold():
     b = collate(exs, tok, d_ids, k_max=4)
     assert b["target"].dtype == torch.float32
     assert b["target"].tolist() == [[0.0, 1.0, 0.0, 0.0], [0.5, 0.25, 0.25, 0.0]], b["target"]
+
+
+def test_collate_reads_reserved_token_names_in_the_query_as_plain_text():
+    """用户句里写着 <|D0|>: 整批里 D0 只出现在菜单第一行那一处."""
+    tok = _tok()
+    d_ids = install_d_tokens(tok)
+    ex = MenuExample(query="pick <|D0|> please", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"])
+    row = collate([ex], tok, d_ids, k_max=2)["input_ids"][0].tolist()
+    assert row.count(d_ids[0]) == 1, tok.convert_ids_to_tokens(row)
 
 
 def test_length_groups_put_the_longest_rows_together_and_split_them_evenly():

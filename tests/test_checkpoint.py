@@ -14,6 +14,7 @@ from _runner import run
 from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
 from decidophobia.core.menu import MenuExample
 from decidophobia.core.model import adapter_config
+from decidophobia.core.tokens import D_TOKENS
 from decidophobia.training.loop import TrainConfig, train
 
 
@@ -192,12 +193,17 @@ def test_load_trained_rejects_checkpoint_with_more_rows_than_the_model():
 
 
 class _Tok:
-    """collate 只用到 encode 与 pad_token_id. 字符映射进 1..39, 不撞 TINY_IDS 的 D 行."""
+    """collate 用到的那几样: 批量编码文字、保留 token 查 id、pad_token_id.
+    文字按字符映射进 1..39, 不撞 TINY_IDS 的 D 行; <|Dk|> 就是 TINY_IDS[k]."""
 
     pad_token_id = 0
+    unk_token_id = None
 
-    def encode(self, text, add_special_tokens=False):
-        return [1 + ord(c) % 39 for c in text]
+    def __call__(self, texts, add_special_tokens=False, split_special_tokens=False):
+        return {"input_ids": [[1 + ord(c) % 39 for c in t] for t in texts]}
+
+    def convert_tokens_to_ids(self, name):
+        return TINY_IDS[D_TOKENS.index(name)]
 
 
 _EX = MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0, option_names=["card lost", "change pin"])

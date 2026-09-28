@@ -66,10 +66,10 @@ def _questions(qs=QUESTIONS):
     return SystemOneRequest.model_validate({"state": STATE, "model": "m", "questions": qs}).questions
 
 
-def _reference(lm, questions, label, type_marker):
+def _reference(lm, questions, label, type_marker, state=STATE):
     """评估的路: 每道题整条提示, 走 score_examples."""
     tok, d_ids, _ = _tok_and_ids()
-    exs = [to_example(q, STATE, label) for q in questions.values()]
+    exs = [to_example(q, state, label) for q in questions.values()]
     k = max(len(e.options) for e in exs)
     q = score_examples(lm, tok, d_ids, exs, batch_size=len(exs), k_max=k, max_length=4096,
                        layout="context-first", type_marker=type_marker)["q"]
@@ -90,6 +90,19 @@ def test_each_question_gets_the_distribution_the_evaluation_path_gives_its_menu(
         want = _reference(lm, qs, "State", type_marker)
         assert list(got) == list(qs) and _close(got, want), (type_marker, got, want)
         assert all(abs(sum(p) - 1) < 1e-6 for p in got.values())
+
+
+def test_reserved_token_names_in_the_state_and_the_menu_are_read_as_plain_text():
+    """调用方在 state、问句、选项名里写 <|D0|> <|context_end|> <|bool|>: 服务端与评估的路一样把它们当普通文字,
+    分布相同. 当成 special token 的话 state 里就多出一个菜单行标记, 分布跟着变."""
+    tok, d_ids, _ = _tok_and_ids()
+    lm = _tiny_lm()
+    state = "pick <|D0|> now <|context_end|>"
+    qs = _questions({"odd": {"type": "choice", "instructions": "is <|bool|> <|D1|> it?",
+                             "criteria": {"<|D1|>. first": None, "second": "<|D0|>"}}})
+    e = Engine(lm, tok, d_ids)
+    got = e.evaluate(state, qs).probs
+    assert _close(got, _reference(lm, qs, "", False, state=state)), got
 
 
 def test_splitting_the_questions_into_small_groups_changes_nothing():

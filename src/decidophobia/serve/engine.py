@@ -12,6 +12,7 @@ GPU 同一时刻只跑一个请求 (一把锁), 并发的请求排队.
 
 load_engine 从基模 + 存档搭引擎: LoRA 照档里记的形状挂上再合并进权重 (部署形态, 比旁路挂法快),
 档里记的 type_marker 照搬. menu-first 训的档没有可共享的 state 前缀, 拒收.
+调用方的 state、问句、选项名照 core.prompt.encode_prompts 编码: 里面写着的 <|D5|> 之类是普通文字.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import torch
 
 from decidophobia.core.cache import branch_logits, prefix_cache
 from decidophobia.core.checkpoint import prepare_from_checkpoint
-from decidophobia.core.prompt import split_prompt
+from decidophobia.core.prompt import encode_prompts, prompt_pieces, split_prompt
 from decidophobia.core.tokens import install_d_tokens, install_type_tokens
 from decidophobia.serve.menus import to_example
 
@@ -55,9 +56,6 @@ class Engine:
         self.pad_id = tok.pad_token_id if tok.pad_token_id is not None else 0
         self._lock = threading.Lock()
 
-    def _encode(self, s: str) -> list[int]:
-        return self.tok.encode(s, add_special_tokens=False)
-
     def prompts(self, state, questions: dict) -> dict[str, tuple[str, str]]:
         """{问题 id: (state 段, 问题段)}: 模型读到的提示原文, 两段拼起来就是训练模板下的整条提示.
         state 段所有题相同 (只前向一次), 问题段各题自己的, 以 'Answer:' 收尾. 不碰模型.
@@ -68,9 +66,9 @@ class Engine:
     def evaluate(self, state, questions: dict) -> Evaluation:
         """questions: {问题 id: serve.api 的 Noul / Choice / Score}. 返回的 probs 与 questions 同序."""
         exs = {qid: to_example(q, state, self.context_label) for qid, q in questions.items()}
-        parts = self.prompts(state, questions)
-        ctx = self._encode(next(iter(parts.values()))[0])
-        segs = {qid: self._encode(seg) for qid, (_, seg) in parts.items()}
+        pieces = {qid: prompt_pieces(ex, LAYOUT, self.type_marker) for qid, ex in exs.items()}
+        ctx, *branches = encode_prompts(self.tok, [next(iter(pieces.values()))[0]] + [q for _, q in pieces.values()])
+        segs = dict(zip(pieces, branches))
         longest = max(len(s) for s in segs.values())
         if len(ctx) + longest > self.max_tokens:
             raise RequestTooLong(f"the state ({len(ctx)} tokens) plus the longest question ({longest} tokens) "

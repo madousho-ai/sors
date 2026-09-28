@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from decidophobia.core.menu import MenuExample, row_alignment
-from decidophobia.core.prompt import DEFAULT_LAYOUT, render_menu
+from decidophobia.core.prompt import DEFAULT_LAYOUT, encode_prompts, prompt_pieces
 
 
 def collate(
@@ -25,11 +25,12 @@ def collate(
       gold           (B,)        正确选项在菜单里的位置
       target         (B, k_max)  菜单各行的目标概率: 样本带软标签 (MenuExample.target) 就是它, 否则 gold 那格 1;
                                  超出菜单长度的位置 0
+    提示照 core.prompt 的片段编码: 文字里写着的保留 token 名是普通文字.
     """
-    texts = [render_menu(ex, layout, type_marker) for ex in examples]
+    pieces = [sum(prompt_pieces(ex, layout, type_marker), []) for ex in examples]
     pad = tokenizer.pad_token_id
     # 超长的从左边截 (BoolQ 的 passage 在最前面), 答案位置永远保住
-    encs = [tokenizer.encode(t, add_special_tokens=False)[-max_length:] for t in texts]
+    encs = [e[-max_length:] for e in encode_prompts(tokenizer, pieces)]
     L = max(len(e) for e in encs)
     input_ids = torch.full((len(encs), L), pad, dtype=torch.long)
     attn = torch.zeros((len(encs), L), dtype=torch.long)
