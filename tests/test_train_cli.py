@@ -12,6 +12,7 @@ import random
 
 from _runner import run
 from decidophobia.core.menu import row_alignment
+from decidophobia.data.jevbench import load_jevbench
 from decidophobia.data.label_names import DESC_DIR
 from decidophobia.data.simple_eval import load_simple_eval
 from decidophobia.data.synth import load_synth
@@ -41,7 +42,8 @@ def test_dataset_defaults_to_synth():
 def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
     """默认评估集与训练集无关: Banking77 test 3080 条配全部 77 类, MASSIVE test 2974 条配全部 60 类,
     BoolQ validation 3270 条. 菜单都是全量、连续编号, 显示原始 label 名."""
-    assert _mod.build_parser().parse_args([]).eval == "banking77+banking77-desc+massive+massive-desc+boolq+simple"
+    assert _mod.build_parser().parse_args([]).eval == \
+        "banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench"
     _, eval_sets, _ = _mod.build_data(_args("massive"))
     assert set(eval_sets) == {"banking77", "massive", "boolq"}
     b77, mas, bq = eval_sets["banking77"], eval_sets["massive"], eval_sets["boolq"]
@@ -81,6 +83,16 @@ def test_eval_simple_adds_one_set_per_menu_size_straight_from_the_file():
     assert list(eval_sets) == list(want)
     assert all(eval_sets[k].examples == want[k] for k in want)
     assert eval_sets["simple_bool"].pos_class == 1 and eval_sets["simple255"].pos_class is None
+
+
+def test_eval_jevbench_adds_one_set_per_public_tier_straight_from_the_files():
+    """jevbench 展开成 jevbench_easy / _original / _hard, 题目与 load_jevbench 逐题相同. 三档都混着 noul / choice / score,
+    不报二元那组. hard 的提示最长 3838 token, 批只取四分之一, 一批的 token 数与 BoolQ 那档相当."""
+    _, eval_sets, _ = _mod.build_data(_args("massive", eval="jevbench"))
+    want = load_jevbench()
+    assert list(eval_sets) == list(want) == ["jevbench_easy", "jevbench_original", "jevbench_hard"]
+    assert all(eval_sets[k].examples == want[k] and eval_sets[k].pos_class is None for k in want)
+    assert [eval_sets[k].batch_size for k in want] == [16, 16, 4]
 
 
 def test_eval_rejects_an_unknown_set():
