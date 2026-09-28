@@ -516,5 +516,27 @@ def test_type_marker_default_is_off():
     assert "<|choice|>" not in render_menu(_ex("p", qtype="choice"))
 
 
+def test_context_marker_wraps_the_labelled_context_and_leaves_the_question_alone():
+    """context_marker=True: state 那段写成 <|context_start|>「标签: 」state<|context_end|>, 再空一行接问题;
+    标签照旧是数据集 / 调用方给的, 空标签时两个标记之间就是 state 本身. 问题那段一字不变."""
+    ex = _ex("I lost my card", options=(7, 2), gold_idx=1, question="which one?")
+    on_ctx, on_q = split_prompt(ex, layout="context-first", context_marker=True)
+    off_ctx, off_q = split_prompt(ex, layout="context-first")
+    assert on_ctx == "<|context_start|>Customer message: I lost my card<|context_end|>\n\n", repr(on_ctx)
+    assert off_ctx == "Customer message: I lost my card\n\n" and on_q == off_q, (off_ctx, on_q, off_q)
+    bare = _ex("Game state: hp 3", context_label="")
+    assert split_prompt(bare, layout="context-first", context_marker=True)[0] == \
+        "<|context_start|>Game state: hp 3<|context_end|>\n\n"
+
+
+def test_context_marker_wraps_the_context_after_the_menu_in_menu_first():
+    s = render_menu(_ex("hello"), layout="menu-first", context_marker=True)
+    assert s.endswith("\n\n<|context_start|>Customer message: hello<|context_end|>\nAnswer:"), repr(s)
+
+
+def test_context_marker_default_is_off():
+    assert "<|context_start|>" not in render_menu(_ex("p")) and "<|context_end|>" not in render_menu(_ex("p"))
+
+
 if __name__ == "__main__":
     run(globals())
