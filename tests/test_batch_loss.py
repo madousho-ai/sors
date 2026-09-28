@@ -10,7 +10,8 @@ import torch
 
 from decidophobia.core.batch import collate, length_groups, pair_alignment, trim_left_padding
 from decidophobia.core.menu import MenuExample, reorder_menu
-from decidophobia.core.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
+from decidophobia.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
+                                      install_type_tokens)
 from decidophobia.evaluation.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
                                              first_two_slots, menu_size_summary, nll_multiclass, pass_consistency, topk_accuracy)
 from decidophobia.training.loop import scalar_items
@@ -67,6 +68,18 @@ def test_type_tokens_take_the_rows_after_d_tokens():
     t = install_type_tokens(tok)
     assert TYPE_TOKENS == ["<|choice|>", "<|bool|>", "<|score|>"]
     assert t == [d[-1] + 1, d[-1] + 2, d[-1] + 3] and t[-1] < 151936, t
+
+
+def test_context_tokens_take_the_rows_after_the_type_tokens():
+    """<|context_start|> <|context_end|> 紧跟 <|score|> 之后 (151928, 151929), 仍在 vocab_size 151936 内;
+    装两次给同一对 id."""
+    tok = _tok()
+    install_d_tokens(tok)
+    t = install_type_tokens(tok)
+    c = install_context_tokens(tok)
+    assert CONTEXT_TOKENS == ["<|context_start|>", "<|context_end|>"]
+    assert c == [151928, 151929] == [t[-1] + 1, t[-1] + 2], c
+    assert install_context_tokens(tok) == c
 
 
 def test_type_marker_tokenizes_cleanly_inside_parentheses():

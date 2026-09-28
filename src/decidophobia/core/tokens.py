@@ -17,6 +17,9 @@ D_TOKENS = [f"<|D{i}|>" for i in range(N_SLOTS)]
 TYPE_TOKENS = ["<|choice|>", "<|bool|>", "<|score|>"]
 QTYPES = ("choice", "bool", "score")
 
+# 上下文 (state) 的起止标记, 开了 context_marker 时包在 state 两头, 见 core.prompt.
+CONTEXT_TOKENS = ["<|context_start|>", "<|context_end|>"]
+
 
 def install_d_tokens(tokenizer) -> list[int]:
     """把 256 个 D-token 加进 tokenizer (已有则跳过), 返回它们的 id, 顺序与 D_TOKENS 一致."""
@@ -28,3 +31,9 @@ def install_type_tokens(tokenizer) -> list[int]:
     """把 3 个类型 token 加进 tokenizer, 紧跟 D-token 之后. 先装 D 再装它, id 才稳定."""
     tokenizer.add_tokens(TYPE_TOKENS, special_tokens=True)
     return tokenizer.convert_tokens_to_ids(TYPE_TOKENS)
+
+
+def install_context_tokens(tokenizer) -> list[int]:
+    """把 2 个上下文起止 token 加进 tokenizer, 紧跟类型 token 之后. D、类型、它, 按这个顺序装 id 才稳定."""
+    tokenizer.add_tokens(CONTEXT_TOKENS, special_tokens=True)
+    return tokenizer.convert_tokens_to_ids(CONTEXT_TOKENS)
