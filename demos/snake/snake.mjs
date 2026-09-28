@@ -99,7 +99,8 @@ export function step(g, dir, rng = Math.random) {
 
 // ---- 发给推理服务的请求 ----------------------------------------------------------
 // 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
-// state 用词写棋盘: grid 是整张棋盘, 每行一个字段, 每格一个词 (empty / head / body / food), 不用符号;
+// state 用词写棋盘: grid 是整张棋盘, 每行一个字段, 每格一个词 (empty / head / body / food), 不用符号,
+// 每行左右两端各加一个 wall;
 // 另有几句话说蛇多长、头在哪、身子从脖子到尾巴依次在哪、食物在哪.
 // 服务默认不给 state 加标签, 原样放进提示; 训练时游戏局面的提示以「Game state: 」开头, 所以请求里的 state 是
 // 一段字符串: 这个标签接上 boardState 的缩进 JSON (与服务展开对象 state 的写法相同).
@@ -140,8 +141,9 @@ export function boardState(g) {
   return {
     goal: GOAL,
     board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge. `
-      + `The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column ${g.cols - 1}.`,
-    grid: Object.fromEntries(cells.map((row, r) => [`row ${r}`, row.join(", ")])),
+      + `The grid lists every row: a wall, then each cell as one word (empty, head, body or food) `
+      + `from column 0 to column ${g.cols - 1}, then a wall.`,
+    grid: Object.fromEntries(cells.map((row, r) => [`row ${r}`, ["wall", ...row, "wall"].join(", ")])),
     snake: `The snake is ${g.snake.length} cells long. Its head is at ${cellName(head)}. ${bodyText}`,
     food: g.food ? `The food is at ${cellName(g.food)}.` : "There is no food on the board.",
   };

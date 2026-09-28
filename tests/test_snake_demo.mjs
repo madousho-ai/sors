@@ -155,17 +155,19 @@ test("the goal ends by telling the model to move the head toward the food", () =
   assert.match(boardState(game()).goal, /Make the head move toward the food\.$/);
 });
 
-test("the state draws the whole board row by row, one word per cell, and says where the snake and the food are", () => {
+test("the state draws the whole board row by row, one word per cell between two walls, and says where the snake and the food are", () => {
   const s = boardState(game({ food: [0, 5] }));
   assert.deepEqual(Object.keys(s), ["goal", "board", "grid", "snake", "food"]);
   assert.equal(s.board, "5 rows by 6 columns; row 0 is the top edge, column 0 is the left edge. "
-    + "The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column 5.");
+    + "The grid lists every row: a wall, then each cell as one word (empty, head, body or food) "
+    + "from column 0 to column 5, then a wall.");
+  // 每行左右两端各一个 wall, 棋盘本身的格子仍从第 0 列数起
   assert.deepEqual(s.grid, {
-    "row 0": "empty, empty, empty, empty, empty, food",
-    "row 1": "empty, empty, empty, empty, empty, empty",
-    "row 2": "empty, body, body, head, empty, empty",
-    "row 3": "empty, empty, empty, empty, empty, empty",
-    "row 4": "empty, empty, empty, empty, empty, empty",
+    "row 0": "wall, empty, empty, empty, empty, empty, food, wall",
+    "row 1": "wall, empty, empty, empty, empty, empty, empty, wall",
+    "row 2": "wall, empty, body, body, head, empty, empty, wall",
+    "row 3": "wall, empty, empty, empty, empty, empty, empty, wall",
+    "row 4": "wall, empty, empty, empty, empty, empty, empty, wall",
   });
   assert.equal(s.snake, "The snake is 3 cells long. Its head is at row 2, column 3. "
     + "Its body, from the neck to the tail, is at row 2, column 2; row 2, column 1.");
