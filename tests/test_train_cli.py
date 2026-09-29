@@ -27,7 +27,7 @@ def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
                 consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq",
-                mix=None, mask_descriptions=0.0)
+                mix=None, mask_descriptions=0.0, passes=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -343,6 +343,34 @@ def test_synth_v5_options_are_named_in_the_run_directory():
     other = p.parse_args(["--dataset", "synth-v5", "--mask-descriptions", "0.5", "--mix", "long_menu=3,breadth=1"])
     vars(other).update(_mod.resolve_adapter(other))
     assert _mod.run_tag(other) != tag
+
+
+def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
+    """--passes: 按轮抽, 一轮把每个绑定出一遍, 列出的目标出那么多遍. 成对的两半算一次抽取:
+    67879 个绑定里 741 对, 一轮 67138 次; complex / edge_case / long_context 共 4016 个绑定各多出两遍."""
+    _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
+    assert info["synth_v5_round"] == 67138 + 2 * 4016, info
+    assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "edge_case": 3,
+                                       "long_context": 3, "long_menu": 1}
+    assert "synth_v5_mix" not in info
+
+
+def test_passes_are_refused_with_a_mix_without_synth_v5_or_when_unreadable():
+    for ds, kw in (("synth-v5", dict(passes="complex=3", mix="long_menu=1")), ("synth", dict(passes="complex=3")),
+                   ("synth-v5", dict(passes="complex=1.5"))):
+        try:
+            _mod.build_data(_args(ds, eval="massive", **kw))
+        except SystemExit:
+            continue
+        raise AssertionError(f"--dataset {ds} {kw} accepted")
+
+
+def test_passes_are_named_in_the_run_directory():
+    p = _mod.build_parser()
+    a = p.parse_args(["--dataset", "synth-v5", "--passes", "complex=3"])
+    b = p.parse_args(["--dataset", "synth-v5", "--passes", "complex=4"])
+    assert "-pass" in _mod.run_tag(a) and _mod.run_tag(a) != _mod.run_tag(b)
+    assert "-pass" not in _mod.run_tag(p.parse_args(["--dataset", "synth-v5"]))
 
 
 def test_max_length_defaults_to_8192():

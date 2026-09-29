@@ -12,7 +12,8 @@
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
   synth-v5    datasets/synth-intents-v5: v2.5 的客户消息、v3 的材料、v4 的规则材料统一成「材料 + 绑定的题」.
               选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
-              edge_case / long_context / ambiguous), 再领域、题型、材料各自均分. --mask-descriptions 按比例遮掉可遮的题的选项说明;
+              edge_case / long_context / ambiguous), 再领域、题型、材料各自均分; 或者给 --passes 按轮抽, 一轮每个绑定都出,
+              列出的目标多出几遍. --mask-descriptions 按比例遮掉可遮的题的选项说明;
               --consistency 下材料有几种说法时, 配对的第二份读另一种说法. ambiguous 里一道题与它多出 other 选项的版本
               成对抽出, 算一次抽取, 一批因此可能多于 --batch-size 道 (见 decidophobia/data/synth_v5.py)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
@@ -149,8 +150,10 @@ def build_data(args):
         raise SystemExit(f"--micro-batches is how many length groups a step runs, >= 1; got {args.micro_batches}")
     if not 0.0 <= args.mask_descriptions <= 1.0:
         raise SystemExit(f"--mask-descriptions is a share of maskable questions, 0..1; got {args.mask_descriptions}")
-    if "synth-v5" not in datasets and (args.mix or args.mask_descriptions):
-        raise SystemExit("--mix and --mask-descriptions only apply to --dataset synth-v5")
+    if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes):
+        raise SystemExit("--mix, --passes and --mask-descriptions only apply to --dataset synth-v5")
+    if args.mix and args.passes:
+        raise SystemExit("--mix draws goals by weight and --passes draws in rounds; pick one")
     erng = random.Random(args.seed + 1)
     samplers, eval_sets, split_info = [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
@@ -187,17 +190,25 @@ def build_data(args):
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
         split_info["synth_v3_items"] = sum(len(v) for v in v3.values())
     if "synth-v5" in datasets:
-        # 各训练目标按 --mix 的配比 (可随步数分段), 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
-        from decidophobia.data.synth_v5 import V5Sampler, load_synth_v5, parse_mix
+        # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
+        # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
+        from decidophobia.data.synth_v5 import V5Rounds, V5Sampler, load_synth_v5, parse_mix, parse_passes
 
         v5 = load_synth_v5()
+        goals = {it.goal for it in v5}
+        split_info["synth_v5_items"] = len(v5)
         try:
-            mix = parse_mix(args.mix, {it.goal for it in v5})
+            if args.passes:
+                rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions)
+                split_info["synth_v5_passes"] = rounds.passes
+                split_info["synth_v5_round"] = rounds.round_size
+                samplers.append(rounds)
+            else:
+                mix = parse_mix(args.mix, goals)
+                samplers.append(V5Sampler(v5, mix, args.mask_descriptions))
+                split_info["synth_v5_mix"] = mix
         except ValueError as e:
             raise SystemExit(str(e)) from None
-        samplers.append(V5Sampler(v5, mix, args.mask_descriptions))
-        split_info["synth_v5_items"] = len(v5)
-        split_info["synth_v5_mix"] = mix
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
@@ -317,6 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="synth-v5 各训练目标的配比, 相对权重: long_menu=4,breadth=2,complex=1,edge_case=1; "
                          "分段写成 '0: long_menu=6,...; 1000: long_menu=3,...', 到那一步换配比. "
                          "数据里有的目标每一段都要给正权重. 不给 = 各目标相同. 写进目录名 (-mix<hash>)")
+    ap.add_argument("--passes", default=None,
+                    help="synth-v5 按轮抽, 代替 --mix: 一轮把每个绑定出一遍, 这里列的目标出 N 遍, 如 "
+                         "complex=3,edge_case=3,long_context=3 (不列的 1 遍). 轮内打乱, 一轮取完再开一轮. "
+                         "一轮的抽取数记在 result.json 的 split.synth_v5_round; 要整场至少过一轮, "
+                         "v5 每步分到的抽取数 × --steps 要不少于它. 写进目录名 (-pass<hash>)")
     ap.add_argument("--mask-descriptions", type=float, default=0.0,
                     help="synth-v5 里绑定写了 maskable 的题, 以这个比例遮掉全部选项说明只留键 (0..1); "
                          "一致性配对的两份一起遮. 0 = 不遮. 写进目录名")
@@ -373,6 +389,7 @@ def run_tag(args) -> str:
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
         + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
+        + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")
 
 
