@@ -11,6 +11,9 @@
 这个领域里等概率挑一个题型 -> 等概率挑一份材料 (再在它这个题型的绑定里挑一个). 大领域、材料多的题型不会挤掉别人.
 配比 (parse_mix) 可以随训练步数分段变化, 但数据里有的每个目标在每一段都要有份额.
 
+另一种抽法是按轮抽 (V5Rounds): 一轮把每个绑定出一遍, parse_passes 给了遍数的目标出那么多遍, 轮内整体打乱,
+一轮取完再打乱出下一轮. 用来保证训练里每个绑定至少见过一次; 各目标的份额就是它们在数据里的量乘遍数.
+
 出成样本 (item_example): 随机挑一种问法; 材料有几种说法时挑两种不同的, 一种当上下文, 另一种放进 partner_query
 (开一致性配对时第二份读它); 按比例遮掉说明 (只对 maskable 的题, 两份跟着同一次抽签); 最后打乱行序.
 
@@ -204,11 +207,62 @@ class V5Sampler:
         out = []
         for g in rng.choices(goals, [weights[x] for x in goals], k=n):
             ctxs = rng.choice(rng.choice(self.tree[g]))
-            i = rng.choice(rng.choice(ctxs))
-            it = self.items[i]
-            if it.pair is None:
-                out.append(item_example(it, rng, self.mask_rate))
-            else:
-                a, b = sorted((i, it.pair))
-                out += pair_examples(self.items[a], self.items[b], rng, self.mask_rate)
+            out += unit_examples(self.items, unit_of(self.items, rng.choice(rng.choice(ctxs))), rng, self.mask_rate)
+        return out
+
+
+def unit_of(items: list[V5Item], i: int) -> tuple[int, ...]:
+    """一次抽取出的绑定下标: 单个绑定是它自己; 成对的是 (原题, other 版), 按下标排, 原题在前."""
+    p = items[i].pair
+    return (i,) if p is None else tuple(sorted((i, p)))
+
+
+def unit_examples(items: list[V5Item], unit: tuple[int, ...], rng: random.Random, mask_rate: float) -> list[MenuExample]:
+    if len(unit) == 1:
+        return [item_example(items[unit[0]], rng, mask_rate)]
+    return pair_examples(items[unit[0]], items[unit[1]], rng, mask_rate)
+
+
+# ---------------------------------------------------------------- 按轮抽
+
+def parse_passes(spec: str | None, goals: set[str]) -> dict[str, int]:
+    """--passes 的值: 一轮里各目标的绑定各出几遍. 不写的目标 1 遍. 写法 complex=3,edge_case=3,long_context=3;
+    遍数是正整数, 写了数据里没有的目标报错."""
+    out = {g: 1 for g in sorted(goals)}
+    for e in (x.strip() for x in (spec or "").split(",")):
+        if not e:
+            continue
+        g, sep, v = e.partition("=")
+        g = g.strip()
+        if not sep or not v.strip().isdigit() or int(v) < 1:
+            raise ValueError(f"--passes: cannot read {e!r} (write goal=N with N a whole number >= 1)")
+        if g not in goals:
+            raise ValueError(f"--passes: no data for goal {g!r}; the data has {sorted(goals)}")
+        out[g] = int(v)
+    return out
+
+
+class V5Rounds:
+    """按轮抽: 一轮把每个绑定出一遍, parse_passes 列了遍数的目标出那么多遍, 轮内整体打乱.
+    一批从上一批停下的地方接着取, 一轮取完就打乱出下一轮, 一批可以跨过两轮的边界.
+    成对的两半 (原题与 other 版) 算一次抽取、一起出, 同 V5Sampler. round_size 是一轮的抽取次数."""
+
+    def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0):
+        missing = {it.goal for it in items} ^ set(passes)
+        if missing:
+            raise ValueError(f"the passes and the data disagree on goals {sorted(missing)}")
+        self.items, self.passes, self.mask_rate = items, passes, mask_rate
+        units = sorted({unit_of(items, i) for i in range(len(items))})
+        self.units = [u for u in units for _ in range(passes[items[u[0]].goal])]
+        self.round_size = len(self.units)
+        self.queue: list[tuple[int, ...]] = []
+        self.rounds = 0  # 已经开了几轮
+
+    def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
+        out = []
+        for _ in range(n):
+            if not self.queue:
+                self.queue = rng.sample(self.units, len(self.units))[::-1]  # 从尾部 pop, 顺序仍是均匀的
+                self.rounds += 1
+            out += unit_examples(self.items, self.queue.pop(), rng, self.mask_rate)
         return out

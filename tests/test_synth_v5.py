@@ -14,7 +14,8 @@ import tempfile
 
 from _runner import run
 from decidophobia.core.menu import row_alignment, with_partners
-from decidophobia.data.synth_v5 import V5Sampler, item_example, load_synth_v5, mix_at, parse_mix
+from decidophobia.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix,
+                                        parse_passes)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 INTENTS = {"cancel_contract": "Cancelling the contract entirely", "port_number_out": "Code for taking the number away",
@@ -371,6 +372,60 @@ def test_both_halves_of_a_pair_are_masked_together():
             if len(a.options) == 4:
                 both[(any(": " in n for n in a.option_names), any(": " in n for n in b.option_names))] += 1
     assert set(both) == {(True, True), (False, False)}, both
+
+
+# ---- 按轮抽: 一轮把每个绑定出一遍, 列出的目标出几遍
+
+def test_passes_default_every_goal_to_one_and_take_the_listed_counts():
+    assert parse_passes(None, GOALS) == {"long_menu": 1, "breadth": 1, "complex": 1}
+    assert parse_passes("complex=3", GOALS) == {"long_menu": 1, "breadth": 1, "complex": 3}
+    assert parse_passes("complex=3,breadth=2", GOALS) == {"long_menu": 1, "breadth": 2, "complex": 3}
+
+
+def test_passes_refuse_an_unknown_goal_or_a_count_that_is_not_a_positive_whole_number():
+    for spec in ("fun=2", "long_context=2", "complex=0", "complex=1.5", "complex"):
+        try:
+            parse_passes(spec, GOALS)
+        except ValueError:
+            continue
+        raise AssertionError(f"{spec!r} accepted")
+
+
+def _round_order(items, passes, n, draws, seed=0):
+    """按轮抽 draws 批, 每批 n 次抽取; 返回抽出来的绑定, 按出场顺序."""
+    s = V5Rounds(items, parse_passes(passes, GOALS), 0.0)
+    rng = random.Random(seed)
+    return s, [(_which(items, ex).context_id, _which(items, ex).question_id) for _ in range(draws) for ex in s(n, rng)]
+
+
+def test_a_round_draws_every_binding_once_and_a_listed_goal_as_many_times_as_its_passes():
+    """10 个绑定, complex 只有 telecom_rule_1 一个, 出 3 遍: 一轮 12 次抽取."""
+    items = _items()
+    s, got = _round_order(items, "complex=3", 4, 3)
+    assert s.round_size == 12
+    want = collections.Counter({(it.context_id, it.question_id): 3 if it.goal == "complex" else 1 for it in items})
+    assert collections.Counter(got) == want
+
+
+def test_the_next_round_starts_where_one_runs_out_in_a_new_order():
+    """一批跨过两轮的边界也照样取满; 每一轮各是一遍完整的数据, 两轮的顺序不同."""
+    items = _items()
+    _, got = _round_order(items, None, 7, 6)  # 42 次 = 4 轮 (每轮 10) 再加 2
+    rounds = [got[i:i + 10] for i in range(0, 40, 10)]
+    whole = collections.Counter((it.context_id, it.question_id) for it in items)
+    assert all(collections.Counter(r) == whole for r in rounds)
+    assert len({tuple(r) for r in rounds}) == 4
+
+
+def test_a_pair_is_one_draw_of_a_round_and_brings_both_halves():
+    items = _paired()
+    s = V5Rounds(items, parse_passes(None, PAIR_GOALS), 0.0)
+    assert s.round_size == len(items) - 2  # 两对, 各少算一次
+    rng = random.Random(0)
+    batches = [s(s.round_size, rng) for _ in range(4)]
+    assert all(len(b) == s.round_size + len(_halves(b)) for b in batches)
+    got = collections.Counter((_which(items, ex).context_id, _which(items, ex).question_id) for b in batches for ex in b)
+    assert set(got.values()) == {4}, got
 
 
 if __name__ == "__main__":
