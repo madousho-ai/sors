@@ -13,6 +13,10 @@
 
 出成样本 (item_example): 随机挑一种问法; 材料有几种说法时挑两种不同的, 一种当上下文, 另一种放进 partner_query
 (开一致性配对时第二份读它); 按比例遮掉说明 (只对 maskable 的题, 两份跟着同一次抽签); 最后打乱行序.
+
+成对 (pair_examples): 一道题的 other 版 (多出一项兜底选项) 与原题绑在同一份材料上时, 抽到哪一半都两半一起出,
+算一次抽取. 两道读同一种说法、同一种问法、遮不遮也相同, 行序各打乱各的. 这和一致性配对是两回事:
+开 --consistency 时两半各自再带一份换了行序的副本.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import state_text
@@ -44,6 +48,7 @@ class V5Item:
     qtype: str  # choice | bool
     target: list[float] | None  # 分布答案归一化后的各行概率; None = 硬标签
     gold: int
+    pair: int | None = None  # 成对的另一半 (原题与它的 other 版, 同一份材料) 在 load_synth_v5 结果里的下标
 
 
 def _schema(data_dir: pathlib.Path):
@@ -75,7 +80,8 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
 
 
 def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
-    """全部领域的全部绑定, 领域按名字排序、领域内按材料与绑定的顺序. 格式检查过不了的领域报 ValueError."""
+    """全部领域的全部绑定, 领域按名字排序、领域内按材料与绑定的顺序. 格式检查过不了的领域报 ValueError.
+    other 版的绑定与同一份材料上原题的绑定互记下标 (pair)."""
     data_dir = pathlib.Path(data_dir)
     schema = _schema(data_dir)
     out = []
@@ -86,22 +92,48 @@ def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
             raise ValueError(f"{domain}: {len(errs)} format problems, e.g. {errs[:2]}; "
                              f"run datasets/synth-intents-v5/schema.py {domain} to see them all")
         by_id = {q["id"]: q for q in bank}
-        out += [_item(schema, domain, c, b, by_id[b["question"]]) for c in contexts for b in c["questions"]]
+        for c in contexts:
+            start = len(out)
+            out += [_item(schema, domain, c, b, by_id[b["question"]]) for b in c["questions"]]
+            at = {b["question"]: start + j for j, b in enumerate(c["questions"])}
+            for j, b in enumerate(c["questions"]):
+                base = by_id[b["question"]].get("other_of")
+                if base is not None:
+                    i, k = start + j, at[base]
+                    out[i], out[k] = replace(out[i], pair=k), replace(out[k], pair=i)
     return out
 
 
-def item_example(it: V5Item, rng: random.Random, mask_rate: float) -> MenuExample:
-    """一个绑定出一道题. 抽随机数的顺序固定: 遮不遮 (只在 maskable 且 rate > 0 时抽) -> 说法 -> 问法 -> 行序."""
-    rows = it.bare if it.bare is not None and mask_rate > 0 and rng.random() < mask_rate else it.rows
+def _choose(it: V5Item, rng: random.Random, mask_rate: float) -> tuple[bool, str, str | None]:
+    """遮不遮 (只在 maskable 且 rate > 0 时抽) -> 说法 (有几种时挑两种, 第二种给一致性配对的第二份)."""
+    masked = it.bare is not None and mask_rate > 0 and rng.random() < mask_rate
     if len(it.texts) > 1:
         query, other = rng.sample(it.texts, 2)
     else:
         query, other = it.texts[0], None
+    return masked, query, other
+
+
+def _example(it: V5Item, masked: bool, query: str, other: str | None, question: str, rng: random.Random) -> MenuExample:
+    rows = it.bare if masked else it.rows
     k = len(rows)
     ex = MenuExample(query=query, options=list(range(k)), gold_idx=it.gold, label=it.gold, option_names=list(rows),
-                     context_label=it.label, question=rng.choice(it.asks), qtype=it.qtype, target=it.target,
+                     context_label=it.label, question=question, qtype=it.qtype, target=it.target,
                      partner_query=other)
     return reorder_menu(ex, rng.sample(range(k), k))
+
+
+def item_example(it: V5Item, rng: random.Random, mask_rate: float) -> MenuExample:
+    """一个绑定出一道题. 抽随机数的顺序固定: 遮不遮 -> 说法 -> 问法 -> 行序."""
+    masked, query, other = _choose(it, rng, mask_rate)
+    return _example(it, masked, query, other, rng.choice(it.asks), rng)
+
+
+def pair_examples(a: V5Item, b: V5Item, rng: random.Random, mask_rate: float) -> list[MenuExample]:
+    """成对的两个绑定 (原题与 other 版) 出两道题: 遮不遮、说法、问法抽一次两道共用, 行序各打乱各的."""
+    masked, query, other = _choose(a, rng, mask_rate)
+    question = rng.choice(a.asks)
+    return [_example(it, masked, query, other, question, rng) for it in (a, b)]
 
 
 # ---------------------------------------------------------------- 目标配比
@@ -165,11 +197,18 @@ class V5Sampler:
             raise ValueError(f"the mix and the data disagree on goals {sorted(missing)}")
 
     def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
+        """n 次抽取. 抽到成对的绑定时两半一起出 (原题在前), 占一次抽取: 一批可能多于 n 道."""
         self.step += 1
         weights = mix_at(self.mix, self.step)
         goals = sorted(weights)
         out = []
         for g in rng.choices(goals, [weights[x] for x in goals], k=n):
             ctxs = rng.choice(rng.choice(self.tree[g]))
-            out.append(item_example(self.items[rng.choice(rng.choice(ctxs))], rng, self.mask_rate))
+            i = rng.choice(rng.choice(ctxs))
+            it = self.items[i]
+            if it.pair is None:
+                out.append(item_example(it, rng, self.mask_rate))
+            else:
+                a, b = sorted((i, it.pair))
+                out += pair_examples(self.items[a], self.items[b], rng, self.mask_rate)
         return out

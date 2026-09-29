@@ -303,5 +303,75 @@ def test_every_binding_is_drawn():
     assert seen == {(it.context_id, it.question_id) for it in items}
 
 
+# ---- 成对: other 版与原题一起抽出来
+
+PICKUP_OTHER = {"id": "pickup_other", "kind": "pickup", "other_of": "pickup", "ask": ["Which alert should be taken next?"],
+                "options": ["LOG-0719", "NET-0457", "EDR-2310", "None of these alerts"]}
+INTENT_OTHER = {"id": "intent_other", "kind": "intent", "other_of": "intent",
+                "ask": ["Which option best describes the message?"], "options": {**INTENTS, "other": "None of these"}}
+NOTHING_FITS = {"id": "telecom_amb/queue/0", "label": "Security on-call screen", "goal": "ambiguous",
+                "text": ["The alert queue is empty; someone asks why the floor 2 printer is jammed.",
+                         "No alerts are waiting. The only question today: why is the printer on floor 2 jammed?"],
+                "questions": [{"question": "pickup", "answer": {"LOG-0719": 1, "NET-0457": 1, "EDR-2310": 1}},
+                              {"question": "pickup_other", "answer": "None of these alerts"}]}
+PAIR_GOALS = GOALS | {"ambiguous"}
+
+
+def _paired():
+    control = dict(TELECOM_C[0], questions=TELECOM_C[0]["questions"] + [
+        {"question": "intent_other", "answer": "cancel_contract", "maskable": True, "goal": "long_menu"}])
+    return load_synth_v5(_data(telecom=(TELECOM_Q + [PICKUP_OTHER, INTENT_OTHER],
+                                        [control, *TELECOM_C[1:], NOTHING_FITS])))
+
+
+def test_the_two_halves_of_a_pair_point_at_each_other_and_other_items_have_no_pair():
+    items = _paired()
+    for cid, q in (("telecom_amb/queue/0", "pickup"), ("telecom_cancel_contract#0", "intent")):
+        a, b = _find(items, cid, q), _find(items, cid, f"{q}_other")
+        assert items[a.pair] == b and items[b.pair] == a
+    assert _find(items, "telecom_queue_a", "pickup").pair is None
+    assert sum(it.pair is not None for it in items) == 4
+
+
+def _draws(items, mix, n, steps, mask=0.0, seed=0):
+    s = V5Sampler(items, parse_mix(mix, PAIR_GOALS), mask)
+    rng = random.Random(seed)
+    return [s(n, rng) for _ in range(steps)]
+
+
+def _halves(batch):
+    """批里成对的两半 (other 版紧跟在原题后面)."""
+    return [(a, b) for a, b in zip(batch, batch[1:]) if len(b.options) == len(a.options) + 1
+            and b.query == a.query and b.question == a.question]
+
+
+def test_drawing_a_pair_gives_both_halves_on_one_phrasing_and_one_wording():
+    items = _paired()
+    pairs = [p for batch in _draws(items, "long_menu=1,breadth=1,complex=1,ambiguous=20", 6, 100) for p in _halves(batch)]
+    queue = [(a, b) for a, b in pairs if a.context_label == "Security on-call screen"]
+    assert len(queue) > 200, len(queue)
+    assert {a.query for a, _ in queue} == set(NOTHING_FITS["text"])
+    for a, b in queue:
+        assert sorted(b.option_names) == sorted(a.option_names + ["None of these alerts"])
+        assert a.target == [1 / 3] * 3 and b.option_names[b.gold_idx] == "None of these alerts"
+    assert len({b.option_names.index("None of these alerts") for _, b in queue}) == 4, "other 那一行的位置跟着打乱"
+
+
+def test_a_pair_counts_as_one_draw():
+    items = _paired()
+    for batch in _draws(items, "long_menu=1,breadth=1,complex=1,ambiguous=3", 10, 50):
+        assert len(batch) == 10 + len(_halves(batch)), (len(batch), len(_halves(batch)))
+
+
+def test_both_halves_of_a_pair_are_masked_together():
+    items = _paired()
+    both = collections.Counter()
+    for batch in _draws(items, "long_menu=20,breadth=1,complex=1,ambiguous=1", 6, 200, mask=0.5):
+        for a, b in _halves(batch):
+            if len(a.options) == 4:
+                both[(any(": " in n for n in a.option_names), any(": " in n for n in b.option_names))] += 1
+    assert set(both) == {(True, True), (False, False)}, both
+
+
 if __name__ == "__main__":
     run(globals())
