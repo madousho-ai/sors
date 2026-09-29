@@ -12,8 +12,9 @@
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
   synth-v5    datasets/synth-intents-v5: v2.5 的客户消息、v3 的材料、v4 的规则材料统一成「材料 + 绑定的题」.
               选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
-              edge_case), 再领域、题型、材料各自均分. --mask-descriptions 按比例遮掉可遮的题的选项说明;
-              --consistency 下材料有几种说法时, 配对的第二份读另一种说法 (见 decidophobia/data/synth_v5.py)
+              edge_case / long_context / ambiguous), 再领域、题型、材料各自均分. --mask-descriptions 按比例遮掉可遮的题的选项说明;
+              --consistency 下材料有几种说法时, 配对的第二份读另一种说法. ambiguous 里一道题与它多出 other 选项的版本
+              成对抽出, 算一次抽取, 一批因此可能多于 --batch-size 道 (见 decidophobia/data/synth_v5.py)
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
