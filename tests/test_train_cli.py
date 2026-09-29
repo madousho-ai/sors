@@ -247,7 +247,9 @@ def test_synth_v5_mix_sets_the_goal_shares():
                                                mix="long_menu=14,breadth=2,complex=2,edge_case=1,long_context=1"))
     rng = random.Random(0)
     n = long = 0
-    for _ in range(100):
+    # 10k 次抽取: 占比的标准差约 0.0046, ±0.05 的范围有 10 倍余量. 只抽 1000 次时标准差 0.0145,
+    # 数据一变随机流就变, 约 1/300 的种子会落到范围外 (government 合并时 seed 0 抽到 0.752)
+    for _ in range(1000):
         for e in sample_fn(10, rng):
             n += 1
             long += len(e.options) == 256
