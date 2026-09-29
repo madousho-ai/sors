@@ -224,12 +224,13 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """--dataset synth-v5: 不给 --mix 时五个有数据的目标机会相同. intent 题是 256 行「键: 描述」,
-    v4 的材料 (label 空串) 与 v3 的各种 label 都会出现."""
+    """--dataset synth-v5: 不给 --mix 时六个有数据的目标机会相同. intent 题是 256 行「键: 描述」,
+    v4 的材料 (label 空串) 与 v3 的各种 label 都会出现. 抽到 ambiguous 的成对绑定时一次出两道,
+    所以 256 行的题占样本约 0.149 (每目标 1/6, 再被成对多出来的样本摊薄), 低于 1/6."""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 62598, info
-    assert info["synth_v5_mix"] == [(0, {"breadth": 1.0, "complex": 1.0, "edge_case": 1.0, "long_context": 1.0,
-                                         "long_menu": 1.0})]
+    assert info["synth_v5_items"] == 67879, info
+    assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "edge_case": 1.0,
+                                         "long_context": 1.0, "long_menu": 1.0})]
     rng = random.Random(0)
     labels, sizes = set(), collections.Counter()
     for _ in range(60):
@@ -239,12 +240,13 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
             if len(e.options) == 256:
                 assert all(": " in n for n in e.option_names) and e.question == "Which option best describes the message?"
     assert labels <= V5_LABELS and "" in labels and "Customer message" in labels, labels
-    assert 0.15 < sizes["256"] / sum(sizes.values()) < 0.25, sizes
+    assert 0.10 < sizes["256"] / sum(sizes.values()) < 0.20, sizes
 
 
 def test_synth_v5_mix_sets_the_goal_shares():
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive",
-                                               mix="long_menu=14,breadth=2,complex=2,edge_case=1,long_context=1"))
+                                               mix="long_menu=14,breadth=2,complex=2,edge_case=1,long_context=0.9,"
+                                                   "ambiguous=0.1"))
     rng = random.Random(0)
     n = long = 0
     # 10k 次抽取: 占比的标准差约 0.0046, ±0.05 的范围有 10 倍余量. 只抽 1000 次时标准差 0.0145,
@@ -277,7 +279,7 @@ def test_mask_descriptions_must_be_a_share_and_needs_synth_v5():
 def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
     """--mask-descriptions 1 --consistency 1: intent 题 (maskable) 的两份都只剩键, 按描述对齐照样成立."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", mask_descriptions=1.0, consistency=1.0,
-                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1"))
+                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=1"))
     rng = random.Random(0)
     pairs = 0
     for _ in range(10):
@@ -293,7 +295,8 @@ def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
 def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
     """v4 的材料带两种说法: --consistency 下配对的两份读的是不同说法, 问句与选项集合相同."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", consistency=1.0,
-                                            mix="long_menu=1,breadth=1,complex=33,edge_case=33,long_context=32"))
+                                            mix="long_menu=1,breadth=1,complex=33,edge_case=33,long_context=31,"
+                                                "ambiguous=1"))
     rng = random.Random(0)
     reworded = 0
     for _ in range(20):
@@ -303,6 +306,32 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
             assert [b.options[j] for j in row_alignment(a, b)] == a.options
             reworded += a.query != b.query
     assert reworded > 120, reworded
+
+
+def test_synth_v5_puts_an_other_version_in_the_same_batch_as_its_question():
+    """ambiguous 的 other 版 (菜单末尾多一项兜底) 与原题同一份材料、同一种说法、同一种问法, 总在同一批里.
+    答案要么是兜底项 (原题均分), 要么与原题的答案相同 (对照)."""
+    sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive",
+                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,"
+                                                "ambiguous=95"))
+    rng = random.Random(0)
+    kinds = collections.Counter()
+    for _ in range(40):
+        batch = sample_fn(8, rng)
+        for o in batch:
+            base = [e for e in batch if e is not o and e.query == o.query and e.question == o.question
+                    and len(e.options) + 1 == len(o.options) and set(e.option_names) < set(o.option_names)]
+            if not base:
+                continue
+            e = base[0]
+            fallback = (set(o.option_names) - set(e.option_names)).pop()
+            if o.option_names[o.gold_idx] == fallback:
+                assert e.target is not None and len(set(e.target)) == 1, "没有选项对得上: 原题均分"
+                kinds["none"] += 1
+            else:
+                assert e.target is None and e.option_names[e.gold_idx] == o.option_names[o.gold_idx]
+                kinds["control"] += 1
+    assert kinds["none"] > 20 and kinds["control"] > 20, kinds
 
 
 def test_synth_v5_options_are_named_in_the_run_directory():
