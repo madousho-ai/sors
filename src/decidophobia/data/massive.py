@@ -6,7 +6,7 @@
 数据: URL 那个 tarball (39.5MB, 51 locale), 取 1.0/data/en-US.jsonl, 分区 test 2974 条 / train 11514 条.
 第一次用时下载到 data/massive (md5 钉死, 见 decidophobia.data.download), 解出的 en-US.jsonl 放在旁边, 之后只读它.
 类 id 按原始 intent 名字母序编, 与 banking77 同一约定.
-菜单上显示的文字由 labels 选: raw 原始 intent 名 (默认), desc 写好的 description, 见 decidophobia.data.label_names.
+菜单上显示的文字由 labels 选: raw 原始 intent 名 (默认), desc「原始名: description」, 见 decidophobia.data.label_names.
 """
 
 from __future__ import annotations

@@ -60,7 +60,7 @@ def test_eval_defaults_to_full_menus_on_banking77_massive_and_boolq():
 
 def test_desc_eval_sets_ask_the_same_questions_with_descriptions_on_the_menu():
     """banking77-desc / massive-desc 与 banking77 / massive 逐题相同 (消息、菜单顺序、正确位置),
-    只有菜单上显示的文字换成 datasets/label-descriptions 里的 description."""
+    只有菜单上显示的文字换成「原始名: description」(description 取自 datasets/label-descriptions)."""
     _, ev, _ = _mod.build_data(_args("massive", eval="banking77+banking77-desc+massive+massive-desc"))
     for raw, desc, f in (("banking77", "banking77-desc", "banking77.json"), ("massive", "massive-desc", "massive.json")):
         d = json.loads((DESC_DIR / f).read_text())
@@ -69,7 +69,7 @@ def test_desc_eval_sets_ask_the_same_questions_with_descriptions_on_the_menu():
         for x, y in zip(a, b):
             assert (x.query, x.options, x.gold_idx, x.label, x.context_label) == \
                    (y.query, y.options, y.gold_idx, y.label, y.context_label)
-            assert y.option_names == [d[n] for n in x.option_names]
+            assert y.option_names == [f"{n}: {d[n]}" for n in x.option_names]
 
 
 def test_eval_takes_a_subset():

@@ -82,8 +82,9 @@ def parse_datasets(spec: str) -> list[str]:
 def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     """--eval 列的评估集, 与训练集无关. 菜单全量、连续编号; 每个集合的菜单用 Random(seed + 菜单长度) 组,
     MASSIVE 那份因此与 scripts/eval-massive.py 的 k=60 逐题相同. 训练里已读过的 split 可以传进来复用.
-    banking77 / massive 的菜单显示原始 label 名; -desc 那两个显示 datasets/label-descriptions 里的 description,
-    菜单用同一个 Random 组, 于是与不带 -desc 的逐题相同 (消息、选项顺序、正确位置), 只换了选项的文字.
+    banking77 / massive 的菜单显示原始 label 名; -desc 那两个显示「原始名: description」(description 在
+    datasets/label-descriptions, 写法同推理服务的选项), 菜单用同一个 Random 组, 于是与不带 -desc 的逐题相同
+    (消息、选项顺序、正确位置), 只换了选项的文字.
     simple 是 datasets/synth-simple-eval, 菜单写死在文件里 (不受 --k-eval / --seed 影响), 展开成每个菜单长度一个集合.
     jevbench 是 JevBench 的三档公开题 (第一次用时下载到 data/jevbench, 不进仓库), 同样写死, 展开成 jevbench_easy / _original / _hard;
     hard 的提示最长 3838 token, 批取四分之一, 一批的 token 数与 BoolQ 那档相当."""
@@ -295,8 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
     ap.add_argument("--eval", default="banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench",
                     help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单, 原始 label 名) / "
-                         "banking77-desc (同一批题, 菜单显示 description) / "
-                         "massive (test 2974 条, 60 类全量菜单, 原始 intent 名) / massive-desc (同一批题, 显示 description) / "
+                         "banking77-desc (同一批题, 菜单显示「原始名: description」) / "
+                         "massive (test 2974 条, 60 类全量菜单, 原始 intent 名) / massive-desc (同一批题, 「原始名: description」) / "
                          "boolq (validation 3270 条) / "
                          "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes) / "
                          "jevbench (JevBench 公开题 easy 48 / original 72 / hard 111, 按推理服务收到请求时的样子出题)")

@@ -1,6 +1,6 @@
 """Banking77 适配: 读上游 CSV (钉 commit + md5), 给出 queries / labels / names.
 
-菜单上显示的文字由 labels 选: raw 原始 label 名 (默认), desc 写好的 description, 见 decidophobia.data.label_names.
+菜单上显示的文字由 labels 选: raw 原始 label 名 (默认), desc「原始名: description」, 见 decidophobia.data.label_names.
 与 scripts/baseline-banking77.py 的 load_split 同源. 那个脚本是独立产物, 不从包里 import.
 """
 

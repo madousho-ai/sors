@@ -33,11 +33,12 @@ def test_intent_ids_follow_sorted_raw_names_and_the_names_are_shown_raw():
     assert "iot_hue_lightchange" in te.names.values()
 
 
-def test_desc_names_are_the_descriptions_with_the_same_class_ids():
-    """labels="desc": 同一个类 id 显示 datasets/label-descriptions/massive.json 里它的 description; train 分区同样可用."""
+def test_desc_names_are_key_and_description_with_the_same_class_ids():
+    """labels="desc": 同一个类 id 显示「原始 intent 名: description」(description 取自 datasets/label-descriptions/massive.json),
+    与推理服务、synth-v5 的选项同一种写法; train 分区同样可用."""
     raw, te = load_massive(), load_massive(labels="desc")
     desc = json.loads((DESC_DIR / "massive.json").read_text())
-    assert te.names == {c: desc[n] for c, n in raw.names.items()}
+    assert te.names == {c: f"{n}: {desc[n]}" for c, n in raw.names.items()}
     assert te.queries == raw.queries and te.labels == raw.labels
     assert load_massive(partition="train", labels="desc").names == te.names
 
