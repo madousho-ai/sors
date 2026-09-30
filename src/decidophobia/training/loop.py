@@ -11,13 +11,13 @@ import json
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import torch
 
-from decidophobia.core.batch import collate, pair_alignment
+from decidophobia.core.batch import collate, pair_alignment, trim_left_padding
 from decidophobia.core.menu import MenuExample, arrangements
-from decidophobia.core.model import grouped_last_logits, trainable_param_groups
+from decidophobia.core.model import grouped_last_logits, last_logits, trainable_param_groups
 from decidophobia.core.prompt import DEFAULT_LAYOUT
 from decidophobia.evaluation.scoring import EvalSet, consistency_eval, evaluate
 from decidophobia.training.loss import consistency_js, menu_hits, smooth_target, training_loss
@@ -50,6 +50,7 @@ class TrainConfig:
     micro_batches: int = 1  # 每步的 prompt 按长度分几组各自前向 (model.grouped_last_logits); 1 = 整批一次, 旧行为
     log_every: int = 20
     seed: int = 0
+    accumulate_gradients: bool = False  # 每组立即反传，保持一个逻辑 batch 一次更新
 
 
 class Fp32Master:
@@ -148,9 +149,46 @@ def step_loss(
     return ce + cfg.consistency * js, ce, js
 
 
+def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids: list[int]):
+    """完整 JS 配对一起分组，每组立即反传；调用方整步只清一次梯度、更新一次。
+
+    CE 按 prompt、JS 按 pair 取平均，完整配对使二者均可乘本组 prompt 数 / 整批 prompt 数。
+    返回整步的 detached CE、JS、hits、n，各组的计算图在循环内释放。
+    """
+    size = len(exs)
+    paired = cfg.consistency > 0
+    width = 2 if paired else 1
+    if size == 0 or size % width or cfg.micro_batches < 1:
+        raise ValueError("empty batch, incomplete consistency pairs, or invalid micro_batches")
+    alignment = pair_alignment(exs, b["slot_ids"].shape[1]).to(b["input_ids"].device) if paired else None
+    target = step_target(exs, b, cfg.label_smoothing)
+    lengths = b["attention_mask"].sum(1).reshape(-1, width).max(1).values
+    order = torch.argsort(lengths, descending=True, stable=True)
+    ce_sum, js_sum, hits_sum, n_sum = 0.0, 0.0, 0, 0
+    for units in torch.tensor_split(order, min(cfg.micro_batches, len(order))):
+        rows = (units[:, None] * width + torch.arange(width, device=units.device)).flatten()
+        input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
+        logits = last_logits(m, input_ids, mask)
+        slots, gold, targets = b["slot_ids"][rows], b["gold"][rows], b["target"][rows]
+        ce = training_loss(cfg.loss, logits, slots, gold, d_ids,
+                           target=None if target is None else target[rows])
+        js = consistency_js(logits, slots, alignment[units]) if paired else None
+        weight = len(rows) / size
+        loss = ce if js is None else ce + cfg.consistency * js
+        (weight * loss).backward()
+        ce_sum += weight * ce.item()
+        if js is not None:
+            js_sum += weight * js.item()
+        hits, n = menu_hits(logits.detach(), slots, targets)
+        hits_sum, n_sum = hits_sum + hits, n_sum + n
+        del logits, loss, ce, js
+    return ce_sum, js_sum if paired else None, hits_sum, n_sum
+
+
 def train(
     m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
     cfg: TrainConfig, log_path=None, writer=None, guard=None, on_checkpoint: Callable[[int], None] | None = None,
+    *, resume: dict | None = None, on_state: Callable[[dict], None] | None = None, stop_after: int | None = None,
 ) -> list[dict]:
     """跑 cfg.steps 步 (0 = 只评估). 返回评估记录. 每条记录也追加写到 log_path.
 
@@ -160,6 +198,11 @@ def train(
 
     on_checkpoint(step): cfg.save_every > 0 时, 每 save_every 步做完 (同一步有评估就在评估之后) 叫一次,
     由调用方把 m 存下来. 最后一步不叫, 训练结束后调用方本来就存.
+
+    resume: 完整状态或旧权重恢复的 {step, history}；sample_fn 必须是尚未推进的原数据管线。
+    cfg.steps 始终是原目标步数。stop_after 只限制本次执行的更新次数，完整更新后可由 on_state 存档。
+    on_state 在 save_every 边界及本次末步收到模型、master、optimizer、RNG 和统计窗口；应同步复制/写盘。
+    原采样器内部状态通过完整重放 step 次采样调用重建，native 状态额外校验采样 RNG 一致。
 
     writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量:
       train/loss, train/lr_*        每 log_every 步. train/loss 只是交叉熵, 与加一致性项之前的 run 同一个量
@@ -175,12 +218,28 @@ def train(
     log_path 的每条记录另有 train_accuracy / train_accuracy_n: 上一个评估点以来全部训练题上的正确率与题数
     (step 0 还没训练, 是 None / 0).
     """
+    # sample_fn 必须是新建的原版本管线。重建全部采样调用，包含 queue、码计数、问法与配对的随机流。
+    start = int(resume["step"]) if resume else 0
+    if not 0 <= start <= cfg.steps or (stop_after is not None and stop_after < 1):
+        raise ValueError("invalid completed step or stop_after")
+    if resume and "config" in resume:
+        changed = {k for k, v in resume["config"].items() if k not in ("micro_batches", "accumulate_gradients")
+                   and asdict(cfg).get(k) != v}
+        if changed:
+            raise ValueError(f"resume config changed: {sorted(changed)}")
+    end = cfg.steps if stop_after is None else min(cfg.steps, start + stop_after)
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
-    history: list[dict] = []
+    for i in range(start):
+        sample_fn(cfg.batch_size, rng)
+        if (i + 1) % 250 == 0:
+            print(f"resume: restored sampling through step {i + 1}/{start}", flush=True)
+    if resume and "rng" in resume and rng.getstate() != resume["rng"]:
+        raise ValueError("sampler replay diverged: verify original data, code, arguments and Python version")
+    history: list[dict] = list(resume.get("history", [])) if resume else []
     log_f = open(log_path, "a") if log_path else None
-    waits = 0
-    since_eval = [0, 0]  # 上一个评估点以来训练题的 (答对, 计入)
+    waits = resume.get("waits", 0) if resume else 0
+    since_eval = list(resume.get("since_eval", [0, 0])) if resume else [0, 0]
     probes = {name: probe_passes(es.examples, cfg.probe_size, cfg.probe_passes, f"probe-{cfg.seed}-{name}")
               for name, es in eval_sets.items()}
 
@@ -212,14 +271,26 @@ def train(
             log_f.write(line + "\n")
             log_f.flush()
 
-    t0 = time.time()
+    elapsed = resume.get("elapsed", history[-1].get("t", 0) if history else 0) if resume else 0
+    t0 = time.time() - elapsed
     m.train()
-    do_eval(0, None, final=cfg.steps == 0)
+    if resume is None:
+        do_eval(0, None, final=cfg.steps == 0)
     if cfg.steps == 0:
         if log_f:
             log_f.close()
         return history
 
+    params = {n: p for n, p in m.named_parameters() if p.requires_grad}
+    full = resume is not None and "optimizer" in resume
+    if full:
+        if params.keys() != resume["model"].keys():
+            raise ValueError("trainable parameter names differ from the training state")
+        with torch.no_grad():
+            for name, p in params.items():
+                if p.shape != resume["model"][name].shape or p.dtype != resume["model"][name].dtype:
+                    raise ValueError(f"resume parameter shape or dtype mismatch: {name}")
+                p.copy_(resume["model"][name])
     groups = trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed)
     master = Fp32Master(groups[0]["params"])  # 主干那一组 (LoRA 或 full 的主干); rows 那一组照旧
     groups[0]["params"] = master.params
@@ -227,42 +298,84 @@ def train(
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )
-    running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
+    if full:
+        if len(master.params) != len(resume["master"]):
+            raise ValueError("master parameter count differs from the training state")
+        with torch.no_grad():
+            for p, saved in zip(master.params, resume["master"]):
+                if p.shape != saved.shape or p.dtype != saved.dtype:
+                    raise ValueError("master parameter shape or dtype mismatch")
+                p.copy_(saved)
+        opt.load_state_dict(resume["optimizer"])
+        sched.load_state_dict(resume["scheduler"])
+        torch.set_rng_state(resume["torch_rng"].cpu())
+        if resume.get("cuda_rng"):
+            torch.cuda.set_rng_state_all([s.cpu() for s in resume["cuda_rng"]])
+        random.setstate(resume["python_rng"])
+    elif start:
+        # 原逻辑第1501次更新用第1500位置的LR；保持总日程，跳过新warmup。
+        lrs = [base * lr_scale(start, cfg.warmup_steps, cfg.steps, cfg.lr_schedule) for base in sched.base_lrs]
+        for group, lr in zip(opt.param_groups, lrs):
+            group["lr"] = lr
+        sched.last_epoch, sched._step_count, sched._last_lr = start, start + 1, lrs
+    resume_info = dict(resume.get("resume_info", {})) if resume else {}
+    if resume and not full:
+        resume_info.update(optimizer_reset_at=start, torch_rng_reset_at=start,
+                           lr_at_resume=[g["lr"] for g in opt.param_groups])
+    running, running_js, running_hits, running_n = resume.get("running", [0.0, 0.0, 0, 0]) if resume else (0.0, 0.0, 0, 0)
+
+    def capture_state(step):
+        # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。
+        return {"step": step, "config": asdict(cfg), "model": {n: p.detach() for n, p in params.items()},
+                "master": [p.detach() for p in master.params], "optimizer": opt.state_dict(),
+                "scheduler": sched.state_dict(), "rng": rng.getstate(), "torch_rng": torch.get_rng_state(),
+                "cuda_rng": torch.cuda.get_rng_state_all() if next(m.parameters()).is_cuda else [],
+                "python_rng": random.getstate(), "history": list(history), "since_eval": list(since_eval),
+                "running": [running, running_js, running_hits, running_n], "waits": waits,
+                "elapsed": time.time() - t0, "resume_info": resume_info}
+
     dev = next(m.parameters()).device
-    for step in range(1, cfg.steps + 1):
+    for step in range(start + 1, end + 1):
         if guard:
             waits += guard.wait()
         exs = sample_fn(cfg.batch_size, rng)
         b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker, cfg.context_marker)
         b = {k: v.to(dev) for k, v in b.items()}
-        logits = grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches)
-        loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
-        hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])  # 更新之前的模型在这一批上的读数
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        if cfg.accumulate_gradients:
+            ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids)
+        else:
+            logits = grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches)
+            loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
+            hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])
+            loss.backward()
+            ce_value, js_value = ce.item(), js.item() if js is not None else None
+            del logits, loss, ce, js
         master.pull_grads()
         opt.step()
         master.push()
         sched.step()
-        running += ce.item()
+        if cfg.accumulate_gradients:
+            opt.zero_grad(set_to_none=True)  # 更新完成后的梯度可立即释放，评估和存档也留出显存
+        running += ce_value
         running_hits, running_n = running_hits + hits, running_n + n
         since_eval[0] += hits
         since_eval[1] += n
-        if js is not None:
-            running_js += js.item()
+        if js_value is not None:
+            running_js += js_value
         if step % cfg.log_every == 0:
             avg = running / cfg.log_every
             avg_js = running_js / cfg.log_every
             acc = running_hits / running_n if running_n else None
             t = tctl()
-            print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js is not None else "")
+            print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js_value is not None else "")
                   + (f"  acc {acc:.3f}" if acc is not None else "")
                   + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
             if writer:
                 writer.add_scalar("train/loss", avg, step)
                 if acc is not None:
                     writer.add_scalar("train/accuracy", acc, step)
-                if js is not None:
+                if js_value is not None:
                     writer.add_scalar("train/js", avg_js, step)
                 for i, g in enumerate(opt.param_groups):
                     writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
@@ -270,9 +383,11 @@ def train(
                     writer.add_scalar("sys/tctl_c", t, step)
             running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
         if step % cfg.eval_every == 0 or step == cfg.steps:
-            do_eval(step, ce.item(), final=step == cfg.steps)
+            do_eval(step, ce_value, final=step == cfg.steps)
         if on_checkpoint and cfg.save_every > 0 and step % cfg.save_every == 0 and step < cfg.steps:
             on_checkpoint(step)
+        if on_state and (step == end or (cfg.save_every > 0 and step % cfg.save_every == 0)):
+            on_state(capture_state(step))
     if log_f:
         log_f.close()
     return history
