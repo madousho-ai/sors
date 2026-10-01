@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 
 import torch
@@ -32,6 +32,7 @@ class AttentionChoice:
     gpu: str | None
     capability: tuple[int, int] | None
     reason: str
+    linear_attention: dict[str, str] | None = None
 
 
 def _probe_backend(backend: str, allow_kernel_download: bool, *, capability=None) -> str:
@@ -125,6 +126,59 @@ def add_attention_arguments(parser: argparse.ArgumentParser) -> None:
                              "可用 --no-allow-kernel-download 关闭，需自行安装兼容 kernels")
 
 
+def _configure_linear_attention(lm, *, allow_kernel_download: bool) -> dict[str, str] | None:
+    """Qwen3.5 needs convolution kernels separately from full attention's FA2.
+
+    Configure only those functions on this model. Transformers' default mapping
+    points at mamba-ssm, whose CUDA wheel does not export these convolution APIs.
+    Installed FLA continues to supply the Gated DeltaNet implementation.
+    """
+    if lm.config.get_text_config().model_type != "qwen3_5_text" or lm.device.type != "cuda":
+        return None
+    from transformers import KernelConfig, utils
+
+    native_conv = utils.is_causal_conv1d_available()
+    selected = {
+        "causal_conv1d": "causal-conv1d" if native_conv else "torch",
+        "gated_delta_rule": "flash-linear-attention" if utils.is_flash_linear_attention_available() else "torch",
+    }
+    if native_conv or not allow_kernel_download or not utils.is_kernels_available():
+        return selected
+
+    from kernels import Mode, get_kernel
+
+    repo = "kernels-community/causal-conv1d"
+    names = ("causal_conv1d_fn", "causal_conv1d_update")
+    try:
+        kernel = get_kernel(repo, version=2)
+        if not all(callable(getattr(kernel, name, None)) for name in names):
+            raise ImportError(f"{repo} does not provide both causal convolution functions")
+    except (ImportError, OSError, ValueError) as exc:
+        selected["fallback_reason"] = str(exc)
+        return selected
+
+    config = KernelConfig(
+        kernel_mapping={name: {"cuda": (f"{repo}:{name}", {"version": 2})} for name in names},
+        inherit_mapping=False,
+    )
+    config.sanitize_kernel_mapping(lm)
+    config.create_compatible_mapping(lm)
+    # KernelConfig builds a mapping for the current mode. Add both modes before
+    # activating it, so train/eval and checkpoint replay use the same kernel.
+    for devices in config.kernel_mapping.values():
+        for modes in devices.values():
+            implementation = next(iter(modes.values()))
+            modes[Mode.TRAINING] = modes[Mode.INFERENCE] = implementation
+    # Empty device maps explicitly retain every other layer's implementation,
+    # including the installed FLA package, without inheriting unrelated kernels.
+    for name in config.registered_layer_names.values():
+        config.kernel_mapping.setdefault(name, {})
+    lm.kernel_config = config
+    lm.set_use_kernels(True)
+    selected["causal_conv1d"] = f"{repo}@v2"
+    return selected
+
+
 def load_causal_lm(
     model_id, *, attn_implementation="auto", allow_kernel_download=False, device="cuda", dtype=torch.bfloat16,
     revision=None, local_files_only=False,
@@ -151,9 +205,14 @@ def load_causal_lm(
             model_id, config=config, revision=revision, local_files_only=local_files_only,
             dtype=dtype, attn_implementation=choice.implementation,
         ).to(device)
+        choice = replace(choice, linear_attention=_configure_linear_attention(
+            lm, allow_kernel_download=allow_kernel_download,
+        ))
     actual = lm.config.get_text_config()._attn_implementation
     if actual != choice.implementation:
         raise ValueError(f"model changed requested attention {choice.implementation!r} to {actual!r}")
     print(f"attention: requested={choice.requested} actual={actual} device={device} "
           f"gpu={choice.gpu} capability={choice.capability}; {choice.reason}", flush=True)
+    if choice.linear_attention is not None:
+        print(f"linear-attention: {choice.linear_attention}", flush=True)
     return lm, choice

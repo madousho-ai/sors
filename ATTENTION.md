@@ -4,6 +4,38 @@
 启动日志打印请求的后端、实际加载的实现、GPU 架构和回退原因；训练参数、TensorBoard
 和续跑记录保存实际选择。训练目标、微批划分、优化器与采样算法保持原设置。
 
+## Qwen3 / Qwen3.5 Base 切换
+
+`--model` 选择基模，两种架构共用数据、提示格式、损失和存档接口。本轮验证使用
+`--trainable full`，示例为：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/train.py \
+  --model Qwen/Qwen3-0.6B-Base --dataset synth-v5.1 --trainable full --grad-ckpt
+
+PYTHONPATH=src .venv/bin/python scripts/train.py \
+  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.1 --trainable full --grad-ckpt
+```
+
+Qwen3.5 使用纯文本主干。新增的 256 个 D 标记、3 个类型标记和 2 个上下文标记
+超出基模词表容量时，模型准备阶段按需扩容；原词表中已有的行保持原值。
+容量足够的 Qwen3 保留原有词表大小。存档重载走同一扩容逻辑。
+
+Qwen3.5 的线性注意力另用 `flash-linear-attention` 加速 Gated DeltaNet，卷积优先
+采用已安装的 `causal-conv1d`。允许 Hub 下载时，共用加载器可为卷积选择
+`kernels-community/causal-conv1d` v2，使用适配本机 CUDA 的预编译内核。
+该映射仅作用于当前模型的两个卷积函数，同时覆盖训练和评估模式。
+实际线性注意力选择会打印到日志，并保存到训练参数的 `attention.linear_attention`。
+
+```bash
+# 经操作者确认后安装；加载器自身负责选择内核。
+uv pip install --python .venv/bin/python 'flash-linear-attention==0.5.2' 'kernels>=0.16,<0.17'
+```
+
+缺少加速包时可使用 PyTorch 参考实现。`--no-allow-kernel-download` 保留本地包和
+参考实现路径。A100 已验证卷积 Hub v2、FLA 0.5.2、torch 2.14.0、Transformers 5.17.0
+组合的前后向、左 padding、梯度 checkpoint，以及保存重载。
+
 ## 自动选择
 
 | 显卡架构 | `auto` 候选顺序 |
@@ -83,6 +115,13 @@ PYTHONPATH=src .venv/bin/python tests/test_attention.py
 # 在训练服务器运行真实 CUDA 对照，要求显式 FA2 成功加载
 HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python tests/test_attention_gpu.py \
   --attn-implementation flash_attention_2 --allow-kernel-download
+
+# 词表扩容与 Qwen3.5 的 CPU 接口测试
+PYTHONPATH=src .venv/bin/python tests/test_vocab_capacity.py
+PYTHONPATH=src .venv/bin/python tests/test_qwen35.py
+
+# Qwen3.5 的 CUDA 卷积加速、模式切换与重载测试
+HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python tests/test_qwen35_gpu.py
 ```
 
 GPU 对照覆盖 GQA、左 padding、全参、LoRA 与梯度 checkpoint；比较 SDPA 和 FlashAttention
