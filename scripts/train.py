@@ -46,11 +46,13 @@ import pathlib
 import hashlib
 import random
 import time
+from dataclasses import asdict
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
+from decidophobia.core.attention import add_attention_arguments, load_causal_lm
 from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, save_trained
 from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_partners
 from decidophobia.core.model import TRAINABLE, prepare_model
@@ -259,6 +261,7 @@ def build_data(args):
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
+    add_attention_arguments(ap)
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.1 / massive 用 + 连接; "
                          "synth-v5 是 synth-v5.1 的兼容别名; both = banking77+boolq")
@@ -426,7 +429,9 @@ def main() -> None:
     c_ids = install_context_tokens(tok)
     # 类型行与上下文行永远放开; 不带 --type-marker / --context-marker 时它们不出现在提示里, 梯度为零、原地不动
     train_ids = d_ids + t_ids + c_ids
-    lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
+    lm, attention = load_causal_lm(args.model, attn_implementation=args.attn_implementation,
+                                   allow_kernel_download=args.allow_kernel_download)
+    args.attention = asdict(attention)
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
                       trainable=args.trainable, grad_ckpt=args.grad_ckpt)
     init_cfg = load_trained(m, train_ids, args.init) if args.init else None

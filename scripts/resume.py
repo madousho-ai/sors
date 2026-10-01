@@ -29,8 +29,9 @@ import time
 from dataclasses import asdict
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
+from decidophobia.core.attention import add_attention_arguments, load_causal_lm
 from decidophobia.core.checkpoint import load_trained, save_trained
 from decidophobia.core.model import adapter_config, prepare_model
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
@@ -78,15 +79,20 @@ def _write_json(path, value):
     os.replace(tmp, path)
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__)
+    add_attention_arguments(ap, resume=True)
     ap.add_argument("--run", type=pathlib.Path, required=True)
     ap.add_argument("--checkpoint", type=pathlib.Path)
     ap.add_argument("--allow-optimizer-reset", action="store_true")
     ap.add_argument("--expected-data-commit")
     ap.add_argument("--stop-after", type=int)
     ap.add_argument("--micro-batches", type=int)
-    opts = ap.parse_args()
+    return ap
+
+
+def main():
+    opts = build_parser().parse_args()
     out = opts.run.resolve(strict=True)
     lock = (out / ".resume.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -140,8 +146,14 @@ def main():
     train_ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
     if full and train_ids != meta["train_ids"]:
         raise ValueError("trainable token ids differ from the saved state")
-    lm = AutoModelForCausalLM.from_pretrained(args.model, revision=revision, dtype=torch.bfloat16,
-                                             local_files_only=True).to("cuda")
+    previous_attention = getattr(args, "attention", {})
+    args.attn_implementation = opts.attn_implementation or previous_attention.get("backend", "sdpa")
+    args.allow_kernel_download = (getattr(args, "allow_kernel_download", False)
+                                  if opts.allow_kernel_download is None else opts.allow_kernel_download)
+    lm, attention = load_causal_lm(args.model, revision=revision, local_files_only=True,
+                                   attn_implementation=args.attn_implementation,
+                                   allow_kernel_download=args.allow_kernel_download)
+    args.attention = asdict(attention)
     model_revision = getattr(lm.config, "_commit_hash", None)
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
                       trainable=args.trainable, grad_ckpt=args.grad_ckpt)
@@ -159,7 +171,8 @@ def main():
                 "train_ids": train_ids, "adapter": adapter_config(m), "model_revision": model_revision}
     record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "checkpoint": str(path), "completed_step": start,
               "target_step": cfg.steps, "optimizer_reset": not full, "accumulate_gradients": True,
-              "micro_batches": cfg.micro_batches, "sampling_fingerprint": fingerprint}
+              "micro_batches": cfg.micro_batches, "sampling_fingerprint": fingerprint,
+              "previous_attention": previous_attention, "attention": args.attention}
     with (out / "resume.jsonl").open("a") as f:
         f.write(json.dumps(record) + "\n")
     print("resume: " + json.dumps(record), flush=True)
