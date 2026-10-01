@@ -96,6 +96,17 @@ def prepare_model(
     """
     if trainable not in TRAINABLE:
         raise ValueError(f"unknown trainable {trainable!r}; expected one of {TRAINABLE}")
+    old_vocab = lm.get_input_embeddings().weight.shape[0]
+    required_vocab = max(train_ids) + 1
+    if required_vocab > old_vocab:
+        # Some tokenizers leave fewer spare rows than the slot tokens need. Keep
+        # existing vocabularies intact, including their unused output columns.
+        lm.resize_token_embeddings(required_vocab, mean_resizing=False)
+        # Frozen rows are reconstructed from the base model when loading a
+        # checkpoint. Deterministic tails also cover gaps between train_ids.
+        with torch.no_grad():
+            for layer in (lm.get_input_embeddings(), lm.get_output_embeddings()):
+                layer.weight[old_vocab:].copy_(layer.weight[:old_vocab].mean(0))
     for p in lm.parameters():
         p.requires_grad_(False)
     emb = SlotEmbedding(lm.get_input_embeddings(), train_ids)
