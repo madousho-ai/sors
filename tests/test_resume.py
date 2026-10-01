@@ -268,5 +268,23 @@ def test_completed_native_state_can_finish_export_after_interruption():
         raise AssertionError("invalid step accepted")
 
 
+def test_sampling_fingerprint_tracks_the_v51_dataset():
+    from decidophobia.training.resume import sampling_fingerprint
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        for name in ("scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
+                     "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
+                     "datasets/synth-intents-v5.1/schema.py"):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# source fixture\n")
+        data = root / "datasets/synth-intents-v5.1/telecom.contexts.json"
+        data.write_text('{"domain":"telecom","contexts":[]}')
+        before = sampling_fingerprint(root)
+        data.write_text('{"domain":"telecom","contexts":[{"id":"telecom_changed"}]}')
+        assert sampling_fingerprint(root) != before, "dataset edits must invalidate an old sampling fingerprint"
+
+
 if __name__ == "__main__":
     run(globals())

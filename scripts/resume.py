@@ -109,7 +109,7 @@ def main():
         if not opts.expected_data_commit:
             raise ValueError("old checkpoints require --expected-data-commit to verify original sampler/data")
         sources = ["scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
-                   "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py", "datasets/synth-intents-v5"]
+                   "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py", "datasets/synth-intents-v5.1"]
         subprocess.run(["git", "diff", "--exit-code", opts.expected_data_commit, "--", *sources],
                        cwd=ROOT, check=True)
         if path.parent != out / "checkpoints":
@@ -119,8 +119,8 @@ def main():
             config = json.loads(f.metadata()["config"])
         state = {"step": step, "config": config}
         revision = None
-    if args.dataset != "synth-v5":
-        raise ValueError("this recovery entry point currently verifies synth-v5 runs only")
+    if args.dataset not in ("synth-v5", "synth-v5.1"):
+        raise ValueError("this recovery entry point currently verifies synth-v5.1 runs (legacy alias: synth-v5) only")
     cfg = TrainConfig(**config)
     cfg.accumulate_gradients = True
     if opts.micro_batches is not None:

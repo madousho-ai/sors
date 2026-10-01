@@ -27,13 +27,35 @@ def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
                 consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq",
-                mix=None, mask_descriptions=0.0, passes=None)
+                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
 
 def test_parse_datasets_accepts_massive():
     assert _mod.parse_datasets("banking77+boolq+massive") == ["banking77", "boolq", "massive"]
+
+
+def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
+    from unittest.mock import patch
+    from test_synth_v5_fallback import _marked
+
+    item = _marked()
+    with patch("decidophobia.data.synth_v5.load_synth_v5", return_value=[item]):
+        current, _, info = _mod.build_data(_args("synth-v5.1", eval="simple", fallback_rate=1.0))
+        legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
+    assert current(8, random.Random(0)) == legacy(8, random.Random(0))
+    assert info == old_info
+    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.1", "--fallback-rate", "1"])
+    assert "-fallback1" in _mod.run_tag(args)
+
+
+def test_v51_and_its_legacy_alias_cannot_duplicate_the_dataset():
+    try:
+        _mod.parse_datasets("synth-v5+synth-v5.1")
+    except SystemExit:
+        return
+    raise AssertionError("the same dataset was accepted twice through aliases")
 
 
 def test_dataset_defaults_to_synth():
@@ -224,13 +246,18 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """--dataset synth-v5: 不给 --mix 时六个有数据的目标机会相同. intent 题是 256 行「键: 描述」,
-    v4 的材料 (label 空串) 与 v3 的各种 label 都会出现. 抽到 ambiguous 的成对绑定时一次出两道,
-    所以 256 行的题占样本约 0.149 (每目标 1/6, 再被成对多出来的样本摊薄), 低于 1/6."""
+    """v5.1 的六个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/6。
+    intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 67879, info
+    assert info["synth_v5_items"] == 67939, info
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "edge_case": 1.0,
                                          "long_context": 1.0, "long_menu": 1.0})]
+    full_menus = {}
+    for path in (_SCRIPT.parent.parent / "datasets/synth-intents-v5.1").glob("*.questions.json"):
+        for question in json.loads(path.read_text())["questions"]:
+            if len(question["options"]) == 256:
+                rows = frozenset(f"{key}: {description}" for key, description in question["options"].items())
+                full_menus[rows] = set(question["ask"])
     rng = random.Random(0)
     labels, sizes = set(), collections.Counter()
     for _ in range(60):
@@ -238,7 +265,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
             labels.add(e.context_label)
             sizes["256" if len(e.options) == 256 else "other"] += 1
             if len(e.options) == 256:
-                assert all(": " in n for n in e.option_names) and e.question == "Which option best describes the message?"
+                assert e.question in full_menus[frozenset(e.option_names)], e.question
     assert labels <= V5_LABELS and "" in labels and "Customer message" in labels, labels
     assert 0.10 < sizes["256"] / sum(sizes.values()) < 0.20, sizes
 
@@ -308,30 +335,47 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
     assert reworded > 120, reworded
 
 
-def test_synth_v5_puts_an_other_version_in_the_same_batch_as_its_question():
-    """ambiguous 的 other 版 (菜单末尾多一项兜底) 与原题同一份材料、同一种说法、同一种问法, 总在同一批里.
-    答案要么是兜底项 (原题均分), 要么与原题的答案相同 (对照)."""
-    sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive",
-                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,"
-                                                "ambiguous=95"))
+def test_synth_v5_random_other_view_keeps_one_example_per_draw():
+    sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="simple",
+                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=95"))
     rng = random.Random(0)
-    kinds = collections.Counter()
-    for _ in range(40):
-        batch = sample_fn(8, rng)
-        for o in batch:
-            base = [e for e in batch if e is not o and e.query == o.query and e.question == o.question
-                    and len(e.options) + 1 == len(o.options) and set(e.option_names) < set(o.option_names)]
-            if not base:
-                continue
-            e = base[0]
-            fallback = (set(o.option_names) - set(e.option_names)).pop()
-            if o.option_names[o.gold_idx] == fallback:
-                assert e.target is not None and len(set(e.target)) == 1, "没有选项对得上: 原题均分"
-                kinds["none"] += 1
-            else:
-                assert e.target is None and e.option_names[e.gold_idx] == o.option_names[o.gold_idx]
-                kinds["control"] += 1
-    assert kinds["none"] > 20 and kinds["control"] > 20, kinds
+    assert all(len(sample_fn(8, rng)) == 8 for _ in range(40))
+
+
+def test_fallback_cli_reaches_both_samplers_and_keeps_consistency_views_equal():
+    from unittest.mock import patch
+    from test_synth_v5_fallback import _marked
+
+    item = _marked()
+    for passes in (None, "breadth=1"):
+        for rate, size in ((0.0, 2), (1.0, 3)):
+            args = _mod.build_parser().parse_args(["--dataset", "synth-v5", "--eval", "simple",
+                                                   "--fallback-rate", str(rate), "--consistency", "1"])
+            args.passes = passes
+            with patch("decidophobia.data.synth_v5.load_synth_v5", return_value=[item]):
+                sample, _, info = _mod.build_data(args)
+            assert info["synth_v5_fallback_rate"] == rate
+            batch = sample(8, random.Random(0))
+            assert len(batch) == 16 and all(len(ex.options) == size for ex in batch)
+            for a, b in zip(batch[::2], batch[1::2]):
+                assert a.option_names[a.gold_idx] == b.option_names[b.gold_idx]
+                assert [b.options[j] for j in row_alignment(a, b)] == a.options
+
+
+def test_fallback_cli_rejects_bad_rates_and_requires_v5():
+    for dataset, rate in (("synth", 0.5), ("synth-v5", -0.1), ("synth-v5", 1.1), ("synth-v5", float("nan"))):
+        try:
+            _mod.build_data(_args(dataset, fallback_rate=rate, eval="simple"))
+        except SystemExit as exc:
+            assert "fallback" in str(exc)
+            continue
+        raise AssertionError(f"accepted {dataset=} {rate=}")
+
+
+def test_fallback_rate_is_recorded_in_the_run_tag_for_v5():
+    parser = _mod.build_parser()
+    assert "-fallback0.5" in _mod.run_tag(parser.parse_args(["--dataset", "synth-v5"]))
+    assert "-fallback0" in _mod.run_tag(parser.parse_args(["--dataset", "synth-v5", "--fallback-rate", "0"]))
 
 
 def test_synth_v5_options_are_named_in_the_run_directory():
@@ -346,10 +390,10 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """--passes: 按轮抽, 一轮把每个绑定出一遍, 列出的目标出那么多遍. 成对的两半算一次抽取:
-    67879 个绑定里 741 对, 一轮 67138 次; complex / edge_case / long_context 共 4016 个绑定各多出两遍."""
+    """v5.1 有67939个绑定、742对菜单版本，一轮67197次抽取；
+    complex / edge_case / long_context 共4043个绑定各多出两遍。"""
     _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
-    assert info["synth_v5_round"] == 67138 + 2 * 4016, info
+    assert info["synth_v5_round"] == 67197 + 2 * 4043, info
     assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "edge_case": 3,
                                        "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info

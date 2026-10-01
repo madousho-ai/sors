@@ -14,7 +14,7 @@ import tempfile
 
 from _runner import run
 from decidophobia.core.menu import row_alignment, with_partners
-from decidophobia.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix,
+from decidophobia.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
                                         parse_passes)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -61,7 +61,7 @@ HOTEL_C = [{"id": f"hotel_{k}#{i}", "label": "Customer message", "goal": "long_m
 
 def _data(**over):
     d = pathlib.Path(tempfile.mkdtemp())
-    shutil.copy(REPO / "datasets" / "synth-intents-v5" / "schema.py", d)
+    shutil.copy(REPO / "datasets" / "synth-intents-v5.1" / "schema.py", d)
     files = {"telecom": (TELECOM_Q, TELECOM_C), "hotel": (HOTEL_Q, HOTEL_C), **over}
     for dom, (qs, cs) in files.items():
         (d / f"{dom}.questions.json").write_text(json.dumps({"domain": dom, "questions": qs}))
@@ -346,11 +346,11 @@ def _halves(batch):
             and b.query == a.query and b.question == a.question]
 
 
-def test_drawing_a_pair_gives_both_halves_on_one_phrasing_and_one_wording():
+def test_diagnostic_pair_gives_both_halves_on_one_phrasing_and_one_wording():
     items = _paired()
-    pairs = [p for batch in _draws(items, "long_menu=1,breadth=1,complex=1,ambiguous=20", 6, 100) for p in _halves(batch)]
-    queue = [(a, b) for a, b in pairs if a.context_label == "Security on-call screen"]
-    assert len(queue) > 200, len(queue)
+    base, other = (_find(items, "telecom_amb/queue/0", q) for q in ("pickup", "pickup_other"))
+    rng = random.Random(0)
+    queue = [pair_examples(base, other, rng, 0.0) for _ in range(250)]
     assert {a.query for a, _ in queue} == set(NOTHING_FITS["text"])
     for a, b in queue:
         assert sorted(b.option_names) == sorted(a.option_names + ["None of these alerts"])
@@ -361,16 +361,17 @@ def test_drawing_a_pair_gives_both_halves_on_one_phrasing_and_one_wording():
 def test_a_pair_counts_as_one_draw():
     items = _paired()
     for batch in _draws(items, "long_menu=1,breadth=1,complex=1,ambiguous=3", 10, 50):
-        assert len(batch) == 10 + len(_halves(batch)), (len(batch), len(_halves(batch)))
+        assert len(batch) == 10, len(batch)
 
 
-def test_both_halves_of_a_pair_are_masked_together():
+def test_both_halves_of_a_diagnostic_pair_are_masked_together():
     items = _paired()
     both = collections.Counter()
-    for batch in _draws(items, "long_menu=20,breadth=1,complex=1,ambiguous=1", 6, 200, mask=0.5):
-        for a, b in _halves(batch):
-            if len(a.options) == 4:
-                both[(any(": " in n for n in a.option_names), any(": " in n for n in b.option_names))] += 1
+    base, other = (_find(items, "telecom_cancel_contract#0", q) for q in ("intent", "intent_other"))
+    rng = random.Random(0)
+    for _ in range(200):
+        a, b = pair_examples(base, other, rng, 0.5)
+        both[(any(": " in n for n in a.option_names), any(": " in n for n in b.option_names))] += 1
     assert set(both) == {(True, True), (False, False)}, both
 
 
@@ -417,14 +418,15 @@ def test_the_next_round_starts_where_one_runs_out_in_a_new_order():
     assert len({tuple(r) for r in rounds}) == 4
 
 
-def test_a_pair_is_one_draw_of_a_round_and_brings_both_halves():
+def test_a_pair_is_one_draw_of_a_round_and_brings_one_random_view():
     items = _paired()
     s = V5Rounds(items, parse_passes(None, PAIR_GOALS), 0.0)
     assert s.round_size == len(items) - 2  # 两对, 各少算一次
     rng = random.Random(0)
     batches = [s(s.round_size, rng) for _ in range(4)]
-    assert all(len(b) == s.round_size + len(_halves(b)) for b in batches)
-    got = collections.Counter((_which(items, ex).context_id, _which(items, ex).question_id) for b in batches for ex in b)
+    assert all(len(b) == s.round_size for b in batches)
+    got = collections.Counter((_which(items, ex).context_id, _which(items, ex).question_id.removesuffix("_other"))
+                              for b in batches for ex in b)
     assert set(got.values()) == {4}, got
 
 

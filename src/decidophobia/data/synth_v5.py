@@ -1,6 +1,6 @@
-"""synth-intents v5 适配: datasets/synth-intents-v5/ 的材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
+"""synth-intents v5.1 适配: datasets/synth-intents-v5.1/ 的材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
 
-格式与检查见 datasets/synth-intents-v5/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
+格式与检查见 datasets/synth-intents-v5.1/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
 这里一个绑定读成一个 V5Item, 数据目录里的 schema.py 先把每个领域检查一遍, 有问题就报 ValueError.
 
   选项   模型看到的样子与推理服务相同 (serve.menus.option_row): 键写法「键: 说明」, 说明为 null 只有键;
@@ -17,9 +17,9 @@
 出成样本 (item_example): 随机挑一种问法; 材料有几种说法时挑两种不同的, 一种当上下文, 另一种放进 partner_query
 (开一致性配对时第二份读它); 按比例遮掉说明 (只对 maskable 的题, 两份跟着同一次抽签); 最后打乱行序.
 
-成对 (pair_examples): 一道题的 other 版 (多出一项兜底选项) 与原题绑在同一份材料上时, 抽到哪一半都两半一起出,
-算一次抽取. 两道读同一种说法、同一种问法、遮不遮也相同, 行序各打乱各的. 这和一致性配对是两回事:
-开 --consistency 时两半各自再带一份换了行序的副本.
+兜底增强: 绑定通过 fallback 标记允许添加 Other 或信息不足选项，uncertainty 决定新增项是否为答案。
+fallback_rate 默认 0.5，每次抽取出一个菜单版本。既有 other_of 配对也按该概率选择原版或 Other 版。
+诊断用的 pair_examples 可一次返回两版。--consistency 的第二份复用已经选定的菜单与目标，另换措辞和行序。
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import state_text
 from decidophobia.serve.menus import option_row
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v5"
+DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v5.1"
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,9 @@ class V5Item:
     target: list[float] | None  # 分布答案归一化后的各行概率; None = 硬标签
     gold: int
     pair: int | None = None  # 成对的另一半 (原题与它的 other 版, 同一份材料) 在 load_synth_v5 结果里的下标
+    fallback_row: str | None = None
+    fallback_bare: str | None = None
+    fallback_correct: bool = False
 
 
 def _schema(data_dir: pathlib.Path):
@@ -76,10 +79,18 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
         gold = max(range(len(w)), key=w.__getitem__)
     else:
         target, gold = None, (a if kind == "score" else names.index(a))
+    fallback = b.get("fallback")
+    extra, extra_bare = None, None
+    if fallback:
+        key, description = schema.FALLBACKS[fallback]
+        extra = option_row(key, description) if kind in ("keyed", "yes_no") else description
+        extra_bare = key
     return V5Item(domain=domain, context_id=c["id"], question_id=q["id"], kind=q.get("kind", q["id"]),
                   goal=schema.goal_of(c, b), label=c["label"], texts=[state_text(t) for t in schema.variants(c["text"])],
                   asks=list(q["ask"]), rows=rows, bare=bare, qtype="bool" if kind == "yes_no" else "choice",
-                  target=target, gold=gold)
+                  target=target, gold=gold, fallback_row=extra, fallback_bare=extra_bare,
+                  fallback_correct=(fallback, b.get("uncertainty")) in
+                  (("other", "menu_missing"), ("unknown", "insufficient_evidence")))
 
 
 def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
@@ -93,7 +104,7 @@ def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
         errs = schema.problems(domain, bank, contexts)
         if errs:
             raise ValueError(f"{domain}: {len(errs)} format problems, e.g. {errs[:2]}; "
-                             f"run datasets/synth-intents-v5/schema.py {domain} to see them all")
+                              f"run datasets/synth-intents-v5.1/schema.py {domain} to see them all")
         by_id = {q["id"]: q for q in bank}
         for c in contexts:
             start = len(out)
@@ -126,8 +137,27 @@ def _example(it: V5Item, masked: bool, query: str, other: str | None, question: 
     return reorder_menu(ex, rng.sample(range(k), k))
 
 
-def item_example(it: V5Item, rng: random.Random, mask_rate: float) -> MenuExample:
-    """一个绑定出一道题. 抽随机数的顺序固定: 遮不遮 -> 说法 -> 问法 -> 行序."""
+def _check_fallback_rate(rate: float) -> None:
+    if not 0 <= rate <= 1:
+        raise ValueError(f"fallback_rate must be a probability in 0..1, got {rate}")
+
+
+def _add_fallback(it: V5Item) -> V5Item:
+    """Create one augmented view without modifying the stored source item."""
+    k = len(it.rows)
+    if k >= 256:
+        raise ValueError("fallback augmentation needs a free menu slot (maximum 256)")
+    target = None if it.fallback_correct or it.target is None else [*it.target, 0.0]
+    return replace(it, rows=[*it.rows, it.fallback_row],
+                   bare=[*it.bare, it.fallback_bare] if it.bare is not None else None,
+                   gold=k if it.fallback_correct else it.gold, target=target, qtype="choice")
+
+
+def item_example(it: V5Item, rng: random.Random, mask_rate: float, fallback_rate: float = 0.5) -> MenuExample:
+    """Choose a fallback view, then descriptions, phrasings, question wording and row order."""
+    _check_fallback_rate(fallback_rate)
+    if it.fallback_row is not None and fallback_rate > 0 and (fallback_rate == 1 or rng.random() < fallback_rate):
+        it = _add_fallback(it)
     masked, query, other = _choose(it, rng, mask_rate)
     return _example(it, masked, query, other, rng.choice(it.asks), rng)
 
@@ -186,10 +216,14 @@ class V5Sampler:
     """训练批里 v5 的那一份. 每调用一次算训练的一步 (train() 每步调一次 sample_fn), 配比按这个步数取.
     rate 是遮说明的比例 (只作用在绑定写了 maskable 的题上)."""
 
-    def __init__(self, items: list[V5Item], mix: Mix, mask_rate: float = 0.0):
+    def __init__(self, items: list[V5Item], mix: Mix, mask_rate: float = 0.0, fallback_rate: float = 0.5):
+        _check_fallback_rate(fallback_rate)
+        self.fallback_rate = fallback_rate
         self.items, self.mix, self.mask_rate, self.step = items, mix, mask_rate, 0
         tree: dict = {}
         for i, it in enumerate(items):
+            if it.pair is not None and i > it.pair:
+                continue
             ctx = tree.setdefault(it.goal, {}).setdefault(it.domain, {}).setdefault(it.kind, {})
             ctx.setdefault(it.context_id, []).append(i)
         # 目标 -> [领域 -> [题型 -> [材料 -> [绑定下标]]]], 各层按名字排序, 抽样与 dict 的插入顺序无关
@@ -200,14 +234,15 @@ class V5Sampler:
             raise ValueError(f"the mix and the data disagree on goals {sorted(missing)}")
 
     def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
-        """n 次抽取. 抽到成对的绑定时两半一起出 (原题在前), 占一次抽取: 一批可能多于 n 道."""
+        """n 次抽取出 n 道题；每个原题/Other 单元随机选择一个菜单版本。"""
         self.step += 1
         weights = mix_at(self.mix, self.step)
         goals = sorted(weights)
         out = []
         for g in rng.choices(goals, [weights[x] for x in goals], k=n):
             ctxs = rng.choice(rng.choice(self.tree[g]))
-            out += unit_examples(self.items, unit_of(self.items, rng.choice(rng.choice(ctxs))), rng, self.mask_rate)
+            out += unit_examples(self.items, unit_of(self.items, rng.choice(rng.choice(ctxs))), rng, self.mask_rate,
+                                 self.fallback_rate)
         return out
 
 
@@ -217,10 +252,14 @@ def unit_of(items: list[V5Item], i: int) -> tuple[int, ...]:
     return (i,) if p is None else tuple(sorted((i, p)))
 
 
-def unit_examples(items: list[V5Item], unit: tuple[int, ...], rng: random.Random, mask_rate: float) -> list[MenuExample]:
+def unit_examples(items: list[V5Item], unit: tuple[int, ...], rng: random.Random, mask_rate: float,
+                  fallback_rate: float = 0.5) -> list[MenuExample]:
+    _check_fallback_rate(fallback_rate)
     if len(unit) == 1:
-        return [item_example(items[unit[0]], rng, mask_rate)]
-    return pair_examples(items[unit[0]], items[unit[1]], rng, mask_rate)
+        return [item_example(items[unit[0]], rng, mask_rate, fallback_rate)]
+    base, other = sorted((items[i] for i in unit), key=lambda it: len(it.rows))
+    augmented = fallback_rate > 0 and (fallback_rate == 1 or rng.random() < fallback_rate)
+    return [item_example(other if augmented else base, rng, mask_rate, fallback_rate=0.0)]
 
 
 # ---------------------------------------------------------------- 按轮抽
@@ -245,9 +284,11 @@ def parse_passes(spec: str | None, goals: set[str]) -> dict[str, int]:
 class V5Rounds:
     """按轮抽: 一轮把每个绑定出一遍, parse_passes 列了遍数的目标出那么多遍, 轮内整体打乱.
     一批从上一批停下的地方接着取, 一轮取完就打乱出下一轮, 一批可以跨过两轮的边界.
-    成对的两半 (原题与 other 版) 算一次抽取、一起出, 同 V5Sampler. round_size 是一轮的抽取次数."""
+    成对的两半 (原题与 other 版) 算一个单元、随机选一版，同 V5Sampler。round_size 是一轮的抽取次数。"""
 
-    def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0):
+    def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0, fallback_rate: float = 0.5):
+        _check_fallback_rate(fallback_rate)
+        self.fallback_rate = fallback_rate
         missing = {it.goal for it in items} ^ set(passes)
         if missing:
             raise ValueError(f"the passes and the data disagree on goals {sorted(missing)}")
@@ -264,5 +305,5 @@ class V5Rounds:
             if not self.queue:
                 self.queue = rng.sample(self.units, len(self.units))[::-1]  # 从尾部 pop, 顺序仍是均匀的
                 self.rounds += 1
-            out += unit_examples(self.items, self.queue.pop(), rng, self.mask_rate)
+            out += unit_examples(self.items, self.queue.pop(), rng, self.mask_rate, self.fallback_rate)
         return out

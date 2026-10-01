@@ -10,12 +10,12 @@
   synth-v3    datasets/synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
-  synth-v5    datasets/synth-intents-v5: v2.5 的客户消息、v3 的材料、v4 的规则材料统一成「材料 + 绑定的题」.
+  synth-v5.1  datasets/synth-intents-v5.1: 客户消息、工单与规则材料统一成「材料 + 绑定的题」；synth-v5 保留为别名.
               选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
               edge_case / long_context / ambiguous), 再领域、题型、材料各自均分; 或者给 --passes 按轮抽, 一轮每个绑定都出,
               列出的目标多出几遍. --mask-descriptions 按比例遮掉可遮的题的选项说明;
-              --consistency 下材料有几种说法时, 配对的第二份读另一种说法. ambiguous 里一道题与它多出 other 选项的版本
-              成对抽出, 算一次抽取, 一批因此可能多于 --batch-size 道 (见 decidophobia/data/synth_v5.py)
+              --consistency 下材料有几种说法时, 配对的第二份读另一种说法. --fallback-rate 默认 0.5,
+              随机加入题目标记的 Other / 信息不足选项；既有 other 配对每次随机选一版，一次抽取出一道题
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
@@ -61,7 +61,7 @@ from decidophobia.training.loop import TrainConfig, train
 from decidophobia.training.loss import LOSSES
 from decidophobia.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5", "massive")
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.1", "synth-v5", "massive")
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench")
 
 
@@ -75,6 +75,9 @@ def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
 
 def parse_datasets(spec: str) -> list[str]:
     names = _parse_list("banking77+boolq" if spec == "both" else spec, KNOWN, "--dataset")
+    names = ["synth-v5" if name == "synth-v5.1" else name for name in names]
+    if len(set(names)) != len(names):
+        raise SystemExit("--dataset: synth-v5.1 and synth-v5 refer to the same dataset; pick one")
     if {"synth", "synth-menu"} <= set(names):
         raise SystemExit("--dataset: synth already includes synth-menu's menu questions; pick one")
     return names
@@ -150,8 +153,14 @@ def build_data(args):
         raise SystemExit(f"--micro-batches is how many length groups a step runs, >= 1; got {args.micro_batches}")
     if not 0.0 <= args.mask_descriptions <= 1.0:
         raise SystemExit(f"--mask-descriptions is a share of maskable questions, 0..1; got {args.mask_descriptions}")
+    requested_fallback = getattr(args, "fallback_rate", None)
+    fallback_rate = 0.5 if requested_fallback is None else requested_fallback
+    if not 0.0 <= fallback_rate <= 1.0:
+        raise SystemExit(f"--fallback-rate must be a probability in 0..1; got {fallback_rate}")
+    if requested_fallback is not None and "synth-v5" not in datasets:
+        raise SystemExit("--fallback-rate only applies to --dataset synth-v5.1 (legacy alias: synth-v5)")
     if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes):
-        raise SystemExit("--mix, --passes and --mask-descriptions only apply to --dataset synth-v5")
+        raise SystemExit("--mix, --passes and --mask-descriptions only apply to --dataset synth-v5.1 (legacy alias: synth-v5)")
     if args.mix and args.passes:
         raise SystemExit("--mix draws goals by weight and --passes draws in rounds; pick one")
     erng = random.Random(args.seed + 1)
@@ -197,15 +206,16 @@ def build_data(args):
         v5 = load_synth_v5()
         goals = {it.goal for it in v5}
         split_info["synth_v5_items"] = len(v5)
+        split_info["synth_v5_fallback_rate"] = fallback_rate
         try:
             if args.passes:
-                rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions)
+                rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions, fallback_rate)
                 split_info["synth_v5_passes"] = rounds.passes
                 split_info["synth_v5_round"] = rounds.round_size
                 samplers.append(rounds)
             else:
                 mix = parse_mix(args.mix, goals)
-                samplers.append(V5Sampler(v5, mix, args.mask_descriptions))
+                samplers.append(V5Sampler(v5, mix, args.mask_descriptions, fallback_rate))
                 split_info["synth_v5_mix"] = mix
         except ValueError as e:
             raise SystemExit(str(e)) from None
@@ -250,7 +260,8 @@ def build_data(args):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="synth",
-                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / massive 用 + 连接; both = banking77+boolq")
+                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.1 / massive 用 + 连接; "
+                         "synth-v5 是 synth-v5.1 的兼容别名; both = banking77+boolq")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
                     help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
@@ -336,6 +347,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--mask-descriptions", type=float, default=0.0,
                     help="synth-v5 里绑定写了 maskable 的题, 以这个比例遮掉全部选项说明只留键 (0..1); "
                          "一致性配对的两份一起遮. 0 = 不遮. 写进目录名")
+    ap.add_argument("--fallback-rate", type=float, default=None,
+                    help="synth-v5 随机兜底增强概率 (0..1，默认 0.5)：按绑定标记加入 Other 或信息不足选项；"
+                         "明确答案对照保持原答案，既有 other 配对随机选一版。一致性配对共用增强决定")
     ap.add_argument("--temp-max", type=float, default=85.0, help="CPU Tctl 超过就暂停 (°C)")
     ap.add_argument("--temp-cooldown", type=float, default=20.0, help="每次暂停多少秒")
     ap.add_argument("--seed", type=int, default=0)
@@ -388,6 +402,7 @@ def run_tag(args) -> str:
         + (f"-ls{args.label_smoothing:g}" if args.label_smoothing > 0 else "") \
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
         + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
+        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.1"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")

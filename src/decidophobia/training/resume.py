@@ -127,8 +127,8 @@ def sampling_fingerprint(repo) -> str:
     root = pathlib.Path(repo)
     names = ["scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
              "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
-             "datasets/synth-intents-v5/schema.py"]
-    files = [root / n for n in names] + sorted((root / "datasets/synth-intents-v5").glob("*.json"))
+             "datasets/synth-intents-v5.1/schema.py"]
+    files = [root / n for n in names] + sorted((root / "datasets/synth-intents-v5.1").glob("*.json"))
     h = hashlib.sha256()
     for path in files:
         h.update(str(path.relative_to(root)).encode())
