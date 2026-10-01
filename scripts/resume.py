@@ -32,7 +32,8 @@ import torch
 from transformers import AutoTokenizer
 
 from decidophobia.core.attention import add_attention_arguments, load_causal_lm
-from decidophobia.core.checkpoint import load_trained, save_trained
+from decidophobia.core.checkpoint import checkpoint_architecture, load_trained, save_trained
+from decidophobia.core.decision import architecture_config, decision_config
 from decidophobia.core.model import adapter_config, prepare_model
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.training.loop import TrainConfig, train
@@ -89,6 +90,28 @@ def build_parser():
     ap.add_argument("--stop-after", type=int)
     ap.add_argument("--micro-batches", type=int)
     return ap
+
+
+def prepare_resume_model(lm, train_ids, args, state, path, *, full):
+    """Build the recorded computation graph before restoring its optimizer state."""
+    if full:
+        meta = state["metadata"]
+        architecture = meta.get("architecture", state.get("architecture", {"kind": "slots"}))
+        if state.get("architecture", {"kind": "slots"}) != architecture:
+            raise ValueError("training state has conflicting architecture metadata")
+    else:
+        architecture = checkpoint_architecture(path)
+        state["architecture"] = architecture
+    m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
+                      trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture))
+    if full:
+        if adapter_config(m) != meta["adapter"]:
+            raise ValueError("adapter configuration differs from the saved state")
+    else:
+        load_trained(m, train_ids, path)
+    if architecture["kind"] == "candidate":
+        m.set_candidate_prefix_cache(state.get("config", {}).get("candidate_prefix_cache", "off"))
+    return m
 
 
 def main():
@@ -154,20 +177,15 @@ def main():
                                    allow_kernel_download=args.allow_kernel_download)
     args.attention = asdict(attention)
     model_revision = getattr(lm.config, "_commit_hash", None)
-    m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
-                      trainable=args.trainable, grad_ckpt=args.grad_ckpt)
-    if full:
-        if adapter_config(m) != meta["adapter"]:
-            raise ValueError("adapter configuration differs from the saved state")
-    else:
-        load_trained(m, train_ids, path)
+    m = prepare_resume_model(lm, train_ids, args, state, path, full=full)
     history = rollback_history(out, start)
     if not full:
         if not history or history[-1]["step"] != start:
             raise ValueError("legacy recovery needs the evaluation record for its checkpoint step")
         state["history"] = history
     metadata = {"args": vars(args), "sampling_fingerprint": fingerprint, "versions": _versions(),
-                "train_ids": train_ids, "adapter": adapter_config(m), "model_revision": model_revision}
+                 "train_ids": train_ids, "adapter": adapter_config(m), "architecture": architecture_config(m),
+                 "model_revision": model_revision}
     record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "checkpoint": str(path), "completed_step": start,
               "target_step": cfg.steps, "optimizer_reset": not full, "accumulate_gradients": True,
               "micro_batches": cfg.micro_batches, "sampling_fingerprint": fingerprint,

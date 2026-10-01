@@ -17,7 +17,8 @@ import torch
 
 from decidophobia.core.batch import collate, pair_alignment, trim_left_padding
 from decidophobia.core.menu import MenuExample, arrangements
-from decidophobia.core.model import grouped_last_logits, last_logits, trainable_param_groups
+from decidophobia.core.model import decision_logits, grouped_last_logits, last_logits, select_batch, trainable_param_groups
+from decidophobia.core.decision import architecture_config
 from decidophobia.core.prompt import DEFAULT_LAYOUT
 from decidophobia.evaluation.scoring import EvalSet, consistency_eval, evaluate
 from decidophobia.training.loss import consistency_js, menu_hits, smooth_target, training_loss
@@ -51,6 +52,7 @@ class TrainConfig:
     log_every: int = 20
     seed: int = 0
     accumulate_gradients: bool = False  # 每组立即反传，保持一个逻辑 batch 一次更新
+    candidate_prefix_cache: str = "off"  # CLI defaults new candidates to auto; old configs retain full forwards.
 
 
 class Fp32Master:
@@ -167,8 +169,11 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     ce_sum, js_sum, hits_sum, n_sum = 0.0, 0.0, 0, 0
     for units in torch.tensor_split(order, min(cfg.micro_batches, len(order))):
         rows = (units[:, None] * width + torch.arange(width, device=units.device)).flatten()
-        input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
-        logits = last_logits(m, input_ids, mask)
+        if getattr(m, "decision_config", None) is not None:
+            logits = decision_logits(m, select_batch(b, rows))
+        else:
+            input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
+            logits = last_logits(m, input_ids, mask)
         slots, gold, targets = b["slot_ids"][rows], b["gold"][rows], b["target"][rows]
         ce = training_loss(cfg.loss, logits, slots, gold, d_ids,
                            target=None if target is None else target[rows])
@@ -219,6 +224,13 @@ def train(
     (step 0 还没训练, 是 None / 0).
     """
     # sample_fn 必须是新建的原版本管线。重建全部采样调用，包含 queue、码计数、问法与配对的随机流。
+    architecture = architecture_config(m)
+    if architecture["kind"] == "candidate":
+        m.set_candidate_prefix_cache(cfg.candidate_prefix_cache)
+    if resume and resume.get("architecture", {"kind": "slots"}) != architecture:
+        raise ValueError("resume architecture differs from the saved decision model")
+    if architecture["kind"] != "slots" and cfg.loss != "menu":
+        raise ValueError("decision architectures define a menu distribution; use loss='menu'")
     start = int(resume["step"]) if resume else 0
     if not 0 <= start <= cfg.steps or (stop_after is not None and stop_after < 1):
         raise ValueError("invalid completed step or stop_after")
@@ -326,7 +338,8 @@ def train(
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。
-        return {"step": step, "config": asdict(cfg), "model": {n: p.detach() for n, p in params.items()},
+        return {"step": step, "config": asdict(cfg), "architecture": architecture,
+                "model": {n: p.detach() for n, p in params.items()},
                 "master": [p.detach() for p in master.params], "optimizer": opt.state_dict(),
                 "scheduler": sched.state_dict(), "rng": rng.getstate(), "torch_rng": torch.get_rng_state(),
                 "cuda_rng": torch.cuda.get_rng_state_all() if next(m.parameters()).is_cuda else [],
@@ -339,13 +352,15 @@ def train(
         if guard:
             waits += guard.wait()
         exs = sample_fn(cfg.batch_size, rng)
-        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker, cfg.context_marker)
+        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker, cfg.context_marker,
+                    architecture=architecture["kind"])
         b = {k: v.to(dev) for k, v in b.items()}
         opt.zero_grad(set_to_none=True)
         if cfg.accumulate_gradients:
             ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids)
         else:
-            logits = grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches)
+            logits = (decision_logits(m, b, cfg.micro_batches) if architecture["kind"] != "slots" else
+                      grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches))
             loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
             hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])
             loss.backward()

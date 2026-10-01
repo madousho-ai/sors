@@ -41,7 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-tokens", type=int, default=8192,
                     help="state 加最长那道题的 token 上限, 超了 422. 训练时的提示最长 4096")
     ap.add_argument("--max-batch-tokens", type=int, default=16384,
-                    help="一次前向的 KV cache 预算: 同组问题数 × (state + 组内最长的问题). 显存紧就调小")
+                     help="一次前向的 KV cache 预算: 同组问题数 × (state + 组内最长的问题). 显存紧就调小")
+    ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off"], default=None,
+                    help="覆盖 candidate 存档的共享前缀执行方式；默认继承存档，旧存档保持 off")
     ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 DECIDOPHOBIA_API_KEY, 也没有就不查")
     ap.add_argument("--demo", action="store_true", help="把 demos/ 下的演示页挂在 /demo/ (手填请求在 /demo/playground/, 贪吃蛇在 /demo/snake/)")
     ap.add_argument("--host", default="127.0.0.1")
@@ -84,7 +86,8 @@ def main() -> None:
     name, base = served_name(args), base_model(args)
     engine = load_engine(args.init, base, context_label=args.context_label, device=args.device,
                          dtype=torch.bfloat16 if args.device.startswith("cuda") else torch.float32,
-                         max_tokens=args.max_tokens, max_batch_tokens=args.max_batch_tokens)
+                         max_tokens=args.max_tokens, max_batch_tokens=args.max_batch_tokens,
+                         candidate_prefix_cache=args.candidate_prefix_cache)
     released = datetime.date.fromtimestamp(pathlib.Path(args.init).stat().st_mtime).isoformat()
     app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {base}",
                      release_date=released, demo_dir=demo_dir(args))

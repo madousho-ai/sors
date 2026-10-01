@@ -29,6 +29,7 @@ def collate(
     max_length: int = 512,
     type_marker: bool = False,
     context_marker: bool = False,
+    architecture: str = "slots",
 ) -> dict[str, torch.Tensor]:
     """返回
       input_ids      (B, L)  左填充
@@ -40,6 +41,10 @@ def collate(
                                  超出菜单长度的位置 0
     提示照 core.prompt 的片段编码: 文字里写着的保留 token 名是普通文字. 超长的截法见 fit.
     """
+    if architecture != "slots":
+        from decidophobia.core.decision_batch import collate_decisions
+        return collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker,
+                                 context_marker, architecture)
     pieces = [sum(prompt_pieces(ex, layout, type_marker, context_marker), []) for ex in examples]
     pad = tokenizer.pad_token_id
     bounds = tuple(tokenizer.convert_tokens_to_ids(CONTEXT_TOKENS)) if context_marker else None
@@ -50,6 +55,11 @@ def collate(
     for i, e in enumerate(encs):
         input_ids[i, L - len(e) :] = torch.tensor(e)
         attn[i, L - len(e) :] = 1
+    return {"input_ids": input_ids, "attention_mask": attn, **targets(examples, d_ids, k_max)}
+
+
+def targets(examples, d_ids, k_max):
+    """Labels and output coordinates shared by all encoders."""
     slot_ids = torch.full((len(examples), k_max), -1, dtype=torch.long)
     target = torch.zeros((len(examples), k_max), dtype=torch.float32)
     for i, ex in enumerate(examples):
@@ -59,7 +69,7 @@ def collate(
         else:
             target[i, : len(ex.options)] = torch.tensor(ex.target, dtype=torch.float32)
     gold = torch.tensor([ex.gold_idx for ex in examples], dtype=torch.long)
-    return {"input_ids": input_ids, "attention_mask": attn, "slot_ids": slot_ids, "gold": gold, "target": target}
+    return {"slot_ids": slot_ids, "gold": gold, "target": target}
 
 
 def length_groups(attention_mask: torch.Tensor, n: int) -> list[torch.Tensor]:

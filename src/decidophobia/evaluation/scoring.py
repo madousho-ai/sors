@@ -39,9 +39,11 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
     dev = next(m.parameters()).device
     out = {"q": [], "gold": [], "vocab_ce": [], "m_answer": [], "m_offmenu": [], "top1_in": []}
     for s in range(0, len(examples), batch_size):
-        b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker, context_marker)
+        kind = getattr(getattr(m, "decision_config", None), "kind", "slots")
+        b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker, context_marker,
+                    architecture=kind)
         b = {k: v.to(dev) for k, v in b.items()}
-        logits = last_logits(m, b["input_ids"], b["attention_mask"])
+        logits = m.forward_batch(b) if kind != "slots" else last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
         ma, off, top1 = answer_mass(logits, b["slot_ids"], d_ids)
         out["q"].extend(q.cpu().tolist())

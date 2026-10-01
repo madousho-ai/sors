@@ -12,6 +12,7 @@ from dataclasses import asdict
 import torch
 
 from decidophobia.core.model import adapter_config, prepare_model
+from decidophobia.core.decision import architecture_config, decision_config
 
 
 def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
@@ -25,6 +26,10 @@ def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
                if p.requires_grad and not n.endswith(".rows")}
     tensors["d_embed"] = rows.detach().cpu().contiguous()
     meta = {"d_ids": train_ids, "config": asdict(cfg), "adapter": adapter_config(m)}
+    if architecture_config(m)["kind"] != "slots":
+        meta["architecture"] = architecture_config(m)
+        if meta["architecture"]["kind"] == "candidate":
+            meta["config"]["candidate_prefix_cache"] = m.candidate_prefix_cache
     save_file(tensors, str(path), metadata={k: json.dumps(v) for k, v in meta.items()})
 
 
@@ -58,10 +63,23 @@ def checkpoint_adapter(path) -> dict:
     return read_checkpoint(path).get("adapter", LEGACY_ADAPTER)
 
 
+def checkpoint_architecture(path) -> dict:
+    """Architecture is independent of which backbone parameters were trainable."""
+    if _is_safetensors(path):
+        from safetensors import safe_open
+        with safe_open(str(path), framework="pt") as f:
+            record = json.loads(f.metadata().get("architecture", '{"kind": "slots"}'))
+    else:
+        record = read_checkpoint(path).get("architecture", {"kind": "slots"})
+    decision_config(record)  # Validate unknown kinds/fields before allocating a model.
+    return record
+
+
 def prepare_from_checkpoint(lm, train_ids: list[int], path, lora_dropout: float = 0.0):
     """只拿基模和一份存档还原训练好的模型: 照档里记的放开范围 prepare_model, 再 load_trained.
     返回 (模型, 档里的训练 config). dropout 只在训练时生效, 评估用 0."""
-    m = prepare_model(lm, train_ids, lora_dropout=lora_dropout, **checkpoint_adapter(path))
+    m = prepare_model(lm, train_ids, lora_dropout=lora_dropout, **checkpoint_adapter(path),
+                      decision=decision_config(checkpoint_architecture(path)))
     return m, load_trained(m, train_ids, path)
 
 
@@ -76,6 +94,11 @@ def load_trained(m, train_ids: list[int], path) -> dict:
     缩放却是错的, 所以在这里对一遍.
     """
     ck = read_checkpoint(path)
+    architecture = architecture_config(m)
+    if ck.get("architecture", {"kind": "slots"}) != architecture:
+        raise ValueError("checkpoint architecture differs from this decision model")
+    if architecture["kind"] == "candidate":
+        m.set_candidate_prefix_cache(ck["config"].get("candidate_prefix_cache", "off"))
     want, got = ck.get("adapter", LEGACY_ADAPTER), adapter_config(m)
     if want != got:
         raise ValueError(f"checkpoint was trained with {want}, this model has {got}")
@@ -86,6 +109,10 @@ def load_trained(m, train_ids: list[int], path) -> dict:
     missing = [n for n in ck["lora"] if n not in params]
     if missing:
         raise ValueError(f"{len(missing)} tensors in checkpoint have no home in this model, e.g. {missing[0]}")
+    if architecture["kind"] != "slots":
+        required = {n for n, p in params.items() if p.requires_grad and not n.endswith(".rows")}
+        if required != set(ck["lora"]):
+            raise ValueError(f"decision checkpoint has missing or unexpected weights: {required ^ set(ck['lora'])}")
     with torch.no_grad():
         for name, t in ck["lora"].items():
             params[name].copy_(t.to(params[name].dtype))

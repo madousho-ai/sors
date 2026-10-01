@@ -48,6 +48,7 @@ import json
 import pathlib
 import hashlib
 import random
+import sys
 import time
 from dataclasses import asdict
 
@@ -56,7 +57,8 @@ from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoTokenizer
 
 from decidophobia.core.attention import add_attention_arguments, load_causal_lm
-from decidophobia.core.checkpoint import checkpoint_adapter, load_trained, save_trained
+from decidophobia.core.checkpoint import checkpoint_adapter, checkpoint_architecture, load_trained, save_trained
+from decidophobia.core.decision import DecisionConfig, architecture_config, decision_config
 from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_partners
 from decidophobia.core.model import TRAINABLE, prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
@@ -289,7 +291,19 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--trainable", default=None, choices=sorted(TRAINABLE),
                     help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA; "
                          "full 主干全参 (每层全部权重 + 最后的 norm, 词表矩阵照旧只放 D 行, --lr-lora 管主干). "
-                         "不给 = attn; 配 --init 时取档里记的")
+                          "decision-only 只训新增决策层与 token 行. 不给 = slots 用 attn、新决策架构用 decision-only; 配 --init 时取档里记的")
+    ap.add_argument("--architecture", choices=["slots", "minimal", "structural", "candidate"], default=None,
+                    help="slots 原 D 码读出 (默认); minimal 串行菜单顶部决策块; structural 独立选项与中后层支路; "
+                         "candidate 逐项联合编码完整上下文/问题/选项，再做集合交互")
+    ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off"], default=None,
+                    help="candidate 前缀共享：auto 在推理/编码器冻结时启用（新模型默认）；on 强制且拒绝丢弃编码器梯度；off 完整前向对照。配 --init 默认继承")
+    ap.add_argument("--decision-feedback", action=argparse.BooleanOptionalAction, default=None,
+                    help="独立开启/关闭选项向主干回写，默认关闭；新增分支的回写投影从零起步")
+    ap.add_argument("--decision-dim", type=int, default=None, help="决策支路宽度，默认128")
+    ap.add_argument("--decision-heads", type=int, default=None, help="决策注意力头数，默认4")
+    ap.add_argument("--decision-blocks", type=int, default=None, help="决策块数，默认2；candidate 支持0以单独测标量读出")
+    ap.add_argument("--decision-layers", default=None, help="零起始主干层下标，用逗号分隔；默认按架构选择")
+    ap.add_argument("--decision-option-batch-size", type=int, default=None, help="独立选项编码每批最多几项，默认32")
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS,
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
     ap.add_argument("--type-marker", action="store_true",
@@ -330,7 +344,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="每隔几步跑一次探针: 只报一致性. 全量评估集的正确率与一致性只在最后一步跑")
     ap.add_argument("--save-every", type=int, default=None,
                     help="每隔几步存一次档到 checkpoints/step-<步数>.safetensors. 不给 = 与 --eval-every 相同, "
-                         "每个评估点存一次; 0 = 途中不存. 最后一步照旧只存 trained.safetensors")
+                          "每个评估点存一次; 0 = 途中不存. 最后一步照旧只存 trained.safetensors")
+    ap.add_argument("--save-training-state", action="store_true",
+                    help="同时保存 latest.trainstate.safetensors，包含优化器/RNG；full 模式需要额外磁盘空间")
     ap.add_argument("--probe-size", type=int, default=200,
                     help="探针: 每个评估集固定抽几道题 (不够就全部), 整场训练每个评估点都是这一批")
     ap.add_argument("--probe-passes", type=int, default=5,
@@ -389,10 +405,51 @@ def resolve_adapter(args) -> dict:
         if bad:
             raise SystemExit(f"{bad} contradicts {args.init}, which was trained with {ck}; drop the flags to use it")
         return ck
-    trainable = given["trainable"] or "attn"
-    if trainable in ("d-only", "full"):
+    trainable = given["trainable"] or ("decision-only" if getattr(args, "architecture", None) in ("minimal", "structural", "candidate") else "attn")
+    if trainable in ("d-only", "full", "decision-only"):
         return {"trainable": trainable, "lora_r": None, "lora_alpha": None}
     return {"trainable": trainable, "lora_r": given["lora_r"] or 8, "lora_alpha": given["lora_alpha"] or 16}
+
+
+def resolve_architecture(args) -> dict:
+    """Reconstruction settings are inherited as a unit; explicit conflicts fail."""
+    given = {key: getattr(args, f"decision_{key}", None)
+             for key in ("dim", "heads", "blocks", "layers", "feedback", "option_batch_size")}
+    given["kind"] = getattr(args, "architecture", None)
+    if isinstance(given["layers"], str):
+        try:
+            given["layers"] = [int(v) for v in given["layers"].split(",")]
+        except ValueError:
+            raise SystemExit("--decision-layers needs comma-separated integer indices") from None
+    explicit = {k: v for k, v in given.items() if v is not None}
+    if args.init:
+        record = checkpoint_architecture(args.init)
+        if any(record.get(k) != v for k, v in explicit.items()):
+            raise SystemExit(f"architecture flags {explicit} contradict checkpoint {record}")
+        return record
+    kind = given["kind"] or "slots"
+    if kind == "slots":
+        if explicit.keys() - {"kind"}:
+            raise SystemExit("--decision-* flags require --architecture minimal, structural or candidate")
+        return {"kind": "slots"}
+    try:
+        config = DecisionConfig(**explicit)
+    except (ValueError, TypeError) as exc:
+        raise SystemExit(str(exc)) from None
+    return {**asdict(config), "layers": list(config.layers) if config.layers is not None else None}
+
+
+def resolve_candidate_prefix_cache(args, saved_config) -> str:
+    mode = getattr(args, "candidate_prefix_cache", None)
+    if args.architecture != "candidate":
+        if mode is not None:
+            raise SystemExit("--candidate-prefix-cache requires --architecture candidate")
+        return "off"
+    if mode is None:
+        mode = (saved_config or {}).get("candidate_prefix_cache", "off") if args.init else "auto"
+    if mode not in ("auto", "on", "off"):
+        raise SystemExit("candidate prefix cache mode must be auto, on or off")
+    return mode
 
 
 def resolve_save_every(args) -> int:
@@ -426,14 +483,28 @@ def run_tag(args) -> str:
         + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.1"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
-        + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "")
+        + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
+        + (f"-{args.architecture}-decision{hashlib.sha1(json.dumps(resolve_architecture(args), sort_keys=True).encode()).hexdigest()[:6]}"
+           if getattr(args, "architecture", None) in ("minimal", "structural", "candidate") else "")
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    architecture = resolve_architecture(args)
+    args.architecture = architecture["kind"]
+    if args.candidate_prefix_cache is not None and args.architecture != "candidate":
+        raise SystemExit("--candidate-prefix-cache requires --architecture candidate")
+    if args.architecture != "slots" and args.loss != "menu":
+        raise SystemExit("new decision architectures output a K-way distribution; pass --loss menu")
+    if args.architecture in ("structural", "candidate") and args.layout != "context-first":
+        raise SystemExit(f"{args.architecture} architecture requires --layout context-first")
     vars(args).update(resolve_adapter(args))  # 之后目录名、prepare_model、result.json 读的都是同一个形状
+    if args.trainable == "decision-only" and args.architecture == "slots":
+        raise SystemExit("--trainable decision-only requires --architecture minimal, structural or candidate")
     args.save_every = resolve_save_every(args)
     datasets = parse_datasets(args.dataset)
+    if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.1"):
+        raise SystemExit("--save-training-state requires --dataset synth-v5.1 (or synth-v5), matching the resume CLI contract")
 
     tag = run_tag(args)
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
@@ -450,9 +521,16 @@ def main() -> None:
     lm, attention = load_causal_lm(args.model, attn_implementation=args.attn_implementation,
                                    allow_kernel_download=args.allow_kernel_download)
     args.attention = asdict(attention)
+    if args.architecture != "slots":
+        torch.manual_seed(args.seed)  # Includes the new head and token-row initialization.
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
-                      trainable=args.trainable, grad_ckpt=args.grad_ckpt)
+                       trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture))
+    if args.architecture != "slots":
+        args.decision_layers = architecture_config(m)["layers"]
     init_cfg = load_trained(m, train_ids, args.init) if args.init else None
+    args.candidate_prefix_cache = resolve_candidate_prefix_cache(args, init_cfg)
+    if args.architecture == "candidate":
+        m.set_candidate_prefix_cache(args.candidate_prefix_cache)
 
     k_pad = max([args.k_max, args.k_eval] + [len(e.options) for es in eval_sets.values() for e in es.examples])
     cfg = TrainConfig(
@@ -464,12 +542,13 @@ def main() -> None:
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
         eval_every=args.eval_every, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
+        candidate_prefix_cache=args.candidate_prefix_cache,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
     writer.add_text("args", json.dumps(vars(args), indent=2), 0)
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
-    print(f"dataset={'+'.join(datasets)} trainable={args.trainable} layout={args.layout} loss={args.loss} "
+    print(f"dataset={'+'.join(datasets)} architecture={args.architecture} prefix_cache={args.candidate_prefix_cache} trainable={args.trainable} layout={args.layout} loss={args.loss} "
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"consistency={args.consistency:g} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
@@ -481,8 +560,23 @@ def main() -> None:
         save_trained(m, train_ids, cfg, path)
         print(f"step {step:5d}  saved {path}", flush=True)
 
+    on_state = None
+    if args.save_training_state:
+        import transformers
+        from decidophobia.training.resume import sampling_fingerprint, save_state
+        metadata = {"args": vars(args), "sampling_fingerprint": sampling_fingerprint(pathlib.Path(__file__).resolve().parents[1]),
+                    "versions": {"python": sys.version, "torch": str(torch.__version__), "transformers": transformers.__version__},
+                    "train_ids": train_ids, "adapter": resolve_adapter(args), "architecture": architecture_config(m),
+                    "model_revision": getattr(lm.config, "_commit_hash", None)}
+
+        def on_state(value):
+            path = out / "checkpoints" / "latest.trainstate.safetensors"
+            path.parent.mkdir(exist_ok=True)
+            save_state({**value, "metadata": metadata}, path)
+            print(f"step {value['step']:5d} saved complete training state {path}", flush=True)
+
     history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard,
-                    on_checkpoint=save_checkpoint)
+                    on_checkpoint=save_checkpoint, on_state=on_state)
     writer.close()
     if args.steps > 0:
         save_trained(m, train_ids, cfg, out / "trained.safetensors")

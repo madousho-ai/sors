@@ -33,7 +33,7 @@ LORA_TARGETS: dict[str, list[str]] = {
 # 0.6B 的主干约 4.4 亿参数, AdamW 状态加 fp32 主权重 (training.loop.Fp32Master) 约 7 GB, 8GB 卡放不下, 在 A100 上跑.
 # 早先不做全参还有一个理由: 它让模型有能力记住数据集的事实, 留出类的成绩就不再说明泛化.
 # 现在的评估集 (Banking77 / MASSIVE / BoolQ) 整个不进训练, 这一条不再拦着.
-TRAINABLE = (*LORA_TARGETS, "full")
+TRAINABLE = (*LORA_TARGETS, "full", "decision-only")
 
 
 class SlotEmbedding(nn.Module):
@@ -87,6 +87,7 @@ class SlotHead(nn.Module):
 def prepare_model(
     lm, train_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float,
     trainable: str = "attn", grad_ckpt: bool = False,
+    decision=None,
 ):
     """train_ids: 嵌入矩阵里放开的行 —— 256 个 D 行, 加上类型 token 行.
     trainable: TRAINABLE 之一. full 时 lora_r / lora_alpha / lora_dropout 不起作用.
@@ -96,6 +97,8 @@ def prepare_model(
     """
     if trainable not in TRAINABLE:
         raise ValueError(f"unknown trainable {trainable!r}; expected one of {TRAINABLE}")
+    if trainable == "decision-only" and decision is None:
+        raise ValueError("decision-only requires a decision architecture")
     old_vocab = lm.get_input_embeddings().weight.shape[0]
     required_vocab = max(train_ids) + 1
     if required_vocab > old_vocab:
@@ -112,7 +115,7 @@ def prepare_model(
     emb = SlotEmbedding(lm.get_input_embeddings(), train_ids)
     lm.set_input_embeddings(emb)
     lm.lm_head = SlotHead(lm.lm_head, emb)
-    if grad_ckpt:
+    if grad_ckpt and decision is None:
         lm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     if trainable == "full":
         vocab = {id(emb.base.weight), *(id(p) for p in lm.lm_head.base.parameters())}
@@ -120,7 +123,7 @@ def prepare_model(
             if id(p) not in vocab:
                 p.requires_grad_(True)
         m = lm
-    elif not LORA_TARGETS[trainable]:
+    elif trainable == "decision-only" or not LORA_TARGETS[trainable]:
         m = lm
     else:
         cfg = LoraConfig(
@@ -129,15 +132,23 @@ def prepare_model(
         )
         m = get_peft_model(lm, cfg)
         emb.rows.requires_grad_(True)  # get_peft_model 会把 LoRA 之外的全部冻上, rows 要在它之后放开
-    if grad_ckpt:
+    if grad_ckpt and decision is None:
         # checkpoint 段的输入必须 requires_grad, 否则反传在段边界断掉、LoRA 收不到梯度
         m.enable_input_require_grads()
+    if decision is not None:
+        from decidophobia.core.decision import DecisionConfig, DecisionModel
+        cfg = DecisionConfig(**decision) if isinstance(decision, dict) else decision
+        adapter = ({"trainable": "decision-only", "lora_r": None, "lora_alpha": None}
+                   if trainable == "decision-only" else adapter_config(m))
+        return DecisionModel(m, cfg, adapter, grad_ckpt)
     return m
 
 
 def adapter_config(m) -> dict:
     """m 放开的范围, 键名与 prepare_model 的参数同名: 哪一档 (TRAINABLE 之一)、LoRA 的 rank、alpha.
     没套 peft 的看 rows 之外还有没有可训参数: 有就是 full, 没有就是 d-only; 两者 rank 与 alpha 无意义记 None."""
+    if getattr(m, "decision_config", None) is not None:
+        return dict(m.adapter)
     peft_cfg = getattr(m, "peft_config", {}).get("default")
     if peft_cfg is None:
         full = any(p.requires_grad for n, p in m.named_parameters() if not n.endswith(".rows"))
@@ -178,3 +189,24 @@ def grouped_last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor
     back = torch.empty_like(order)
     back[order] = torch.arange(len(order), device=order.device)
     return torch.cat(parts)[back]
+
+
+def select_batch(batch: dict, rows) -> dict:
+    """Select examples and trim text padding while preserving option coordinates."""
+    out = {k: v[rows] for k, v in batch.items()}
+    ids, mask = trim_left_padding(out["input_ids"], out["attention_mask"])
+    removed = out["input_ids"].shape[1] - ids.shape[1]
+    out.update(input_ids=ids, attention_mask=mask)
+    if "option_positions" in out:
+        pos = out["option_positions"]
+        out["option_positions"] = torch.where(pos >= 0, pos - removed, pos)
+    return out
+
+
+def decision_logits(m, batch: dict, groups: int = 1) -> torch.Tensor:
+    """Group complete architecture-aware batches; return logits in caller order."""
+    rows = length_groups(batch["attention_mask"], groups)
+    if len(rows) == 1:
+        return m.forward_batch(batch)
+    parts = [m.forward_batch(select_batch(batch, group)) for group in rows]
+    return torch.cat(parts)[torch.argsort(torch.cat(rows))]

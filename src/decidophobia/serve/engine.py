@@ -45,8 +45,13 @@ class Evaluation:
 
 class Engine:
     def __init__(self, lm, tok, d_ids: list[int], context_label: str = "", type_marker: bool = False,
-                 context_marker: bool = False, max_tokens: int = 8192, max_batch_tokens: int = 16384):
+                 context_marker: bool = False, max_tokens: int = 8192, max_batch_tokens: int = 16384,
+                 candidate_prefix_cache: str | None = None):
         self.lm = lm.eval()
+        if candidate_prefix_cache is not None:
+            if getattr(getattr(lm, "decision_config", None), "kind", None) != "candidate":
+                raise ValueError("candidate prefix cache override requires a candidate model")
+            lm.set_candidate_prefix_cache(candidate_prefix_cache)
         self.tok = tok
         self.d_ids = d_ids
         self.context_label = context_label
@@ -61,12 +66,33 @@ class Engine:
         """{问题 id: (state 段, 问题段)}: 模型读到的提示原文, 两段拼起来就是训练模板下的整条提示.
         state 段所有题相同 (只前向一次), 问题段各题自己的, 以 'Answer:' 收尾. 不碰模型.
         标签默认为空, state 段就是 state 本身; 给了 context_label 才在前面加「<标签>: 」."""
+        kind = getattr(getattr(self.lm, "decision_config", None), "kind", None)
+        if kind == "candidate":
+            from decidophobia.core.decision_batch import candidate_pieces
+            out = {}
+            for qid, q in questions.items():
+                prefix, suffixes = candidate_pieces(to_example(q, state, self.context_label), self.type_marker,
+                                                    self.context_marker)
+                out[qid] = ("".join(prefix), "\n\n".join(f"Candidate branch {i + 1} (prefix + this suffix):\n{''.join(p)}"
+                                                        for i, p in enumerate(suffixes)))
+            return out
+        if kind == "structural":
+            from decidophobia.core.decision_batch import structural_pieces
+            out = {}
+            for qid, q in questions.items():
+                memory, options = structural_pieces(to_example(q, state, self.context_label), self.type_marker,
+                                                     self.context_marker)
+                out[qid] = ("".join(memory), "\n\n".join(f"Independent option branch {i + 1}:\n{''.join(p)}"
+                                                       for i, p in enumerate(options)))
+            return out
         return {qid: split_prompt(to_example(q, state, self.context_label), LAYOUT, self.type_marker, self.context_marker)
                 for qid, q in questions.items()}
 
     def evaluate(self, state, questions: dict) -> Evaluation:
         """questions: {问题 id: serve.api 的 Noul / Choice / Score}. 返回的 probs 与 questions 同序."""
         exs = {qid: to_example(q, state, self.context_label) for qid, q in questions.items()}
+        if getattr(self.lm, "decision_config", None) is not None:
+            return self._evaluate_decisions(exs)
         pieces = {qid: prompt_pieces(ex, LAYOUT, self.type_marker, self.context_marker) for qid, ex in exs.items()}
         ctx, *branches = encode_prompts(self.tok, [next(iter(pieces.values()))[0]] + [q for _, q in pieces.values()])
         segs = dict(zip(pieces, branches))
@@ -83,6 +109,48 @@ class Engine:
                     slots = [self.d_ids[c] for c in exs[qid].slot_codes]
                     probs[qid] = torch.softmax(logits[row, slots], dim=-1).tolist()
         return Evaluation({qid: probs[qid] for qid in questions}, len(ctx) + sum(len(s) for s in segs.values()))
+
+    def _evaluate_decisions(self, exs):
+        """Each request is preflighted in full. New architectures use no KV cache.
+
+        Structural prompt previews show the memory and independent option branches;
+        input_tokens counts all encoded streams, including their repeated questions.
+        """
+        from decidophobia.core.decision_batch import collate_decisions
+        batches, tokens = {}, 0
+        for qid, ex in exs.items():
+            try:
+                b = collate_decisions([ex], self.tok, self.d_ids, len(ex.options), LAYOUT, self.max_tokens,
+                                      self.type_marker, self.context_marker, self.lm.decision_config.kind,
+                                      truncate=False)
+            except ValueError as exc:
+                raise RequestTooLong(str(exc)) from exc
+            batches[qid] = b
+            if self.lm.decision_config.kind != "candidate":
+                tokens += int(b["attention_mask"].sum())
+                if "option_attention_mask" in b:
+                    tokens += int(b["option_attention_mask"].sum())
+        probs = {}
+        device = next(self.lm.parameters()).device
+        with self._lock, torch.inference_mode():
+            for qid, b in batches.items():
+                b = {k: v.to(device) for k, v in b.items()}
+                shared = False
+                if self.lm.decision_config.kind == "candidate":
+                    from decidophobia.core.candidate_cache import shared_input_tokens
+                    shared = self.lm.uses_shared_prefix(b)
+                    tokens += (shared_input_tokens(b) if shared else
+                               int(b["option_attention_mask"].sum()))
+                option_batch = None
+                if "option_attention_mask" in b:
+                    width = int(b["option_attention_mask"].sum(-1).max())
+                    option_batch = max(1, self.max_batch_tokens // width)
+                    if shared:
+                        from decidophobia.core.candidate_cache import shared_branch_limit
+                        option_batch = shared_branch_limit(b, self.max_batch_tokens)
+                logits = self.lm.forward_batch(b, option_batch_size=option_batch)
+                probs[qid] = logits[0, b["slot_ids"][0]].softmax(-1).tolist()
+        return Evaluation(probs, tokens)
 
     def _groups(self, segs: dict[str, list[int]], n_ctx: int) -> list[list[str]]:
         """按问题长度从短到长装组, 组员数 × (state + 组内最长) 不超过 max_batch_tokens; 一题超了就自己一组."""
@@ -108,7 +176,8 @@ def recorded_base_model(checkpoint) -> str | None:
 
 
 def load_engine(checkpoint, base_model, context_label: str = "", device: str = "cuda",
-                dtype: torch.dtype = torch.bfloat16, max_tokens: int = 8192, max_batch_tokens: int = 16384) -> Engine:
+                dtype: torch.dtype = torch.bfloat16, max_tokens: int = 8192, max_batch_tokens: int = 16384,
+                candidate_prefix_cache: str | None = None) -> Engine:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(base_model)
@@ -123,4 +192,5 @@ def load_engine(checkpoint, base_model, context_label: str = "", device: str = "
     if hasattr(m, "merge_and_unload"):  # d-only 的档没有 LoRA, m 就是基模本身
         m = m.merge_and_unload()
     return Engine(m, tok, d_ids, context_label=context_label, type_marker=bool(cfg.get("type_marker", False)),
-                  context_marker=bool(cfg.get("context_marker", False)), max_tokens=max_tokens, max_batch_tokens=max_batch_tokens)
+                  context_marker=bool(cfg.get("context_marker", False)), max_tokens=max_tokens, max_batch_tokens=max_batch_tokens,
+                  candidate_prefix_cache=candidate_prefix_cache)
