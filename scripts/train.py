@@ -17,6 +17,9 @@
               --consistency 下材料有几种说法时, 配对的第二份读另一种说法. --fallback-rate 默认 0.5,
               随机加入题目标记的 Other / 信息不足选项；既有 other 配对每次随机选一版，一次抽取出一道题
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
+  contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace
+              官方决策子任务，从 --public-manifest 声明的本地 train 文件读取；全量菜单、硬标签，
+              按数据集各占一份。筛选统计和原始文件 SHA256 写进 result.json 的 split.public_decisions。
 每个训练集各自组菜单, 干扰项不跨集合抽.
 "both" 仍可用, 等于 banking77+boolq.
 
@@ -58,12 +61,13 @@ from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_
 from decidophobia.core.model import TRAINABLE, prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from decidophobia.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_public_decisions
 from decidophobia.evaluation.scoring import EvalSet
 from decidophobia.training.loop import TrainConfig, train
 from decidophobia.training.loss import LOSSES
 from decidophobia.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.1", "synth-v5", "massive")
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.1", "synth-v5", "massive") + PUBLIC_DATASETS
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench")
 
 
@@ -235,6 +239,17 @@ def build_data(args):
 
         btr, bva = load_boolq()
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
+    for name in datasets:
+        if name in PUBLIC_DATASETS:
+            try:
+                public = load_public_decisions(name, getattr(args, "public_manifest", DEFAULT_MANIFEST))
+                largest = max(len(e.options) for e in public.examples)
+                if largest > args.k_max:
+                    raise ValueError(f"{name}: fixed official menus need --k-max >= {largest}; got {args.k_max}")
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from None
+            samplers.append(public.sample)
+            split_info.setdefault("public_decisions", {})[name] = public.summary()
     eval_sets.update(build_eval_sets(args, b77[1] if b77 else None, bva if "boolq" in datasets else None))
     if args.eval_limit:
         for k, es in eval_sets.items():
@@ -264,7 +279,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_attention_arguments(ap)
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.1 / massive 用 + 连接; "
+                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace; "
                          "synth-v5 是 synth-v5.1 的兼容别名; both = banking77+boolq")
+    ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
+                    help="官方决策数据的本地文件清单，只读取 split=train；见 datasets/public-decisions/README.md")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
                     help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
