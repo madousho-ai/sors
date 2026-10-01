@@ -81,7 +81,7 @@ def _write_json(path, value):
 
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__)
-    add_attention_arguments(ap, resume=True)
+    add_attention_arguments(ap)
     ap.add_argument("--run", type=pathlib.Path, required=True)
     ap.add_argument("--checkpoint", type=pathlib.Path)
     ap.add_argument("--allow-optimizer-reset", action="store_true")
@@ -147,9 +147,8 @@ def main():
     if full and train_ids != meta["train_ids"]:
         raise ValueError("trainable token ids differ from the saved state")
     previous_attention = getattr(args, "attention", {})
-    args.attn_implementation = opts.attn_implementation or previous_attention.get("backend", "sdpa")
-    args.allow_kernel_download = (getattr(args, "allow_kernel_download", False)
-                                  if opts.allow_kernel_download is None else opts.allow_kernel_download)
+    args.attn_implementation = opts.attn_implementation
+    args.allow_kernel_download = opts.allow_kernel_download
     lm, attention = load_causal_lm(args.model, revision=revision, local_files_only=True,
                                    attn_implementation=args.attn_implementation,
                                    allow_kernel_download=args.allow_kernel_download)

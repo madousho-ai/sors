@@ -25,13 +25,14 @@ Blackwell 的本地 FA2 要求 `flash-attn>=2.8.3.post1`，并需要匹配该显
 
 ## 使用
 
-已安装本地 FlashAttention 包时，默认自动选择：
+训练和续跑默认等效于 `--attn-implementation auto --allow-kernel-download`：
+优先使用本地 FlashAttention 包，也允许通过已安装的 `kernels` 下载匹配的预编译内核。
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth-v5.1 --grad-ckpt
+HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth-v5.1 --grad-ckpt
 ```
 
-使用预编译 Hub 内核需要显式授权下载；该标志同时允许读取已有 Hub 缓存。
+预编译 Hub 内核下载默认启用；使用 `--no-allow-kernel-download` 可限制为本地包。
 在 Transformers 5.17.0 环境中，可选依赖的兼容范围为 `kernels>=0.16,<0.17`：
 
 ```bash
@@ -56,16 +57,16 @@ Hub 仓库限于 Transformers 的官方 `kernels-community` attention 实现。
 kernel major version 采用当前 Transformers 的固定映射，5.17.0 分别为 FA2 v3、FA3 v1、FA4 v0。
 以上预编译路径显式允许 Hub 联网。全局离线模式继续受 `HF_HUB_OFFLINE` 控制，
 此时 Hub 缓存须满足依赖库的离线检查；加载失败会按显式请求报错或按 auto 回退。
-`--no-allow-kernel-download` 可撤销续跑参数里保存的 Hub 下载许可。
+训练和续跑都支持 `--no-allow-kernel-download` 与 `--attn-implementation sdpa` 显式覆盖默认值。
 
 ## 续跑
 
-续跑默认沿用存档记录的实际后端；早期缺少 attention 记录的档使用 SDPA。
-在同一份经校验的代码和数据上，可显式重新选择：
+续跑默认重新按当前 GPU 自动选择后端，并允许 Hub 下载。
+存档中的后端仍写入续跑记录供对照；使用命令行参数控制本次选择。
+在同一份经校验的代码和数据上，默认调用为：
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<run> \
-  --attn-implementation auto --allow-kernel-download
+HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<run>
 ```
 
 原采样指纹与环境版本校验继续生效，attention 开关保留这些保护。

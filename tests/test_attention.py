@@ -203,15 +203,62 @@ def test_cuda_runtime_failures_are_propagated():
     raise AssertionError("CUDA OOM was silently swallowed")
 
 
-def test_both_clis_accept_attention_selection_and_explicit_kernel_downloads():
+def _cli(script):
     import pathlib
+    path = pathlib.Path(__file__).parents[1] / "scripts" / f"{script}.py"
+    spec = importlib.util.spec_from_file_location(f"attention_{script}_cli", path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    return cli
+
+
+def _resolve_cli_defaults(script, flags=()):
+    """Exercise real CLI parsing and selection; replace only hardware/binary loading."""
+    from transformers import utils
+    from transformers import modeling_flash_attention_utils as flash
+
+    base = [] if script == "train" else ["--run", "runs/example"]
+    args = _cli(script).build_parser().parse_args([*base, *flags])
+
+    def load_kernel(implementation):
+        assert args.allow_kernel_download, "disabled Hub downloads reached the importer"
+        assert implementation == "kernels-community/flash-attn2"
+
+    with patch.object(torch.cuda, "is_available", return_value=True), \
+         patch.object(torch.cuda, "get_device_capability", return_value=(8, 0)), \
+         patch.object(torch.cuda, "get_device_name", return_value="A100"), \
+         patch.object(utils, "is_flash_attn_2_available", return_value=False), \
+         patch.object(utils, "is_kernels_available", return_value=True), \
+         patch.object(flash, "_lazy_imports", side_effect=load_kernel):
+        try:
+            return _module().resolve_attention(args.attn_implementation,
+                                               allow_kernel_download=args.allow_kernel_download)
+        except ValueError as exc:
+            raise AssertionError(f"{script} default selection failed: {exc}") from exc
+
+
+def test_training_defaults_select_a_compatible_hub_kernel_without_extra_flags():
+    assert _resolve_cli_defaults("train").implementation == "kernels-community/flash-attn2"
+
+
+def test_resume_defaults_select_a_compatible_hub_kernel_without_extra_flags():
+    assert _resolve_cli_defaults("resume").implementation == "kernels-community/flash-attn2"
+
+
+def test_both_clis_can_disable_default_kernel_downloads():
+    for script in ("train", "resume"):
+        choice = _resolve_cli_defaults(script, ["--no-allow-kernel-download"])
+        assert choice.implementation == "sdpa"
+
+
+def test_both_clis_keep_explicit_sdpa_even_with_default_download_permission():
+    for script in ("train", "resume"):
+        assert _resolve_cli_defaults(script, ["--attn-implementation", "sdpa"]).implementation == "sdpa"
+
+
+def test_both_clis_accept_attention_selection_and_explicit_kernel_downloads():
     for script, base in (("train", []), ("resume", ["--run", "runs/example"])):
-        path = pathlib.Path(__file__).parents[1] / "scripts" / f"{script}.py"
-        spec = importlib.util.spec_from_file_location(f"attention_{script}_cli", path)
-        cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cli)
-        assert hasattr(cli, "build_parser"), f"{script} needs a testable CLI parser"
-        parser = cli.build_parser()
+        parser = _cli(script).build_parser()
         try:
             args = parser.parse_args([*base, "--attn-implementation", "flash_attention_2", "--allow-kernel-download"])
         except SystemExit as exc:

@@ -1,7 +1,8 @@
 """Training attention selection. Optional CUDA kernels are loaded before model weights.
 
-Native FlashAttention packages are optional. Hub kernels require explicit opt-in;
-auto falls back to SDPA on dependency failures, while explicit requests fail early.
+Native FlashAttention packages are optional. Training CLIs allow Hub downloads by
+default; programmatic callers pass the permission explicitly. Auto falls back to
+SDPA on dependency failures, while explicit requests fail early.
 """
 
 from __future__ import annotations
@@ -115,13 +116,13 @@ def resolve_attention(
     return result("sdpa", "sdpa", reason)
 
 
-def add_attention_arguments(parser: argparse.ArgumentParser, *, resume: bool = False) -> None:
-    parser.add_argument("--attn-implementation", choices=ATTENTION_CHOICES, default=None if resume else "auto",
-                        help="attention 后端；auto 按 GPU 架构与可用依赖选择，缺少兼容内核时使用 SDPA。"
-                             + ("续跑默认沿用存档实际后端，旧档使用 SDPA。" if resume else ""))
+def add_attention_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--attn-implementation", choices=ATTENTION_CHOICES, default="auto",
+                        help="attention 后端；默认 auto 按 GPU 架构与可用依赖选择，缺少兼容内核时使用 SDPA。")
     parser.add_argument("--allow-kernel-download", action=argparse.BooleanOptionalAction,
-                        default=None if resume else False,
-                        help="允许 Transformers 从 kernels-community 下载预编译 attention 内核；需自行安装兼容 kernels")
+                        default=True,
+                        help="默认允许 Transformers 从 kernels-community 下载预编译 attention 内核；"
+                             "可用 --no-allow-kernel-download 关闭，需自行安装兼容 kernels")
 
 
 def load_causal_lm(
