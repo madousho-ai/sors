@@ -23,7 +23,6 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -36,8 +35,10 @@ from decidophobia.core.checkpoint import checkpoint_architecture, load_trained, 
 from decidophobia.core.decision import architecture_config, decision_config
 from decidophobia.core.model import adapter_config, prepare_model
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from decidophobia.data.paths import ENV, add_datasets_argument, datasets_root
 from decidophobia.training.loop import TrainConfig, train
-from decidophobia.training.resume import read_state, resume_writer, rollback_history, sampling_fingerprint, save_state
+from decidophobia.training.resume import (read_state, resume_writer, rollback_history, sampling_fingerprint, save_state,
+                                         sampling_provenance, verify_sampling_commits, verify_sampling_fingerprint)
 from decidophobia.training.thermal import ThermalGuard
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -83,10 +84,12 @@ def _write_json(path, value):
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__)
     add_attention_arguments(ap)
+    add_datasets_argument(ap)
     ap.add_argument("--run", type=pathlib.Path, required=True)
     ap.add_argument("--checkpoint", type=pathlib.Path)
     ap.add_argument("--allow-optimizer-reset", action="store_true")
     ap.add_argument("--expected-data-commit")
+    ap.add_argument("--expected-code-commit", help="code revision paired with --expected-data-commit for split repositories")
     ap.add_argument("--stop-after", type=int)
     ap.add_argument("--micro-batches", type=int)
     return ap
@@ -120,13 +123,10 @@ def main():
     lock = (out / ".resume.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     path = (opts.checkpoint or out / "checkpoints/latest.trainstate.safetensors").resolve(strict=True)
-    fingerprint = sampling_fingerprint(ROOT)
     full = path.name.endswith(".trainstate.safetensors")
     if full:
         state = read_state(path)
         meta = state["metadata"]
-        if meta["sampling_fingerprint"] != fingerprint:
-            raise ValueError("sampling code or dataset changed since this training checkpoint")
         if meta["versions"] != _versions():
             raise ValueError("Python/PyTorch/Transformers versions differ from the saved training environment")
         args = argparse.Namespace(**meta["args"])
@@ -137,10 +137,6 @@ def main():
         step = legacy_step(path, opts.allow_optimizer_reset)
         if not opts.expected_data_commit:
             raise ValueError("old checkpoints require --expected-data-commit to verify original sampler/data")
-        sources = ["scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
-                   "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py", "datasets/synth-intents-v5.1"]
-        subprocess.run(["git", "diff", "--exit-code", opts.expected_data_commit, "--", *sources],
-                       cwd=ROOT, check=True)
         if path.parent != out / "checkpoints":
             raise ValueError("legacy checkpoint must belong to the original run's checkpoints directory")
         args = argparse.Namespace(**original_args(out))
@@ -148,6 +144,13 @@ def main():
             config = json.loads(f.metadata()["config"])
         state = {"step": step, "config": config}
         revision = None
+    selected = opts.datasets_dir if opts.datasets_dir is not None else os.environ.get(ENV, getattr(args, "datasets_dir", None))
+    args.datasets_dir = str(datasets_root(selected))
+    if full:
+        fingerprint = verify_sampling_fingerprint(ROOT, args.datasets_dir, meta["sampling_fingerprint"])
+    else:
+        verify_sampling_commits(ROOT, args.datasets_dir, opts.expected_data_commit, code_commit=opts.expected_code_commit)
+        fingerprint = sampling_fingerprint(ROOT, args.datasets_dir)
     if args.dataset not in ("synth-v5", "synth-v5.1"):
         raise ValueError("this recovery entry point currently verifies synth-v5.1 runs (legacy alias: synth-v5) only")
     cfg = TrainConfig(**config)
@@ -184,6 +187,7 @@ def main():
             raise ValueError("legacy recovery needs the evaluation record for its checkpoint step")
         state["history"] = history
     metadata = {"args": vars(args), "sampling_fingerprint": fingerprint, "versions": _versions(),
+                  "sampling_provenance": sampling_provenance(ROOT, args.datasets_dir),
                  "train_ids": train_ids, "adapter": adapter_config(m), "architecture": architecture_config(m),
                  "model_revision": model_revision}
     record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "checkpoint": str(path), "completed_step": start,

@@ -275,15 +275,16 @@ def test_sampling_fingerprint_tracks_the_v51_dataset():
         root = pathlib.Path(directory)
         for name in ("scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
                      "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
-                     "datasets/synth-intents-v5.1/schema.py"):
+                     "src/decidophobia/data/paths.py", "src/decidophobia/training/resume.py",
+                     "assets/synth-intents-v5.1/schema.py"):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("# source fixture\n")
-        data = root / "datasets/synth-intents-v5.1/telecom.contexts.json"
+        data = root / "assets/synth-intents-v5.1/telecom.contexts.json"
         data.write_text('{"domain":"telecom","contexts":[]}')
-        before = sampling_fingerprint(root)
+        before = sampling_fingerprint(root, root / "assets")
         data.write_text('{"domain":"telecom","contexts":[{"id":"telecom_changed"}]}')
-        assert sampling_fingerprint(root) != before, "dataset edits must invalidate an old sampling fingerprint"
+        assert sampling_fingerprint(root, root / "assets") != before, "dataset edits must invalidate an old sampling fingerprint"
 
 
 if __name__ == "__main__":

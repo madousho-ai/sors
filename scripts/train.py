@@ -64,7 +64,7 @@ from decidophobia.core.model import TRAINABLE, prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_public_decisions
-from decidophobia.data.paths import add_datasets_argument
+from decidophobia.data.paths import add_datasets_argument, datasets_root
 from decidophobia.evaluation.scoring import EvalSet
 from decidophobia.training.loop import TrainConfig, train
 from decidophobia.training.loss import LOSSES
@@ -492,6 +492,7 @@ def run_tag(args) -> str:
 
 def main() -> None:
     args = build_parser().parse_args()
+    args.datasets_dir = str(datasets_root(args.datasets_dir))
     architecture = resolve_architecture(args)
     args.architecture = architecture["kind"]
     if args.candidate_prefix_cache is not None and args.architecture != "candidate":
@@ -512,6 +513,8 @@ def main() -> None:
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
     sample_fn, eval_sets, split_info = build_data(args)
+    from decidophobia.training.resume import sampling_provenance
+    provenance = sampling_provenance(pathlib.Path(__file__).resolve().parents[1], args.datasets_dir)
 
     # ---- 模型 ---------------------------------------------------------------------
     tok = AutoTokenizer.from_pretrained(args.model)
@@ -566,7 +569,8 @@ def main() -> None:
     if args.save_training_state:
         import transformers
         from decidophobia.training.resume import sampling_fingerprint, save_state
-        metadata = {"args": vars(args), "sampling_fingerprint": sampling_fingerprint(pathlib.Path(__file__).resolve().parents[1]),
+        metadata = {"args": vars(args), "sampling_fingerprint": sampling_fingerprint(pathlib.Path(__file__).resolve().parents[1], args.datasets_dir),
+                    "sampling_provenance": provenance,
                     "versions": {"python": sys.version, "torch": str(torch.__version__), "transformers": transformers.__version__},
                     "train_ids": train_ids, "adapter": resolve_adapter(args), "architecture": architecture_config(m),
                     "model_revision": getattr(lm.config, "_commit_hash", None)}
@@ -587,6 +591,7 @@ def main() -> None:
         "trainable_params": n_train,
         "init_config": init_cfg,
         "split": split_info,
+        "sampling_provenance": provenance,
         "history": history,
         "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 2**30, 3),
     }, indent=2))

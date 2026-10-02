@@ -11,10 +11,12 @@ import json
 import os
 import pathlib
 import shutil
+import subprocess
 import tempfile
 import time
 
 import torch
+from decidophobia.data.paths import asset_path, datasets_root
 
 FORMAT = "decidophobia-training-state-v1"
 
@@ -122,18 +124,85 @@ def resume_writer(out, completed_step: int):
     return SummaryWriter(log_dir=str(pathlib.Path(out) / "tb"), purge_step=completed_step + 1)
 
 
-def sampling_fingerprint(repo) -> str:
-    """本次 v5 采样所需的数据与代码；保护恢复时的序列和随机调用语义。"""
-    root = pathlib.Path(repo)
-    names = ["scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
-             "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
-             "datasets/synth-intents-v5.1/schema.py"]
-    files = [root / n for n in names] + sorted((root / "datasets/synth-intents-v5.1").glob("*.json"))
+SAMPLING_SOURCES = ("scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
+                    "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
+                    "src/decidophobia/data/paths.py", "src/decidophobia/training/resume.py")
+V5 = "synth-intents-v5.1"
+
+
+def _git(repo, *args) -> bytes:
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    if result.returncode:
+        raise ValueError(f"cannot verify sampling revision in {repo}: {result.stderr.decode().strip()}")
+    return result.stdout
+
+
+def _revision(repo, revision) -> str:
+    return _git(repo, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}").decode().strip()
+
+
+def sampling_fingerprint(repo, datasets_dir=None, *, code_commit=None, data_commit=None) -> str:
+    """Hash logical paths and bytes across both checkouts, independent of their locations."""
+    root, assets = pathlib.Path(repo), datasets_root(datasets_dir)
+    code_ref = _revision(root, code_commit) if code_commit is not None else None
+    data_ref = _revision(assets, data_commit) if data_commit is not None else None
+    if data_ref:
+        data_names = [p.decode() for p in _git(assets, "ls-tree", "-rz", "--name-only", data_ref, "--", V5).split(b"\0")
+                      if p and pathlib.PurePosixPath(p.decode()).parent == pathlib.PurePosixPath(V5)
+                      and p.endswith(b".json")]
+    else:
+        data_names = [f"{V5}/{p.name}" for p in asset_path(V5, assets).glob("*.json")]
+    if not data_names:
+        raise ValueError(f"{assets / V5}: no dataset JSON files; check --datasets-dir")
     h = hashlib.sha256()
-    for path in files:
-        h.update(str(path.relative_to(root)).encode())
+    files = [(name, root, name, code_ref) for name in SAMPLING_SOURCES]
+    files += [(f"datasets/{name}", assets, name, data_ref) for name in [f"{V5}/schema.py", *sorted(data_names)]]
+    for logical, directory, name, revision in files:
+        h.update(logical.encode())
         h.update(b"\0")
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
+        h.update(_git(directory, "cat-file", "blob", f"{revision}:{name}") if revision else (directory / name).read_bytes())
     return h.hexdigest()
+
+
+def _split_compat(repo) -> dict:
+    path = pathlib.Path(repo) / "src/decidophobia/training/dataset_split_compat.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def verify_sampling_fingerprint(repo, datasets_dir, expected: str) -> str:
+    current = sampling_fingerprint(repo, datasets_dir)
+    if current == expected:
+        return current
+    migration = _split_compat(repo)
+    if current == migration.get("current_fingerprint") and expected in migration.get("legacy_fingerprints", []):
+        return current
+    raise ValueError("sampling code or dataset changed since this training checkpoint")
+
+
+def verify_sampling_commits(repo, datasets_dir, data_commit: str, *, code_commit=None) -> None:
+    current = sampling_fingerprint(repo, datasets_dir)
+    if code_commit is not None:
+        expected = sampling_fingerprint(repo, datasets_dir, code_commit=code_commit, data_commit=data_commit)
+        if expected == current:
+            return
+        raise ValueError("sampling code or dataset differs from the specified commits")
+    migration = _split_compat(repo)
+    matches = [c for c in migration.get("legacy_commits", []) if c.startswith(data_commit)] if len(data_commit) >= 7 else []
+    if len(matches) == 1 and current == migration.get("current_fingerprint"):
+        return
+    raise ValueError("legacy sampling revision cannot be verified; specify both --expected-code-commit and "
+                     "--expected-data-commit for the split repositories")
+
+
+def sampling_provenance(repo, datasets_dir=None) -> dict:
+    out = {"datasets_dir": str(datasets_root(datasets_dir))}
+    for label, directory in (("code", pathlib.Path(repo).resolve()), ("data", datasets_root(datasets_dir))):
+        try:
+            top = pathlib.Path(_git(directory, "rev-parse", "--show-toplevel").decode().strip()).resolve()
+            if top != directory:
+                raise ValueError("asset export is inside another repository")
+            out[f"{label}_commit"] = _revision(directory, "HEAD")
+            out[f"{label}_dirty"] = bool(_git(directory, "status", "--porcelain", "--untracked-files=all"))
+        except ValueError:
+            out[f"{label}_commit"], out[f"{label}_dirty"] = None, None
+    return out

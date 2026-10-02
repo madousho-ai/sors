@@ -204,6 +204,14 @@ def test_real_train_cli_exports_reloadable_decision_and_complete_state():
             state = read_state(out / "checkpoints/latest.trainstate.safetensors")
             assert state["step"] == 1 and "optimizer" in state
             assert state["metadata"]["architecture"] == ck["architecture"] == state["architecture"]
+            from decidophobia.data.paths import datasets_root
+            from decidophobia.training.resume import verify_sampling_fingerprint
+            assert state["metadata"]["args"]["datasets_dir"] == str(datasets_root())
+            provenance = state["metadata"]["sampling_provenance"]
+            assert provenance["datasets_dir"] == str(datasets_root())
+            assert len(provenance["code_commit"]) == len(provenance["data_commit"]) == 40
+            verify_sampling_fingerprint(Path(__file__).resolve().parents[1], datasets_root(),
+                                        state["metadata"]["sampling_fingerprint"])
             assert ck["architecture"]["feedback"] is True
             result = json.loads((out / "result.json").read_text())
             assert result["args"]["architecture"] == kind
