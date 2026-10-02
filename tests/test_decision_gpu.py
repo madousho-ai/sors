@@ -36,8 +36,8 @@ def check(family, kind, feedback):
             m = rebuilt
         m.train()
         m.zero_grad(set_to_none=True)
-        # The original coupled forward is the read-only minimal equivalence oracle.
-        logits = m._forward_batch(data) if kind == "minimal" and not feedback and not checkpointed else m.forward_batch(data)
+        # The original coupled forward is the read-only architecture equivalence oracle.
+        logits = m._forward_batch(data) if not feedback and not checkpointed else m.forward_batch(data)
         outputs.append(logits.detach().cpu())
         loss = training_loss("menu", logits, data["slot_ids"], data["gold"], d, data["target"])
         loss.backward()

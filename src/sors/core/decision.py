@@ -127,7 +127,7 @@ class DecisionModel(nn.Module):
     """A Qwen text backbone with a set-valued side stream.
 
     Each invocation owns its side-stream state and removes temporary taps in
-    finally. Read-only minimal decisions run after the text backbone, allowing
+    finally. Read-only decisions run after the text backbone, allowing
     native layer-local checkpoints and independent decision-block checkpoints.
     Coupled paths rebuild their whole graph under a lock during recomputation.
     """
@@ -143,8 +143,8 @@ class DecisionModel(nn.Module):
         self.config = raw.config
         self.checkpoint_forward = grad_ckpt
         self.candidate_prefix_cache = "auto" if config.kind == "candidate" else "off"
-        self._minimal_read_only = config.kind == "minimal" and not config.feedback
-        if self._minimal_read_only and grad_ckpt:
+        self._read_only = config.kind in ("minimal", "structural") and not config.feedback
+        if self._read_only and grad_ckpt:
             base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             base.enable_input_require_grads()
         else:
@@ -185,6 +185,9 @@ class DecisionModel(nn.Module):
         return self.decoder(input_ids=ids, attention_mask=mask, position_ids=positions,
                             use_cache=False).last_hidden_state
 
+    def _encode_option_chunk(self, ids, mask, dtype):
+        return self._encode(ids, mask)[:, -1].to(dtype)
+
     def _encode_options(self, batch, valid, dtype, option_batch_size):
         ids, masks = batch["option_input_ids"][valid], batch["option_attention_mask"][valid]
         chunk = min(option_batch_size or self.decision_config.option_batch_size, self.decision_config.option_batch_size)
@@ -192,7 +195,14 @@ class DecisionModel(nn.Module):
         for start in range(0, len(ids), chunk):
             part_ids, part_mask = ids[start:start + chunk], masks[start:start + chunk]
             width = int(part_mask.sum(1).max())
-            pieces.append(self._encode(part_ids[:, -width:], part_mask[:, -width:])[:, -1].to(dtype))
+            args = (part_ids[:, -width:], part_mask[:, -width:], dtype)
+            if self._read_only and self.checkpoint_forward and self.training and torch.is_grad_enabled():
+                # Keep one readout per option between chunks. The nested native
+                # layer checkpoints also bound a single chunk's backward replay.
+                encoded = checkpoint(self._encode_option_chunk, *args, use_reentrant=False)
+            else:
+                encoded = self._encode_option_chunk(*args)
+            pieces.append(encoded)
         return torch.cat(pieces)
 
     def _output_logits(self, scores, slots, valid):
@@ -245,7 +255,7 @@ class DecisionModel(nn.Module):
         scores = self.scorer(self.option_norm(u)).squeeze(-1)  # T=1, shared scalar head.
         return self._output_logits(scores, slots, valid)
 
-    def _minimal_block(self, index, u, h, positions, valid, mask):
+    def _read_only_block(self, index, u, h, positions, valid, mask):
         """Explicit inputs make each decision block independently recomputable."""
         dtype = self.option_proj.weight.dtype
         if u is None:
@@ -253,13 +263,22 @@ class DecisionModel(nn.Module):
             u = self.option_proj(chosen.to(dtype))
         return self.blocks[index](u, h.to(dtype), valid, mask)[0]
 
-    def _forward_minimal_read_only(self, batch):
+    def _forward_read_only(self, batch, option_batch_size=None):
         with self._forward_lock:
             slots = batch["slot_ids"]
             valid = slots >= 0
             mask = batch["attention_mask"].bool()
             if not valid.any(1).all() or not mask.any(1).all():
                 raise ValueError("decision batches need at least one option and one text token per example")
+            u = None
+            positions = None
+            if self.decision_config.kind == "structural":
+                dtype = self.option_proj.weight.dtype
+                encoded = self.option_proj(self._encode_options(batch, valid, dtype, option_batch_size))
+                u = encoded.new_zeros((*slots.shape, encoded.shape[-1]))
+                u[valid] = encoded
+            else:
+                positions = batch["option_positions"].clamp_min(0)
             states = {}
             owner = threading.get_ident()
 
@@ -284,14 +303,12 @@ class DecisionModel(nn.Module):
             finally:
                 for handle in handles:
                     handle.remove()
-            positions = batch["option_positions"].clamp_min(0)
-            u = None
             for j in range(len(self.blocks)):
                 args = (j, u, states[j], positions, valid, mask)
                 if self.checkpoint_forward and self.training and torch.is_grad_enabled():
-                    u = checkpoint(self._minimal_block, *args, use_reentrant=False)
+                    u = checkpoint(self._read_only_block, *args, use_reentrant=False)
                 else:
-                    u = self._minimal_block(*args)
+                    u = self._read_only_block(*args)
             dtype = self.option_proj.weight.dtype
             scores = (self.option_norm(u) * self.query(h[:, -1].to(dtype))[:, None]).sum(-1) / math.sqrt(u.shape[-1])
             return self._output_logits(scores, slots, valid)
@@ -340,8 +357,8 @@ class DecisionModel(nn.Module):
             return self._output_logits(scores, slots, valid)
 
     def forward_batch(self, batch, *, option_batch_size=None):
-        if self._minimal_read_only:
-            return self._forward_minimal_read_only(batch)
+        if self._read_only:
+            return self._forward_read_only(batch, option_batch_size)
         if self.decision_config.kind == "candidate":
             shared = self.uses_shared_prefix(batch)
             if self._encoder_frozen_for_batch(batch):
