@@ -6,6 +6,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+from unittest.mock import patch
 
 from _runner import run
 from decidophobia.training import resume
@@ -110,6 +111,17 @@ def test_resume_cli_accepts_external_assets_and_separate_revisions():
         raise AssertionError("resume CLI must accept an external root and separate code/data revisions") from None
     assert args.datasets_dir == "../assets"
     assert args.expected_code_commit == "abc1234" and args.expected_data_commit == "def5678"
+
+
+def test_optional_provenance_works_when_git_is_unavailable():
+    with tempfile.TemporaryDirectory() as tmp:
+        code, assets = _fixture(pathlib.Path(tmp))
+        expected = resume.sampling_fingerprint(code, assets)
+        with patch("decidophobia.training.resume.subprocess.run", side_effect=FileNotFoundError("git")):
+            assert resume.sampling_provenance(code, assets) == {
+                "datasets_dir": str(assets), "code_commit": None, "code_dirty": None,
+                "data_commit": None, "data_dirty": None}
+            assert resume.verify_sampling_fingerprint(code, assets, expected) == expected
 
 
 if __name__ == "__main__":

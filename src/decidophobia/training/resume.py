@@ -203,6 +203,6 @@ def sampling_provenance(repo, datasets_dir=None) -> dict:
                 raise ValueError("asset export is inside another repository")
             out[f"{label}_commit"] = _revision(directory, "HEAD")
             out[f"{label}_dirty"] = bool(_git(directory, "status", "--porcelain", "--untracked-files=all"))
-        except ValueError:
+        except (ValueError, FileNotFoundError):
             out[f"{label}_commit"], out[f"{label}_dirty"] = None, None
     return out
