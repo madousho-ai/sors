@@ -26,12 +26,19 @@ def check(family, kind, feedback):
                 block.write_out.weight.normal_(std=0.02)
     pairs = with_partners(examples(), random.Random(0))
     data = {k: v.cuda() for k, v in batch(m, tok, d, pairs).items()}
-    gradients = []
+    gradients, outputs = [], []
     for checkpointed in (False, True):
-        m.checkpoint_forward = checkpointed
+        if checkpointed:
+            rebuilt, _, _, _ = tiny_model(kind, feedback, grad_ckpt=True, family=family, trainable="full")
+            rebuilt.base.to(device="cuda", dtype=torch.bfloat16)
+            rebuilt.to(device="cuda")
+            rebuilt.load_state_dict(m.state_dict())
+            m = rebuilt
         m.train()
         m.zero_grad(set_to_none=True)
-        logits = m.forward_batch(data)
+        # The original coupled forward is the read-only minimal equivalence oracle.
+        logits = m._forward_batch(data) if kind == "minimal" and not feedback and not checkpointed else m.forward_batch(data)
+        outputs.append(logits.detach().cpu())
         loss = training_loss("menu", logits, data["slot_ids"], data["gold"], d, data["target"])
         loss.backward()
         assert torch.isfinite(loss)
@@ -41,6 +48,7 @@ def check(family, kind, feedback):
         if feedback:
             assert all(grads[f"blocks.{i}.write_out.weight"].abs().sum() > 0 for i in range(len(m.blocks)))
         gradients.append(grads)
+    torch.testing.assert_close(outputs[0], outputs[1], atol=3e-6, rtol=3e-5)
     assert gradients[0].keys() == gradients[1].keys()
     for name, grad in gradients[0].items():
         torch.testing.assert_close(grad, gradients[1][name], atol=3e-3, rtol=3e-2, msg=name)

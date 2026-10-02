@@ -126,10 +126,10 @@ class CandidateSetBlock(nn.Module):
 class DecisionModel(nn.Module):
     """A Qwen text backbone with a set-valued side stream.
 
-    Each invocation owns its side-stream state and removes its temporary taps in
-    finally. A lock also covers checkpoint recomputation, so concurrent callers
-    cannot install taps on each other's text/option forwards. Native layer-local
-    checkpointing is disabled: recomputation must rebuild the whole coupled graph.
+    Each invocation owns its side-stream state and removes temporary taps in
+    finally. Read-only minimal decisions run after the text backbone, allowing
+    native layer-local checkpoints and independent decision-block checkpoints.
+    Coupled paths rebuild their whole graph under a lock during recomputation.
     """
 
     def __init__(self, base, config: DecisionConfig, adapter: dict, grad_ckpt: bool = False):
@@ -143,7 +143,12 @@ class DecisionModel(nn.Module):
         self.config = raw.config
         self.checkpoint_forward = grad_ckpt
         self.candidate_prefix_cache = "auto" if config.kind == "candidate" else "off"
-        base.gradient_checkpointing_disable()
+        self._minimal_read_only = config.kind == "minimal" and not config.feedback
+        if self._minimal_read_only and grad_ckpt:
+            base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            base.enable_input_require_grads()
+        else:
+            base.gradient_checkpointing_disable()
         hidden = self.config.hidden_size
         if config.kind == "candidate":
             self.blocks = nn.ModuleList([CandidateSetBlock(hidden, config.dim, config.heads)
@@ -240,6 +245,57 @@ class DecisionModel(nn.Module):
         scores = self.scorer(self.option_norm(u)).squeeze(-1)  # T=1, shared scalar head.
         return self._output_logits(scores, slots, valid)
 
+    def _minimal_block(self, index, u, h, positions, valid, mask):
+        """Explicit inputs make each decision block independently recomputable."""
+        dtype = self.option_proj.weight.dtype
+        if u is None:
+            chosen = h.gather(1, positions[..., None].expand(-1, -1, h.shape[-1]))
+            u = self.option_proj(chosen.to(dtype))
+        return self.blocks[index](u, h.to(dtype), valid, mask)[0]
+
+    def _forward_minimal_read_only(self, batch):
+        with self._forward_lock:
+            slots = batch["slot_ids"]
+            valid = slots >= 0
+            mask = batch["attention_mask"].bool()
+            if not valid.any(1).all() or not mask.any(1).all():
+                raise ValueError("decision batches need at least one option and one text token per example")
+            states = {}
+            owner = threading.get_ident()
+
+            def capture(index):
+                def record(_layer, _args, h):
+                    # Another thread can be replaying native checkpoints while
+                    # this forward owns the temporary capture hooks.
+                    if threading.get_ident() != owner:
+                        return
+                    if not isinstance(h, torch.Tensor):
+                        raise TypeError("decision taps require a tensor-returning text decoder layer")
+                    # Keep the raw layer output and its gradient edge; the final
+                    # decoder output has an additional norm used only by query.
+                    states[index] = h
+                return record
+
+            handles = []
+            try:
+                for j, i in enumerate(self.decision_config.layers):
+                    handles.append(self.decoder.layers[i].register_forward_hook(capture(j)))
+                h = self._encode(batch["input_ids"], batch["attention_mask"])
+            finally:
+                for handle in handles:
+                    handle.remove()
+            positions = batch["option_positions"].clamp_min(0)
+            u = None
+            for j in range(len(self.blocks)):
+                args = (j, u, states[j], positions, valid, mask)
+                if self.checkpoint_forward and self.training and torch.is_grad_enabled():
+                    u = checkpoint(self._minimal_block, *args, use_reentrant=False)
+                else:
+                    u = self._minimal_block(*args)
+            dtype = self.option_proj.weight.dtype
+            scores = (self.option_norm(u) * self.query(h[:, -1].to(dtype))[:, None]).sum(-1) / math.sqrt(u.shape[-1])
+            return self._output_logits(scores, slots, valid)
+
     def _forward_batch(self, batch, option_batch_size=None):
         with self._forward_lock:
             slots = batch["slot_ids"]
@@ -284,6 +340,8 @@ class DecisionModel(nn.Module):
             return self._output_logits(scores, slots, valid)
 
     def forward_batch(self, batch, *, option_batch_size=None):
+        if self._minimal_read_only:
+            return self._forward_minimal_read_only(batch)
         if self.decision_config.kind == "candidate":
             shared = self.uses_shared_prefix(batch)
             if self._encoder_frozen_for_batch(batch):

@@ -124,8 +124,10 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 接在 `floor(j*(L-1)/B)`。存档记录解析后的实际层下标。
 
 新增层默认使用 fp32，与低精度主干之间显式转换；主干低精度可训参数继续使用现有 fp32 master 更新。
-可训练编码器使用整条耦合前向重算，保证选项状态、跨层回写和梯度属于同一次计算；冻结 candidate 编码器时只重算决策头。
-原 slots 路径继续使用原有的逐层 checkpointing。
+关闭回写的 minimal 使用主干原生逐层 checkpointing，并为每个决策块单独设置检查点。
+主干前向仅收集选定层的原始输出，保留梯度连接；各决策块随后依次更新选项状态，最终查询继续使用主干归一化后的输出。
+开启回写的 minimal、structural 以及可训练 candidate 编码器继续使用整条耦合前向重算；冻结 candidate 编码器时只重算决策头。
+原 slots 路径继续使用原有的逐层 checkpointing。检查点划分保持模型参数、架构元数据和打分公式兼容。
 
 ## 长度、批处理与推理
 
@@ -164,6 +166,8 @@ PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<run>
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_decision.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
+  .venv/bin/python tests/test_minimal_checkpoint.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_decision_integration.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_candidate.py
@@ -177,6 +181,7 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
 
 测试使用小型真实 Qwen3/Qwen3.5 模型，覆盖非零回写后的换序等变性、跨层回写效果、梯度、混合精度、
 完整前向重算、padding/分组、256 项菜单、真实 tokenizer、存档恢复、完整续步对照和服务公共评分路径。
+minimal 的独立回归还对照原耦合前向，检查输出、全部梯度、SGD 单步更新，以及主干逐层反向重算的执行顺序。
 这些检查验证实现行为；任务成绩、正式模型显存与吞吐由后续训练实验测量。
 
 服务器 CUDA 检查：
