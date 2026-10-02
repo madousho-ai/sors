@@ -14,6 +14,7 @@ import tempfile
 
 from _runner import run
 from decidophobia.core.menu import row_alignment, with_partners
+from decidophobia.data.paths import asset_path
 from decidophobia.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
                                         parse_passes)
 
@@ -61,7 +62,7 @@ HOTEL_C = [{"id": f"hotel_{k}#{i}", "label": "Customer message", "goal": "long_m
 
 def _data(**over):
     d = pathlib.Path(tempfile.mkdtemp())
-    shutil.copy(REPO / "datasets" / "synth-intents-v5.1" / "schema.py", d)
+    shutil.copy(asset_path("synth-intents-v5.1/schema.py"), d)
     files = {"telecom": (TELECOM_Q, TELECOM_C), "hotel": (HOTEL_Q, HOTEL_C), **over}
     for dom, (qs, cs) in files.items():
         (d / f"{dom}.questions.json").write_text(json.dumps({"domain": dom, "questions": qs}))

@@ -32,8 +32,9 @@ from dataclasses import dataclass, replace
 from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import state_text
 from decidophobia.serve.menus import option_row
+from decidophobia.data.paths import asset_path, datasets_root
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v5.1"
+DEFAULT_DIR = datasets_root() / "synth-intents-v5.1"
 
 
 @dataclass(frozen=True)
@@ -93,10 +94,10 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
                   (("other", "menu_missing"), ("unknown", "insufficient_evidence")))
 
 
-def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
+def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
     """全部领域的全部绑定, 领域按名字排序、领域内按材料与绑定的顺序. 格式检查过不了的领域报 ValueError.
     other 版的绑定与同一份材料上原题的绑定互记下标 (pair)."""
-    data_dir = pathlib.Path(data_dir)
+    data_dir = pathlib.Path(data_dir) if data_dir is not None else asset_path("synth-intents-v5.1", datasets_dir)
     schema = _schema(data_dir)
     out = []
     for domain in schema.domains(data_dir):
@@ -104,7 +105,7 @@ def load_synth_v5(data_dir=DEFAULT_DIR) -> list[V5Item]:
         errs = schema.problems(domain, bank, contexts)
         if errs:
             raise ValueError(f"{domain}: {len(errs)} format problems, e.g. {errs[:2]}; "
-                              f"run datasets/synth-intents-v5.1/schema.py {domain} to see them all")
+                              f"run {data_dir / 'schema.py'} {domain} to see them all")
         by_id = {q["id"]: q for q in bank}
         for c in contexts:
             start = len(out)

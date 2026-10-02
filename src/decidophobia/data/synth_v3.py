@@ -23,8 +23,9 @@ from dataclasses import dataclass, replace
 
 from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import state_text
+from decidophobia.data.paths import asset_path, datasets_root
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v3"
+DEFAULT_DIR = datasets_root() / "synth-intents-v3"
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,7 @@ def _load_domain(data_dir: pathlib.Path, domain: str, schema, item_hash) -> list
                 h = item_hash(m.LABEL, t.text, q.ask[0], q.options)
                 if not e or e.get("hash") != h or len(e["p"]) != k or not sum(e["p"]):
                     raise ValueError(f"{domain}.answer.json has no current answer for {t.id} / {q.id}; "
-                                     f"rerun datasets/synth-intents-v3/answer.py {domain}")
+                                     f"rerun {data_dir / 'answer.py'} {domain}")
                 source, target = "soft", [x / sum(e["p"]) for x in e["p"]]
                 gold = max(range(k), key=target.__getitem__)
             ex = MenuExample(
@@ -82,9 +83,9 @@ def _load_domain(data_dir: pathlib.Path, domain: str, schema, item_hash) -> list
     return out
 
 
-def load_synth_v3(data_dir=DEFAULT_DIR) -> dict[str, list[V3Item]]:
+def load_synth_v3(data_dir=None, *, datasets_dir=None) -> dict[str, list[V3Item]]:
     """{领域: [V3Item]}, 领域按名字排序. <domain>.py 过不了格式检查、或 answer.json 过期, 都报 ValueError."""
-    data_dir = pathlib.Path(data_dir)
+    data_dir = pathlib.Path(data_dir) if data_dir is not None else asset_path("synth-intents-v3", datasets_dir)
     # <domain>.py 与 answer.py 里写的是 from schema import ...: 读的时候把这个目录的 schema.py 临时登记成 schema,
     # 数据目录临时放进 sys.path, 读完都还原. hash 借 answer.py 的 item_hash, 与参考模型答题时算的是同一个.
     saved_path, saved_schema = list(sys.path), sys.modules.get("schema")

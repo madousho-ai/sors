@@ -64,6 +64,7 @@ from decidophobia.core.model import TRAINABLE, prepare_model
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_public_decisions
+from decidophobia.data.paths import add_datasets_argument
 from decidophobia.evaluation.scoring import EvalSet
 from decidophobia.training.loop import TrainConfig, train
 from decidophobia.training.loss import LOSSES
@@ -105,7 +106,7 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
         if name == "simple":
             from decidophobia.data.simple_eval import load_simple_eval
 
-            for sub, exs in load_simple_eval().items():
+            for sub, exs in load_simple_eval(datasets_dir=getattr(args, "datasets_dir", None)).items():
                 pos = 1 if sub == "simple_bool" else None
                 out[sub] = EvalSet(exs, args.eval_batch_size, pos_class=pos)
             continue
@@ -125,12 +126,12 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
         elif name == "banking77-desc":
             from decidophobia.data.banking77 import load_banking77
 
-            te, bs, pos = load_banking77(args.data_dir, labels="desc")[1], args.eval_batch_size, None
+            te, bs, pos = load_banking77(args.data_dir, labels="desc", datasets_dir=getattr(args, "datasets_dir", None))[1], args.eval_batch_size, None
         elif name in ("massive", "massive-desc"):
             from decidophobia.data.massive import load_massive
 
             labels = "desc" if name == "massive-desc" else "raw"
-            te, bs, pos = load_massive(partition="test", labels=labels), args.eval_batch_size, None
+            te, bs, pos = load_massive(partition="test", labels=labels, datasets_dir=getattr(args, "datasets_dir", None)), args.eval_batch_size, None
         else:
             if boolq_val is None:
                 from decidophobia.data.boolq import load_boolq
@@ -192,10 +193,10 @@ def build_data(args):
         # 两种题各占一个 sampler, 于是一批里各一半. synth-menu 只要菜单题, 一批全是它.
         from decidophobia.data.synth import load_synth, load_synth_binary, sample_domain_menus
 
-        synth, synth_domains = load_synth()
+        synth, synth_domains = load_synth(datasets_dir=getattr(args, "datasets_dir", None))
         samplers.append(lambda n, rng: sample_domain_menus(synth, synth_domains, ktr, n, rng))
         if "synth" in datasets:
-            synth_bin = load_synth_binary()
+            synth_bin = load_synth_binary(datasets_dir=getattr(args, "datasets_dir", None))
             samplers.append(lambda n, rng: synth_bin.sample_examples([0, 1], (2, 2), n, rng))
         split_info["synth_classes"] = len(synth.names)
     if "synth-v3" in datasets:
@@ -203,7 +204,7 @@ def build_data(args):
         # --k-min / --k-max 管不到它, 菜单长度就是题的选项数.
         from decidophobia.data.synth_v3 import load_synth_v3, sample_synth_v3
 
-        v3 = load_synth_v3()
+        v3 = load_synth_v3(datasets_dir=getattr(args, "datasets_dir", None))
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
         split_info["synth_v3_items"] = sum(len(v) for v in v3.values())
     if "synth-v5" in datasets:
@@ -211,7 +212,7 @@ def build_data(args):
         # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
         from decidophobia.data.synth_v5 import V5Rounds, V5Sampler, load_synth_v5, parse_mix, parse_passes
 
-        v5 = load_synth_v5()
+        v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
         goals = {it.goal for it in v5}
         split_info["synth_v5_items"] = len(v5)
         split_info["synth_v5_fallback_rate"] = fallback_rate
@@ -279,12 +280,13 @@ def build_data(args):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     add_attention_arguments(ap)
+    add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.1 / massive 用 + 连接; "
                          "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace; "
                          "synth-v5 是 synth-v5.1 的兼容别名; both = banking77+boolq")
     ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
-                    help="官方决策数据的本地文件清单，只读取 split=train；见 datasets/public-decisions/README.md")
+                    help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
                     help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")

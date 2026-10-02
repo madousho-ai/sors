@@ -14,6 +14,7 @@ from _runner import run
 from decidophobia.core.menu import row_alignment
 from decidophobia.data.jevbench import load_jevbench
 from decidophobia.data.label_names import DESC_DIR
+from decidophobia.data.paths import asset_path
 from decidophobia.data.simple_eval import load_simple_eval
 from decidophobia.data.synth import load_synth
 
@@ -253,7 +254,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "edge_case": 1.0,
                                          "long_context": 1.0, "long_menu": 1.0})]
     full_menus = {}
-    for path in (_SCRIPT.parent.parent / "datasets/synth-intents-v5.1").glob("*.questions.json"):
+    for path in asset_path("synth-intents-v5.1").glob("*.questions.json"):
         for question in json.loads(path.read_text())["questions"]:
             if len(question["options"]) == 256:
                 rows = frozenset(f"{key}: {description}" for key, description in question["options"].items())

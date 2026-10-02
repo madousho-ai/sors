@@ -33,6 +33,7 @@ from decidophobia.core.menu import random_rows, reassigned_codes, reorder_menu, 
 from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from decidophobia.data.synth import synth_eval_examples
+from decidophobia.data.paths import add_datasets_argument
 from decidophobia.evaluation.metrics import consistency, summarize
 from decidophobia.evaluation.scoring import score_examples
 
@@ -57,6 +58,7 @@ def variants(base, seed: int) -> dict[str, list]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    add_datasets_argument(ap)
     ap.add_argument("--init", required=True, help="scripts/train.py 的存档 (.safetensors 或旧的 trained.pt)")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base", help="必须与训练时的基模相同; 存档里没记")
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS)
@@ -67,7 +69,7 @@ def main() -> None:
     ap.add_argument("--out", default=None, help="默认 results/invariance-<run 目录名>.json")
     args = ap.parse_args()
 
-    base = synth_eval_examples(256, args.seed + 256)
+    base = synth_eval_examples(256, args.seed + 256, datasets_dir=args.datasets_dir)
     if args.limit:
         base = base[: args.limit]
     tok = AutoTokenizer.from_pretrained(args.model)
