@@ -29,11 +29,16 @@ are independent of `--datasets-dir`; see the data repository's
 
 The v3 and v5 loaders execute Python validators from the asset checkout. Use a
 trusted checkout and pin its revision for reproducible runs.
+The v5 loader uses this code checkout's JevBench cache for overlap checks, even
+when either repository has a custom directory name. `JEVBENCH_DIR` explicitly
+overrides that cache location.
 
 ## Reproduce and resume
 
 Training records the resolved asset path, both repositories' revisions and their
 dirty status in `sampling_provenance`. Complete training-state checkpoints also
+record these versions. Exported checkouts and runtimes without Git record unknown
+version fields; content fingerprint verification remains available. Complete states
 store a content fingerprint covering sampling code, the resolver, resume checks,
 the v5 schema and every v5 JSON file. Logical filenames keep this fingerprint
 stable when the same files move between directories. File contents remain checked.
