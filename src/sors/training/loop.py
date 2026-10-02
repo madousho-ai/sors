@@ -21,7 +21,8 @@ from sors.core.model import decision_logits, grouped_last_logits, last_logits, s
 from sors.core.decision import architecture_config
 from sors.core.prompt import DEFAULT_LAYOUT
 from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate
-from sors.training.loss import consistency_js, menu_hits, smooth_target, training_loss
+from sors.training.loss import consistency_js, menu_hit_counts, smooth_target, training_loss
+from sors.training.prefetch import prefetch_batches, validate_data_preparation
 from sors.training.schedule import lr_scale
 
 SampleFn = Callable[[int, random.Random], list[MenuExample]]
@@ -53,6 +54,8 @@ class TrainConfig:
     seed: int = 0
     accumulate_gradients: bool = False  # 每组立即反传，保持一个逻辑 batch 一次更新
     candidate_prefix_cache: str = "off"  # CLI defaults new candidates to auto; old configs retain full forwards.
+    data_workers: int = 2  # 后台 CPU 分词/组批线程；0 = 同步准备
+    data_prefetch: int = 2  # 最多提前准备的批数，独立于有效 batch 与 micro_batches
 
 
 class Fp32Master:
@@ -151,6 +154,17 @@ def step_loss(
     return ce + cfg.consistency * js, ce, js
 
 
+def _metric_tensor(ce, js, logits, slots, target):
+    """Keep reporting detached on-device until one bulk read at the step boundary.
+
+    Float64 preserves the original scalar values for the same Python weighted
+    accumulation; it changes neither the loss graph nor its reduction order.
+    """
+    hits, count = menu_hit_counts(logits.detach(), slots, target)
+    values = (ce, js if js is not None else ce.new_zeros(()), hits, count)
+    return torch.stack([value.detach().to(torch.float64) for value in values])
+
+
 def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids: list[int]):
     """完整 JS 配对一起分组，每组立即反传；调用方整步只清一次梯度、更新一次。
 
@@ -166,7 +180,7 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     target = step_target(exs, b, cfg.label_smoothing)
     lengths = b["attention_mask"].sum(1).reshape(-1, width).max(1).values
     order = torch.argsort(lengths, descending=True, stable=True)
-    ce_sum, js_sum, hits_sum, n_sum = 0.0, 0.0, 0, 0
+    reports, weights = [], []
     for units in torch.tensor_split(order, min(cfg.micro_batches, len(order))):
         rows = (units[:, None] * width + torch.arange(width, device=units.device)).flatten()
         if getattr(m, "decision_config", None) is not None:
@@ -181,12 +195,17 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         weight = len(rows) / size
         loss = ce if js is None else ce + cfg.consistency * js
         (weight * loss).backward()
-        ce_sum += weight * ce.item()
-        if js is not None:
-            js_sum += weight * js.item()
-        hits, n = menu_hits(logits.detach(), slots, targets)
-        hits_sum, n_sum = hits_sum + hits, n_sum + n
+        reports.append(_metric_tensor(ce, js, logits, slots, targets))
+        weights.append(weight)
         del logits, loss, ce, js
+    values = torch.stack(reports).cpu().tolist()
+    ce_sum, js_sum = 0.0, 0.0
+    # Python 3.12+ sum uses compensated floating-point accumulation. Keep the
+    # original sequential += rounding while batching the device readback.
+    for weight, row in zip(weights, values):
+        ce_sum += weight * row[0]
+        js_sum += weight * row[1]
+    hits_sum, n_sum = (sum(int(row[i]) for row in values) for i in (2, 3))
     return ce_sum, js_sum if paired else None, hits_sum, n_sum
 
 
@@ -224,6 +243,7 @@ def train(
     (step 0 还没训练, 是 None / 0).
     """
     # sample_fn 必须是新建的原版本管线。重建全部采样调用，包含 queue、码计数、问法与配对的随机流。
+    validate_data_preparation(cfg.data_workers, cfg.data_prefetch)
     architecture = architecture_config(m)
     if architecture["kind"] == "candidate":
         m.set_candidate_prefix_cache(cfg.candidate_prefix_cache)
@@ -235,7 +255,8 @@ def train(
     if not 0 <= start <= cfg.steps or (stop_after is not None and stop_after < 1):
         raise ValueError("invalid completed step or stop_after")
     if resume and "config" in resume:
-        changed = {k for k, v in resume["config"].items() if k not in ("micro_batches", "accumulate_gradients")
+        changed = {k for k, v in resume["config"].items()
+                   if k not in ("micro_batches", "accumulate_gradients", "data_workers", "data_prefetch")
                    and asdict(cfg).get(k) != v}
         if changed:
             raise ValueError(f"resume config changed: {sorted(changed)}")
@@ -335,74 +356,90 @@ def train(
         resume_info.update(optimizer_reset_at=start, torch_rng_reset_at=start,
                            lr_at_resume=[g["lr"] for g in opt.param_groups])
     running, running_js, running_hits, running_n = resume.get("running", [0.0, 0.0, 0, 0]) if resume else (0.0, 0.0, 0, 0)
+    consumed_rng = rng.getstate()
+
+    def samples():
+        # Keep all sampler state transitions on the training thread, in order.
+        for _ in range(start + 1, end + 1):
+            examples = sample_fn(cfg.batch_size, rng)
+            yield examples, rng.getstate()
+
+    def prepare(sample, tokenizer):
+        examples, after_sampling = sample
+        batch = collate(examples, tokenizer, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker,
+                        cfg.context_marker, architecture=architecture["kind"])
+        return examples, batch, after_sampling
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。
         return {"step": step, "config": asdict(cfg), "architecture": architecture,
                 "model": {n: p.detach() for n, p in params.items()},
                 "master": [p.detach() for p in master.params], "optimizer": opt.state_dict(),
-                "scheduler": sched.state_dict(), "rng": rng.getstate(), "torch_rng": torch.get_rng_state(),
+                "scheduler": sched.state_dict(), "rng": consumed_rng, "torch_rng": torch.get_rng_state(),
                 "cuda_rng": torch.cuda.get_rng_state_all() if next(m.parameters()).is_cuda else [],
                 "python_rng": random.getstate(), "history": list(history), "since_eval": list(since_eval),
                 "running": [running, running_js, running_hits, running_n], "waits": waits,
                 "elapsed": time.time() - t0, "resume_info": resume_info}
 
     dev = next(m.parameters()).device
-    for step in range(start + 1, end + 1):
-        if guard:
-            waits += guard.wait()
-        exs = sample_fn(cfg.batch_size, rng)
-        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker, cfg.context_marker,
-                    architecture=architecture["kind"])
-        b = {k: v.to(dev) for k, v in b.items()}
-        opt.zero_grad(set_to_none=True)
-        if cfg.accumulate_gradients:
-            ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids)
-        else:
-            logits = (decision_logits(m, b, cfg.micro_batches) if architecture["kind"] != "slots" else
-                      grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches))
-            loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
-            hits, n = menu_hits(logits.detach(), b["slot_ids"], b["target"])
-            loss.backward()
-            ce_value, js_value = ce.item(), js.item() if js is not None else None
-            del logits, loss, ce, js
-        master.pull_grads()
-        opt.step()
-        master.push()
-        sched.step()
-        if cfg.accumulate_gradients:
-            opt.zero_grad(set_to_none=True)  # 更新完成后的梯度可立即释放，评估和存档也留出显存
-        running += ce_value
-        running_hits, running_n = running_hits + hits, running_n + n
-        since_eval[0] += hits
-        since_eval[1] += n
-        if js_value is not None:
-            running_js += js_value
-        if step % cfg.log_every == 0:
-            avg = running / cfg.log_every
-            avg_js = running_js / cfg.log_every
-            acc = running_hits / running_n if running_n else None
-            t = tctl()
-            print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js_value is not None else "")
-                  + (f"  acc {acc:.3f}" if acc is not None else "")
-                  + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
-            if writer:
-                writer.add_scalar("train/loss", avg, step)
-                if acc is not None:
-                    writer.add_scalar("train/accuracy", acc, step)
+    try:
+        with prefetch_batches(samples(), prepare, tok, workers=cfg.data_workers, capacity=cfg.data_prefetch) as batches:
+            for step in range(start + 1, end + 1):
+                if guard:
+                    waits += guard.wait()
+                exs, b, consumed_rng = next(batches)
+                b = {k: v.to(dev) for k, v in b.items()}
+                opt.zero_grad(set_to_none=True)
+                if cfg.accumulate_gradients:
+                    ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids)
+                else:
+                    logits = (decision_logits(m, b, cfg.micro_batches) if architecture["kind"] != "slots" else
+                              grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches))
+                    loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
+                    metrics = _metric_tensor(ce, js, logits, b["slot_ids"], b["target"])
+                    loss.backward()
+                    ce_value, js_value, hits, n = metrics.cpu().tolist()
+                    js_value = js_value if js is not None else None
+                    hits, n = int(hits), int(n)
+                    del logits, loss, ce, js
+                master.pull_grads()
+                opt.step()
+                master.push()
+                sched.step()
+                if cfg.accumulate_gradients:
+                    opt.zero_grad(set_to_none=True)  # 更新完成后的梯度可立即释放，评估和存档也留出显存
+                running += ce_value
+                running_hits, running_n = running_hits + hits, running_n + n
+                since_eval[0] += hits
+                since_eval[1] += n
                 if js_value is not None:
-                    writer.add_scalar("train/js", avg_js, step)
-                for i, g in enumerate(opt.param_groups):
-                    writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
-                if t is not None:
-                    writer.add_scalar("sys/tctl_c", t, step)
-            running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
-        if step % cfg.eval_every == 0 or step == cfg.steps:
-            do_eval(step, ce_value, final=step == cfg.steps)
-        if on_checkpoint and cfg.save_every > 0 and step % cfg.save_every == 0 and step < cfg.steps:
-            on_checkpoint(step)
-        if on_state and (step == end or (cfg.save_every > 0 and step % cfg.save_every == 0)):
-            on_state(capture_state(step))
-    if log_f:
-        log_f.close()
+                    running_js += js_value
+                if step % cfg.log_every == 0:
+                    avg = running / cfg.log_every
+                    avg_js = running_js / cfg.log_every
+                    acc = running_hits / running_n if running_n else None
+                    t = tctl()
+                    print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js_value is not None else "")
+                          + (f"  acc {acc:.3f}" if acc is not None else "")
+                          + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
+                    if writer:
+                        writer.add_scalar("train/loss", avg, step)
+                        if acc is not None:
+                            writer.add_scalar("train/accuracy", acc, step)
+                        if js_value is not None:
+                            writer.add_scalar("train/js", avg_js, step)
+                        for i, g in enumerate(opt.param_groups):
+                            writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
+                        if t is not None:
+                            writer.add_scalar("sys/tctl_c", t, step)
+                    running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
+                if step % cfg.eval_every == 0 or step == cfg.steps:
+                    do_eval(step, ce_value, final=step == cfg.steps)
+                if on_checkpoint and cfg.save_every > 0 and step % cfg.save_every == 0 and step < cfg.steps:
+                    on_checkpoint(step)
+                if on_state and (step == end or (cfg.save_every > 0 and step % cfg.save_every == 0)):
+                    on_state(capture_state(step))
+    finally:
+        if log_f:
+            log_f.close()
     return history

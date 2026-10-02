@@ -133,6 +133,16 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 开启回写的 minimal/structural 以及可训练 candidate 编码器继续使用整条耦合前向重算；冻结 candidate 编码器时只重算决策头。
 原 slots 路径继续使用原有的逐层 checkpointing。检查点划分保持模型参数、架构元数据和打分公式兼容。
 
+### 训练路径的同步
+
+有效选项的整数位置每次前向计算一次，供选项编码、隐藏状态回填和词表坐标输出共同使用。
+输出保持原词表大小；选项顺序、分块边界与可训练参数保持一致。特殊 token 嵌入也复用一次位置提取，
+可训练行继续采用原有取行反向传播，保留 BF16/FP16 重复 token 的梯度累加方式。
+
+损失值和准确率计数先以 detached Tensor 收集，每个训练 step 集中回传一次。
+梯度累积仍逐组完成反传；回传后的 CE/JS 按原组序和权重用 Python `+=` 累加，保留统计舍入行为。
+两份一致性菜单的覆盖检查合并为一次标量读取，输入合法性校验继续保留。
+
 ## 长度、批处理与推理
 
 - minimal 保留原提示编码。截断可以缩短上下文；涉及候选项的截断会直接报错。
@@ -174,6 +184,8 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_structural_checkpoint.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
+  .venv/bin/python tests/test_sync_reduction.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_decision_integration.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_candidate.py
@@ -189,6 +201,8 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
 完整前向重算、padding/分组、256 项菜单、真实 tokenizer、存档恢复、完整续步对照和服务公共评分路径。
 minimal 的独立回归还对照原耦合前向，检查输出、全部梯度、SGD 单步更新，以及主干逐层反向重算的执行顺序。
 structural 的独立回归覆盖上述数值对照、双精度 AdamW 连续两步更新，并检查选项批次保留的激活、LoRA dropout 随机状态、异常清理和并发重算隔离。
+同步回归覆盖真实算子调用预算、低精度重复 token 梯度、统计逐位一致、padding 与词表边界。
+涉及完整训练状态的 CLI 集成测试需用 `SORS_DATASETS_DIR` 指向拆分的数据仓库根目录。
 这些检查验证实现行为；任务成绩、正式模型显存与吞吐由后续训练实验测量。
 
 服务器 CUDA 检查：

@@ -61,10 +61,13 @@ class SlotEmbedding(nn.Module):
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         out = self.base(input_ids)
         pos = self.lut[input_ids]
-        hit = pos >= 0
-        if hit.any():
-            out = out.clone()
-            out[hit] = self.rows[pos[hit]].to(out.dtype)
+        indices = (pos.flatten() >= 0).nonzero().flatten()
+        if indices.numel():
+            out = out.clone(memory_format=torch.contiguous_format)
+            # Keep advanced-index backward's low-precision accumulation for
+            # repeated token rows; index_select uses a different reduction.
+            replacements = self.rows[pos.flatten().index_select(0, indices)].to(out.dtype)
+            out.view(-1, out.shape[-1]).index_copy_(0, indices, replacements)
         return out
 
 

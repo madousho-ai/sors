@@ -215,8 +215,11 @@ class DecisionModel(nn.Module):
                 _OPTION_CHUNK_OWNER.reset(token)
         return self._encode(ids, mask)[:, -1].to(dtype)
 
-    def _encode_options(self, batch, valid, dtype, option_batch_size):
-        ids, masks = batch["option_input_ids"][valid], batch["option_attention_mask"][valid]
+    def _encode_options(self, batch, valid, dtype, option_batch_size, option_rows=None):
+        if option_rows is None:
+            option_rows = valid.flatten().nonzero().flatten()
+        ids = batch["option_input_ids"].flatten(0, 1).index_select(0, option_rows)
+        masks = batch["option_attention_mask"].flatten(0, 1).index_select(0, option_rows)
         chunk = min(option_batch_size or self.decision_config.option_batch_size, self.decision_config.option_batch_size)
         lengths = masks.sum(1)
         padded = torch.nn.functional.pad(lengths, (0, (-len(lengths)) % chunk))
@@ -235,11 +238,14 @@ class DecisionModel(nn.Module):
             pieces.append(encoded)
         return torch.cat(pieces)
 
-    def _output_logits(self, scores, slots, valid):
+    def _output_logits(self, scores, slots, valid, option_rows=None):
         # The vocabulary tensor is only the external coordinate protocol.
+        if option_rows is None:
+            option_rows = valid.flatten().nonzero().flatten()
         logits = scores.new_full((len(slots), self.config.vocab_size), float("-inf"))
-        rows = torch.arange(len(slots), device=slots.device)[:, None].expand_as(slots)
-        logits[rows[valid], slots[valid]] = scores[valid]
+        rows = option_rows.div(slots.shape[1], rounding_mode="floor")
+        tokens = slots.flatten().index_select(0, option_rows)
+        logits[rows, tokens] = scores.flatten().index_select(0, option_rows)
         return logits.float()
 
     def set_candidate_prefix_cache(self, mode: str):
@@ -276,14 +282,16 @@ class DecisionModel(nn.Module):
             return False
         return frozen
 
-    def _candidate_output(self, encoded, slots):
+    def _candidate_output(self, encoded, slots, option_rows=None):
         valid = slots >= 0
+        if option_rows is None:
+            option_rows = valid.flatten().nonzero().flatten()
         u = encoded.new_zeros((*slots.shape, encoded.shape[-1]))
-        u[valid] = encoded
+        u.flatten(0, 1).index_copy_(0, option_rows, encoded)
         for block in self.blocks:
             u = block(u, valid)
         scores = self.scorer(self.option_norm(u)).squeeze(-1)  # T=1, shared scalar head.
-        return self._output_logits(scores, slots, valid)
+        return self._output_logits(scores, slots, valid, option_rows)
 
     def _read_only_block(self, index, u, h, positions, valid, mask):
         """Explicit inputs make each decision block independently recomputable."""
@@ -298,15 +306,16 @@ class DecisionModel(nn.Module):
             slots = batch["slot_ids"]
             valid = slots >= 0
             mask = batch["attention_mask"].bool()
-            if not valid.any(1).all() or not mask.any(1).all():
+            if not bool(valid.any(1).all() & mask.any(1).all()):
                 raise ValueError("decision batches need at least one option and one text token per example")
+            option_rows = valid.flatten().nonzero().flatten()
             u = None
             positions = None
             if self.decision_config.kind == "structural":
                 dtype = self.option_proj.weight.dtype
-                encoded = self.option_proj(self._encode_options(batch, valid, dtype, option_batch_size))
+                encoded = self.option_proj(self._encode_options(batch, valid, dtype, option_batch_size, option_rows))
                 u = encoded.new_zeros((*slots.shape, encoded.shape[-1]))
-                u[valid] = encoded
+                u.flatten(0, 1).index_copy_(0, option_rows, encoded)
             else:
                 positions = batch["option_positions"].clamp_min(0)
             states = {}
@@ -341,24 +350,25 @@ class DecisionModel(nn.Module):
                     u = self._read_only_block(*args)
             dtype = self.option_proj.weight.dtype
             scores = (self.option_norm(u) * self.query(h[:, -1].to(dtype))[:, None]).sum(-1) / math.sqrt(u.shape[-1])
-            return self._output_logits(scores, slots, valid)
+            return self._output_logits(scores, slots, valid, option_rows)
 
     def _forward_batch(self, batch, option_batch_size=None):
         with self._forward_lock:
             slots = batch["slot_ids"]
             valid = slots >= 0
             mask = batch["attention_mask"].bool()
-            if not valid.any(1).all() or not mask.any(1).all():
+            if not bool(valid.any(1).all() & mask.any(1).all()):
                 raise ValueError("decision batches need at least one option and one text token per example")
+            option_rows = valid.flatten().nonzero().flatten()
             if self.decision_config.kind == "candidate":
-                encoded = self._encode_options(batch, valid, self.option_norm.weight.dtype, option_batch_size)
-                return self._candidate_output(encoded, slots)
+                encoded = self._encode_options(batch, valid, self.option_norm.weight.dtype, option_batch_size, option_rows)
+                return self._candidate_output(encoded, slots, option_rows)
             dtype = self.option_proj.weight.dtype
             u = None
             if self.decision_config.kind == "structural":
-                encoded = self.option_proj(self._encode_options(batch, valid, dtype, option_batch_size))
+                encoded = self.option_proj(self._encode_options(batch, valid, dtype, option_batch_size, option_rows))
                 u = encoded.new_zeros((*slots.shape, encoded.shape[-1]))
-                u[valid] = encoded
+                u.flatten(0, 1).index_copy_(0, option_rows, encoded)
 
             def tap(index):
                 def update(_layer, _args, h):
@@ -384,7 +394,7 @@ class DecisionModel(nn.Module):
             scores = (self.option_norm(u) * self.query(h[:, -1].to(dtype))[:, None]).sum(-1) / math.sqrt(u.shape[-1])
             # D tokens are the external coordinate protocol. This model defines
             # a K-way distribution; it never invokes or trains the LM vocabulary head.
-            return self._output_logits(scores, slots, valid)
+            return self._output_logits(scores, slots, valid, option_rows)
 
     def forward_batch(self, batch, *, option_batch_size=None):
         if self._read_only:
@@ -396,17 +406,18 @@ class DecisionModel(nn.Module):
                 valid = batch["slot_ids"] >= 0
                 if not valid.any(1).all():
                     raise ValueError("candidate batch needs at least one option per example")
+                option_rows = valid.flatten().nonzero().flatten()
                 with self._forward_lock, frozen_encoder(self.decoder):
                     if shared:
                         chunk = min(option_batch_size or self.decision_config.option_batch_size, self.decision_config.option_batch_size)
                         encoded = shared_candidate_hidden(self.decoder, batch, valid, chunk).to(self.option_norm.weight.dtype)
                     else:
-                        encoded = self._encode_options(batch, valid, self.option_norm.weight.dtype, option_batch_size)
+                        encoded = self._encode_options(batch, valid, self.option_norm.weight.dtype, option_batch_size, option_rows)
                 # Frozen feature extraction lives outside the head checkpoint;
                 # backward must not prefill the expensive context again.
                 if self.checkpoint_forward and self.training and torch.is_grad_enabled():
-                    return checkpoint(self._candidate_output, encoded, batch["slot_ids"], use_reentrant=False)
-                return self._candidate_output(encoded, batch["slot_ids"])
+                    return checkpoint(self._candidate_output, encoded, batch["slot_ids"], option_rows, use_reentrant=False)
+                return self._candidate_output(encoded, batch["slot_ids"], option_rows)
         if self.checkpoint_forward and self.training and torch.is_grad_enabled():
             return checkpoint(self._forward_batch, batch, option_batch_size, use_reentrant=False)
         return self._forward_batch(batch, option_batch_size)

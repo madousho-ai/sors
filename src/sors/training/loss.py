@@ -77,7 +77,7 @@ def menu_log_probs(
         z = torch.logsumexp(slot, 1, keepdim=True)
     elif kind == "all-slots":
         d = torch.tensor(d_ids, device=logits.device)
-        if not bool(torch.isin(slot_ids[slot_ids >= 0], d).all()):
+        if not bool((torch.isin(slot_ids, d) | (slot_ids < 0)).all()):
             raise ValueError("a menu slot is not one of d_ids")
         z = torch.logsumexp(logits[:, d], 1, keepdim=True)
     elif kind == "vocab":
@@ -108,9 +108,9 @@ def consistency_js(logits: torch.Tensor, slot_ids: torch.Tensor, align: torch.Te
     if logits.shape[0] != 2 * align.shape[0]:
         raise ValueError(f"{logits.shape[0]} rows of logits for {align.shape[0]} pairs")
     on = align >= 0
-    for s in (slot_ids[0::2], slot_ids[1::2]):
-        if not bool(((s >= 0).sum(1) == on.sum(1)).all()):
-            raise ValueError("align does not cover each menu's rows")
+    counts = (slot_ids >= 0).sum(1).reshape(-1, 2)
+    if not bool((counts == on.sum(1)[:, None]).all()):
+        raise ValueError("align does not cover each menu's rows")
     # 补位先填 0 再做运算: -inf 减 -inf 是 nan, 即使事后被 where 丢掉, 反传时也会把 nan 带进梯度
     la = torch.log_softmax(gather_slot_logits(logits[0::2], slot_ids[0::2]), 1).masked_fill(~on, 0.0)
     lb = torch.log_softmax(gather_slot_logits(logits[1::2], slot_ids[1::2]), 1)
@@ -120,7 +120,9 @@ def consistency_js(logits: torch.Tensor, slot_ids: torch.Tensor, align: torch.Te
     return torch.where(on, term, torch.zeros_like(term)).sum(1).mean()
 
 
-def menu_hits(logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor) -> tuple[int, int]:
+def menu_hit_counts(
+    logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """训练批上的正确率读数, 返回 (答对几道, 算了几道). 模型的选择是菜单 k 行里 logit 最高的那一行
     (菜单外的 D 码、普通 token 不参与, 与评估时的 accuracy 同一种读法); 目标 target (B, K) 是 collate 给的分布,
     平滑之前. 选中的那一行在 target 上是最大值 (并列最大时选中其中任意一行都算) 就是答对.
@@ -131,7 +133,13 @@ def menu_hits(logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor
     low = target.masked_fill(~on, float("inf")).amin(1)
     scored = top - low > 1e-6
     hit = (target.gather(1, pick).squeeze(1) >= top - 1e-6) & scored
-    return int(hit.sum()), int(scored.sum())
+    return hit.sum(), scored.sum()
+
+
+def menu_hits(logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor) -> tuple[int, int]:
+    """Host-facing accuracy counts; training batches the device counts with its other metrics."""
+    hits, scored = menu_hit_counts(logits, slot_ids, target)
+    return int(hits), int(scored)
 
 
 def training_loss(
