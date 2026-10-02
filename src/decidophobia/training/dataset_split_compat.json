@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "source_commit": "4a9732e2e7adf0a7bbfc197b2c32539d9e83bb8c",
+  "current_fingerprint": "2b20066d70293c1168dc765277aac6d2a799b948bca3b4413fe065a4e2d157c6",
+  "legacy_fingerprints": [
+    "b35371e8d2ef26195090f2db73a2f6d9e378bdf89d07928c0dfe6288b40848f1"
+  ],
+  "legacy_commits": [
+    "4a9732e2e7adf0a7bbfc197b2c32539d9e83bb8c",
+    "b66939323620700a3006ce9214a541a9e6cddfbe"
+  ],
+  "verification": {
+    "loaded_items": 67939,
+    "loaded_items_sha256": "e5d086a0147f1ecfae74c6b49a3ac78f3883f0ca39140c8c0306e78870cd9f43",
+    "matching_sampling_scenarios": 18
+  }
+}
