@@ -8,15 +8,15 @@ import random
 import torch
 
 from _runner import run
-from decidophobia.core.batch import collate, pair_alignment
-from decidophobia.core.menu import MenuExample, arrangements, with_partners
-from decidophobia.core.model import grouped_last_logits, last_logits, prepare_model
-from decidophobia.core.prompt import DEFAULT_LAYOUT
-from decidophobia.core.tokens import install_d_tokens, install_type_tokens
-from decidophobia.evaluation.metrics import first_two_slots, pass_consistency
-from decidophobia.evaluation.scoring import EvalSet, consistency_eval, evaluate, score_examples
-from decidophobia.training.loop import TrainConfig, eval_record, probe_passes, step_loss, step_target, train
-from decidophobia.training.loss import consistency_js, menu_hits, training_loss
+from sors.core.batch import collate, pair_alignment
+from sors.core.menu import MenuExample, arrangements, with_partners
+from sors.core.model import grouped_last_logits, last_logits, prepare_model
+from sors.core.prompt import DEFAULT_LAYOUT
+from sors.core.tokens import install_d_tokens, install_type_tokens
+from sors.evaluation.metrics import first_two_slots, pass_consistency
+from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate, score_examples
+from sors.training.loop import TrainConfig, eval_record, probe_passes, step_loss, step_target, train
+from sors.training.loss import consistency_js, menu_hits, training_loss
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 

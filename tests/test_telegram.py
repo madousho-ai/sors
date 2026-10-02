@@ -1,4 +1,4 @@
-"""decidophobia.data.telegram 的测试: arashdn/telegram-research 的 v2 (Telegram 频道的走红消息, 波斯语, 带类别与情感标注).
+"""sors.data.telegram 的测试: arashdn/telegram-research 的 v2 (Telegram 频道的走红消息, 波斯语, 带类别与情感标注).
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_telegram.py
 读语料的那几项要用 data/telegram/tg_v2_public.zip; 不在盘上时第一次用到会自动下载 (54MB, md5 钉死).
@@ -10,8 +10,8 @@ import tempfile
 import urllib.request
 
 from _runner import run
-from decidophobia.data.spam import DEFAULT_DATA_DIR
-from decidophobia.data.telegram import URL, ZIP, cache_path, load_telegram_viral, merge_copies, post_text
+from sors.data.spam import DEFAULT_DATA_DIR
+from sors.data.telegram import URL, ZIP, cache_path, load_telegram_viral, merge_copies, post_text
 
 
 # --------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""decidophobia.serve.app 的测试: 路由、鉴权、错误码与响应格式. 引擎换成假的, 不碰模型.
+"""sors.serve.app 的测试: 路由、鉴权、错误码与响应格式. 引擎换成假的, 不碰模型.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_app.py
 """
@@ -9,10 +9,10 @@ import tempfile
 from fastapi.testclient import TestClient
 
 from _runner import run
-from decidophobia.serve.app import create_app
-from decidophobia.serve.engine import Evaluation, RequestTooLong
+from sors.serve.app import create_app
+from sors.serve.engine import Evaluation, RequestTooLong
 
-NAME = "decidophobia-test"
+NAME = "sors-test"
 BODY = {
     "state": "Help! My payouts have been failing for 3 days.",
     "model": NAME,
@@ -113,6 +113,13 @@ def test_models_lists_the_served_model():
     r = _client().get("/v1/models")
     assert r.status_code == 200
     assert r.json() == {"models": [{"name": NAME, "description": "a test checkpoint", "release_date": "2026-09-26"}]}
+
+
+def test_api_documentation_identifies_the_service_as_sors():
+    r = _client().get("/openapi.json")
+    assert r.status_code == 200
+    assert r.json()["info"]["title"] == "SORS"
+    assert "State-conditioned Option Ranking System" in r.json()["info"]["summary"]
 
 
 def _demo_dir() -> pathlib.Path:

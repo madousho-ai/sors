@@ -14,8 +14,8 @@ from test_candidate import candidate_batch, candidate_model, examples, tiny_back
 from test_candidate_integration import requests
 from test_candidate_prefix import set_mode, trace
 from test_decision_integration import train_cli
-from decidophobia.core.checkpoint import prepare_from_checkpoint, read_checkpoint, save_trained
-from decidophobia.training.loop import TrainConfig, train
+from sors.core.checkpoint import prepare_from_checkpoint, read_checkpoint, save_trained
+from sors.training.loop import TrainConfig, train
 
 
 def test_train_config_applies_auto_mode_and_checkpointing_does_not_reencode_prefixes():
@@ -72,7 +72,7 @@ def test_training_and_serving_clis_expose_prefix_mode():
 
 
 def test_service_counts_actual_shared_encoding_and_allows_full_reference_override():
-    from decidophobia.serve.engine import Engine
+    from sors.serve.engine import Engine
     m, tok, d, _ = candidate_model(0)
     qs = requests()
     set_mode(m, "auto")
@@ -89,7 +89,7 @@ def test_service_counts_actual_shared_encoding_and_allows_full_reference_overrid
 
 
 def test_complete_resume_uses_the_recorded_prefix_mode():
-    from decidophobia.training.resume import read_state, save_state
+    from sors.training.resume import read_state, save_state
     assert "candidate_prefix_cache" in TrainConfig.__dataclass_fields__, "prefix execution is absent from training config"
     m, tok, d, ids = candidate_model(0)
     cfg = TrainConfig(steps=2, batch_size=1, k_max=4, loss="menu", log_every=10, eval_every=10,
@@ -113,8 +113,8 @@ def test_complete_resume_uses_the_recorded_prefix_mode():
 
 
 def test_service_cache_budget_reserves_the_original_prefix_and_fork_workspace():
-    from decidophobia.serve.engine import Engine
-    from decidophobia.serve.api import SystemOneRequest
+    from sors.serve.engine import Engine
+    from sors.serve.api import SystemOneRequest
     qs = SystemOneRequest.model_validate({"model": "m", "state": "red context", "questions": {
         "pick": {"type": "choice", "instructions": "Which color?",
                  "criteria": {f"color{i}": None for i in range(8)}}}}).questions

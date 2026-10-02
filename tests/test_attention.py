@@ -11,7 +11,7 @@ from _runner import run
 
 def _module():
     try:
-        return importlib.import_module("decidophobia.core.attention")
+        return importlib.import_module("sors.core.attention")
     except ModuleNotFoundError as exc:
         raise AssertionError("the attention selector is not implemented") from exc
 

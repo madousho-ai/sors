@@ -1,4 +1,4 @@
-"""decidophobia.core.cache 的测试: 上下文算一次 KV cache, 多个问题的分支接在后面一次前向, 结果必须等于各自整条前向.
+"""sors.core.cache 的测试: 上下文算一次 KV cache, 多个问题的分支接在后面一次前向, 结果必须等于各自整条前向.
 
 CPU 上的几条用两层的随机 Qwen3 (fp32), 要求逐位接近; GPU 上的几条用 0.6B (bf16), 比 D 槽的 logits.
 跑:  OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_cache.py
@@ -8,11 +8,11 @@ import sys
 
 import torch
 
-from decidophobia.core.cache import branch_logits, prefix_cache
-from decidophobia.core.menu import MenuExample
-from decidophobia.core.model import last_logits
-from decidophobia.core.prompt import render_menu, split_prompt
-from decidophobia.core.tokens import install_d_tokens
+from sors.core.cache import branch_logits, prefix_cache
+from sors.core.menu import MenuExample
+from sors.core.model import last_logits
+from sors.core.prompt import render_menu, split_prompt
+from sors.core.tokens import install_d_tokens
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 

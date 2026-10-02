@@ -9,7 +9,7 @@ import tempfile
 
 from _runner import run
 from test_public_decisions import _contract, _tools, _web, _conditional_rows
-from decidophobia.core.menu import row_alignment
+from sors.core.menu import row_alignment
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts/train.py"
 _spec = importlib.util.spec_from_file_location("public_train_cli", _SCRIPT)

@@ -1,11 +1,11 @@
-"""decidophobia.evaluation.metrics 里二元指标的测试 + BoolQ adapter.
+"""sors.evaluation.metrics 里二元指标的测试 + BoolQ adapter.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_binary.py
 """
 
 from _runner import run
-from decidophobia.core.menu import MenuExample
-from decidophobia.evaluation.metrics import auroc, binary_summary
+from sors.core.menu import MenuExample
+from sors.evaluation.metrics import auroc, binary_summary
 
 
 def test_auroc_counts_correctly_ordered_pairs():
@@ -45,7 +45,7 @@ def test_binary_summary_maps_position_probs_back_to_class_space():
 
 def test_boolq_adapter_shapes():
     """google/boolq validation 3270 条, 类 0=no 1=yes, context_label Passage, 每条有问句."""
-    from decidophobia.data.boolq import load_boolq
+    from sors.data.boolq import load_boolq
 
     tr, va = load_boolq()
     assert len(va.queries) == 3270 and len(tr.queries) == 9427, (len(tr.queries), len(va.queries))

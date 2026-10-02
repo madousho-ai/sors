@@ -9,7 +9,7 @@ import tempfile
 from unittest.mock import patch
 
 from _runner import run
-from decidophobia.data import label_names as names_module
+from sors.data import label_names as names_module
 
 
 def test_description_labels_read_the_selected_asset_root():
@@ -27,8 +27,8 @@ def test_raw_labels_work_without_an_asset_checkout():
 
 
 def test_synthetic_loaders_resolve_the_root_at_call_time():
-    from decidophobia.data.synth import load_synth, load_synth_binary
-    from decidophobia.data.simple_eval import load_simple_eval
+    from sors.data.synth import load_synth, load_synth_binary
+    from sors.data.simple_eval import load_simple_eval
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         (root / "synth-intents-v2.5").mkdir()
@@ -38,7 +38,7 @@ def test_synthetic_loaders_resolve_the_root_at_call_time():
         (root / "synth-simple-eval").mkdir()
         (root / "synth-simple-eval/synth-simple-eval.jsonl").write_text(json.dumps({
             "context": "yes", "question": "Proceed?", "qtype": "bool", "options": ["no", "yes"], "answer": 1}) + "\n")
-        with patch.dict(os.environ, {"DECIDOPHOBIA_DATASETS_DIR": tmp}):
+        with patch.dict(os.environ, {"SORS_DATASETS_DIR": tmp}):
             data, domains = load_synth()
             assert data.queries == ["close it"] and domains == ["toy"]
             assert load_synth_binary().labels == [1]
@@ -46,26 +46,26 @@ def test_synthetic_loaders_resolve_the_root_at_call_time():
 
 
 def test_benchmark_adapters_forward_the_selected_description_root():
-    from decidophobia.data.banking77 import load_banking77
-    from decidophobia.data.massive import load_massive
+    from sors.data.banking77 import load_banking77
+    from sors.data.massive import load_massive
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         (root / "label-descriptions").mkdir()
         for dataset in ("banking77", "massive"):
             (root / f"label-descriptions/{dataset}.json").write_text(json.dumps({"close": "Close it"}))
-        with patch("decidophobia.data.banking77._fetch", return_value=[("please close", "close")]):
+        with patch("sors.data.banking77._fetch", return_value=[("please close", "close")]):
             assert load_banking77(labels="desc", datasets_dir=root)[0].names == {0: "close: Close it"}
-        with patch("decidophobia.data.massive._read_rows", return_value=[
+        with patch("sors.data.massive._read_rows", return_value=[
                 {"intent": "close", "partition": "test", "utt": "please close"}]):
             assert load_massive(labels="desc", datasets_dir=root).names == {0: "close: Close it"}
 
 
 def test_asset_configuration_resolves_cli_before_environment_and_reports_missing_files():
-    from decidophobia.data.paths import add_datasets_argument, asset_path, datasets_root
+    from sors.data.paths import add_datasets_argument, asset_path, datasets_root
     with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
         root = pathlib.Path(a)
         (root / "synth-intents-v2.5").mkdir()
-        with patch.dict(os.environ, {"DECIDOPHOBIA_DATASETS_DIR": b}):
+        with patch.dict(os.environ, {"SORS_DATASETS_DIR": b}):
             parser = argparse.ArgumentParser()
             add_datasets_argument(parser)
             args = parser.parse_args(["--datasets-dir", a])
@@ -86,14 +86,24 @@ def test_first_import_allows_explicit_assets_despite_an_empty_environment():
         (root / "label-descriptions").mkdir()
         (root / "label-descriptions/banking77.json").write_text(json.dumps({"close": "Close it"}))
         script = '''import sys
-from decidophobia.data.label_names import label_names
-from decidophobia.data import synth, synth_v3, synth_v5, simple_eval
+from sors.data.label_names import label_names
+from sors.data import synth, synth_v3, synth_v5, simple_eval
 assert label_names("banking77", ["close"], "raw") == {0: "close"}
 assert label_names("banking77", ["close"], "desc", datasets_dir=sys.argv[1]) == {0: "close: Close it"}
 '''
         result = subprocess.run([sys.executable, "-B", "-c", script, tmp], capture_output=True,
-                                env={**os.environ, "DECIDOPHOBIA_DATASETS_DIR": ""})
+                                env={**os.environ, "SORS_DATASETS_DIR": ""})
         assert result.returncode == 0, result.stderr.decode()
+
+
+def test_legacy_dataset_environment_remains_a_fallback_to_sors():
+    from sors.data.paths import datasets_root
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+        with patch.dict(os.environ, {"DECIDOPHOBIA_DATASETS_DIR": a}, clear=True):
+            assert datasets_root() == pathlib.Path(a)
+            os.environ["SORS_DATASETS_DIR"] = b
+            assert datasets_root() == pathlib.Path(b)
+            assert datasets_root(a) == pathlib.Path(a)
 
 
 if __name__ == "__main__":

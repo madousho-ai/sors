@@ -1,11 +1,11 @@
-"""decidophobia.training.thermal 的测试.
+"""sors.training.thermal 的测试.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_thermal.py
 """
 
 import sys
 
-from decidophobia.training.thermal import ThermalGuard
+from sors.training.thermal import ThermalGuard
 
 
 def test_guard_sleeps_while_hot_and_returns_count():

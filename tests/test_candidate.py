@@ -6,10 +6,10 @@ import torch
 
 from _runner import run
 from test_decision import examples, tiny_backbone, tokenizer
-from decidophobia.core.batch import collate
-from decidophobia.core.decision import DecisionConfig
-from decidophobia.core.menu import reorder_menu
-from decidophobia.core.model import decision_logits, prepare_model
+from sors.core.batch import collate
+from sors.core.decision import DecisionConfig
+from sors.core.menu import reorder_menu
+from sors.core.model import decision_logits, prepare_model
 
 
 def candidate_model(blocks=2, family="qwen3", trainable="decision-only", checkpointed=False):

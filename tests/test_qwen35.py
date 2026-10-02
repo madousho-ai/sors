@@ -7,10 +7,10 @@ import torch
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
 from _runner import run
-from decidophobia.core.attention import load_causal_lm
-from decidophobia.core.checkpoint import prepare_from_checkpoint, save_trained
-from decidophobia.core.model import last_logits, prepare_model
-from decidophobia.training.loop import TrainConfig
+from sors.core.attention import load_causal_lm
+from sors.core.checkpoint import prepare_from_checkpoint, save_trained
+from sors.core.model import last_logits, prepare_model
+from sors.training.loop import TrainConfig
 
 
 def tiny_qwen35():

@@ -1,4 +1,4 @@
-"""decidophobia.data.spam 的测试: spam 语料 (SMS Spam Collection / Enron-Spam / TREC / Telegram 广告标注) 读成 (文本, 是否 spam).
+"""sors.data.spam 的测试: spam 语料 (SMS Spam Collection / Enron-Spam / TREC / Telegram 广告标注) 读成 (文本, 是否 spam).
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_spam.py
 读语料的那几项要用 data/sms-spam、data/enron-spam、data/trec-spam、data/telegram 下的原始包; 不在盘上时第一次用到会自动下载 (md5 钉死).
@@ -10,7 +10,7 @@ import tempfile
 import urllib.request
 
 from _runner import run
-from decidophobia.data.spam import (DEFAULT_DATA_DIR, MAX_BODY, MAX_GARBLED, SOURCES, URLS, cache_path, dedupe,
+from sors.data.spam import (DEFAULT_DATA_DIR, MAX_BODY, MAX_GARBLED, SOURCES, URLS, cache_path, dedupe,
                                     email_text, garbled, load_spam)
 
 

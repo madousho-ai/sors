@@ -12,11 +12,11 @@ import torch
 
 from _runner import run
 from test_decision import batch, examples, tiny_backbone, tiny_model
-from decidophobia.core.checkpoint import load_trained, prepare_from_checkpoint, read_checkpoint, save_trained
-from decidophobia.core.decision import architecture_config
-from decidophobia.core.menu import with_partners
-from decidophobia.evaluation.scoring import EvalSet, evaluate, score_examples
-from decidophobia.training.loop import TrainConfig, train
+from sors.core.checkpoint import load_trained, prepare_from_checkpoint, read_checkpoint, save_trained
+from sors.core.decision import architecture_config
+from sors.core.menu import with_partners
+from sors.evaluation.scoring import EvalSet, evaluate, score_examples
+from sors.training.loop import TrainConfig, train
 
 
 def config(**kw):
@@ -96,7 +96,7 @@ def test_checkpoint_rejects_wrong_architecture_and_missing_decision_weights():
 
 
 def test_complete_resume_restores_decision_weights_optimizer_and_feedback_mode():
-    from decidophobia.training.resume import read_state, save_state
+    from sors.training.resume import read_state, save_state
     for kind in ("minimal", "structural"):
         reference, tok, d, _ = tiny_model(kind, True)
         train(reference, tok, d, sampler, {}, config())
@@ -119,9 +119,9 @@ def test_complete_resume_restores_decision_weights_optimizer_and_feedback_mode()
 
 
 def test_decision_service_bypasses_lm_cache_and_matches_public_scorer():
-    from decidophobia.serve.api import SystemOneRequest
-    from decidophobia.serve.engine import Engine, RequestTooLong
-    from decidophobia.serve.menus import to_example
+    from sors.serve.api import SystemOneRequest
+    from sors.serve.engine import Engine, RequestTooLong
+    from sors.serve.menus import to_example
     questions = SystemOneRequest.model_validate({"model": "m", "state": "red context", "questions": {
         "color": {"type": "choice", "instructions": "Which color?", "criteria": {"red": None, "blue": None}},
         "other": {"type": "choice", "instructions": "Which color?", "criteria": {"green": None, "blue": None}},
@@ -131,8 +131,8 @@ def test_decision_service_bypasses_lm_cache_and_matches_public_scorer():
         exs = [to_example(q, "red context", "") for q in questions.values()]
         expected = score_examples(m, tok, d, exs, 2, 4, 128, "context-first", False)["q"]
         engine = Engine(m, tok, d, max_tokens=128, max_batch_tokens=32)
-        with patch("decidophobia.serve.engine.prefix_cache", side_effect=AssertionError("LM cache used")), \
-             patch("decidophobia.serve.engine.branch_logits", side_effect=AssertionError("LM cache used")):
+        with patch("sors.serve.engine.prefix_cache", side_effect=AssertionError("LM cache used")), \
+             patch("sors.serve.engine.branch_logits", side_effect=AssertionError("LM cache used")):
             got = engine.evaluate("red context", questions)
         assert list(got.probs) == list(questions)
         assert got.input_tokens > 0
@@ -180,9 +180,9 @@ def test_cli_selects_architecture_and_feedback_and_inherits_checkpoint_configura
 
 
 def test_real_train_cli_exports_reloadable_decision_and_complete_state():
-    from decidophobia.core.attention import load_causal_lm
-    from decidophobia.serve.engine import load_engine
-    from decidophobia.training.resume import read_state
+    from sors.core.attention import load_causal_lm
+    from sors.serve.engine import load_engine
+    from sors.training.resume import read_state
     cli = train_cli()
     assert any(a.dest == "save_training_state" for a in cli.build_parser()._actions), "complete-state CLI wiring is missing"
     for kind in ("minimal", "structural"):
@@ -204,8 +204,8 @@ def test_real_train_cli_exports_reloadable_decision_and_complete_state():
             state = read_state(out / "checkpoints/latest.trainstate.safetensors")
             assert state["step"] == 1 and "optimizer" in state
             assert state["metadata"]["architecture"] == ck["architecture"] == state["architecture"]
-            from decidophobia.data.paths import datasets_root
-            from decidophobia.training.resume import verify_sampling_fingerprint
+            from sors.data.paths import datasets_root
+            from sors.training.resume import verify_sampling_fingerprint
             assert state["metadata"]["args"]["datasets_dir"] == str(datasets_root())
             provenance = state["metadata"]["sampling_provenance"]
             assert provenance["datasets_dir"] == str(datasets_root())

@@ -9,10 +9,10 @@ import torch
 
 from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples, tiny_backbone
-from decidophobia.core.checkpoint import prepare_from_checkpoint, save_trained
-from decidophobia.core.menu import reorder_menu, with_partners
-from decidophobia.training.loop import TrainConfig
-from decidophobia.training.loss import training_loss
+from sors.core.checkpoint import prepare_from_checkpoint, save_trained
+from sors.core.menu import reorder_menu, with_partners
+from sors.training.loop import TrainConfig
+from sors.training.loss import training_loss
 
 
 def check(family, blocks):

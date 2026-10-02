@@ -7,7 +7,7 @@ import torch
 
 from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples
-from decidophobia.core.menu import reorder_menu
+from sors.core.menu import reorder_menu
 
 
 def set_mode(m, mode):
@@ -46,7 +46,7 @@ def test_prefix_and_suffix_reconstruct_every_original_joint_input():
 def test_prefix_split_handles_a_real_bpe_merge_across_the_textual_boundary():
     from tokenizers import Tokenizer, models
     from transformers import PreTrainedTokenizerFast
-    from decidophobia.core.tokens import install_d_tokens
+    from sors.core.tokens import install_d_tokens
     vocab = {s: i for i, s in enumerate(["[PAD]", "[UNK]", "\n"] + [chr(i) for i in range(32, 127)])}
     merges = []
     previous = "\n"
@@ -171,7 +171,7 @@ def cache_tensors(cache):
 
 def test_hybrid_fork_isolates_kv_convolution_and_recurrent_state():
     from transformers import DynamicCache
-    from decidophobia.core.candidate_cache import fork_cache
+    from sors.core.candidate_cache import fork_cache
     m, _, _, _ = candidate_model(0, "qwen35")
     m.eval()
     ids = torch.tensor([[2, 3, 4, 5, 6, 7]])
@@ -192,7 +192,7 @@ def test_hybrid_fork_isolates_kv_convolution_and_recurrent_state():
 
 def test_one_token_suffix_uses_the_same_hybrid_state_as_full_forward():
     from transformers import DynamicCache
-    from decidophobia.core.candidate_cache import fork_cache
+    from sors.core.candidate_cache import fork_cache
     m, _, _, _ = candidate_model(0, "qwen35")
     m.eval()
     prefix = torch.tensor([[2, 3, 4, 5, 6]])

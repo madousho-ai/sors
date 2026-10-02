@@ -1,10 +1,10 @@
-"""decidophobia.data.mysqldump 的测试: 从 mysqldump 导出的 .sql 里读出表的行, 不需要 MySQL.
+"""sors.data.mysqldump 的测试: 从 mysqldump 导出的 .sql 里读出表的行, 不需要 MySQL.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_mysqldump.py
 """
 
 from _runner import run
-from decidophobia.data.mysqldump import dump_tables, sql_rows
+from sors.data.mysqldump import dump_tables, sql_rows
 
 
 def test_sql_rows_reads_numbers_null_and_quoted_strings():

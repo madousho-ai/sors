@@ -7,9 +7,9 @@ import torch
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
 from _runner import run
-from decidophobia.core.checkpoint import prepare_from_checkpoint, save_trained
-from decidophobia.core.model import prepare_model
-from decidophobia.training.loop import TrainConfig
+from sors.core.checkpoint import prepare_from_checkpoint, save_trained
+from sors.core.model import prepare_model
+from sors.training.loop import TrainConfig
 
 
 def _base(tied=False):

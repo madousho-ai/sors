@@ -122,8 +122,8 @@ test("outcome counts the free cells the head can still reach after the move", ()
 // --------------------------------------------------------------------------
 
 test("a request asks one choice question over the four directions of the model it names", () => {
-  const body = request(game(), "board", "decidophobia-0.6b");
-  assert.equal(body.model, "decidophobia-0.6b");
+  const body = request(game(), "board", "sors-0.6b");
+  assert.equal(body.model, "sors-0.6b");
   assert.deepEqual(Object.keys(body.questions), ["move"]);
   const q = body.questions.move;
   assert.equal(q.type, "choice");

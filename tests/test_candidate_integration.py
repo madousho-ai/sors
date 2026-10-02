@@ -12,11 +12,11 @@ import torch
 from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples, joint_text, tiny_backbone
 from test_decision_integration import config, sampler, train_cli
-from decidophobia.core.checkpoint import load_trained, prepare_from_checkpoint, read_checkpoint, save_trained
-from decidophobia.core.decision import architecture_config
-from decidophobia.evaluation.scoring import EvalSet, score_examples
-from decidophobia.training.loop import TrainConfig, train
-from decidophobia.training.resume import read_state, save_state
+from sors.core.checkpoint import load_trained, prepare_from_checkpoint, read_checkpoint, save_trained
+from sors.core.decision import architecture_config
+from sors.evaluation.scoring import EvalSet, score_examples
+from sors.training.loop import TrainConfig, train
+from sors.training.resume import read_state, save_state
 
 
 def test_cli_exposes_candidate_with_zero_one_two_set_blocks_and_frozen_default():
@@ -91,7 +91,7 @@ def test_candidate_training_accumulation_and_complete_resume_match():
 
 
 def requests():
-    from decidophobia.serve.api import SystemOneRequest
+    from sors.serve.api import SystemOneRequest
     return SystemOneRequest.model_validate({"model": "m", "state": "red context", "questions": {
         "color": {"type": "choice", "instructions": "Which color?", "criteria": {"red": None, "blue": None}},
         "long": {"type": "choice", "instructions": "Which color?", "criteria": {"long green": None, "blue": None}},
@@ -99,8 +99,8 @@ def requests():
 
 
 def test_candidate_service_counts_only_joint_branches_and_matches_public_scorer():
-    from decidophobia.serve.engine import Engine
-    from decidophobia.serve.menus import to_example
+    from sors.serve.engine import Engine
+    from sors.serve.menus import to_example
     m, tok, d, _ = candidate_model(1)
     m.set_candidate_prefix_cache("off")  # Full-branch accounting remains available as a reference.
     qs = requests()
@@ -108,7 +108,7 @@ def test_candidate_service_counts_only_joint_branches_and_matches_public_scorer(
     want_tokens = sum(len(tok.encode(joint_text(ex, name), add_special_tokens=False))
                       for ex in exs for name in ex.option_names)
     engine = Engine(m, tok, d, max_tokens=128, max_batch_tokens=20)
-    with patch("decidophobia.serve.engine.prefix_cache", side_effect=AssertionError("LM prefix cache used")):
+    with patch("sors.serve.engine.prefix_cache", side_effect=AssertionError("LM prefix cache used")):
         result = engine.evaluate("red context", qs)
     assert result.input_tokens == want_tokens, "logical prefix counted as an extra model forward"
     expected = score_examples(m, tok, d, exs, 2, 4, 128, "context-first", False)["q"]
@@ -117,8 +117,8 @@ def test_candidate_service_counts_only_joint_branches_and_matches_public_scorer(
 
 
 def test_candidate_preview_shows_the_shared_prefix_and_per_candidate_readout():
-    from decidophobia.serve.engine import Engine
-    from decidophobia.serve.menus import to_example
+    from sors.serve.engine import Engine
+    from sors.serve.menus import to_example
     m, tok, d, _ = candidate_model(0)
     qs = requests()
     exs = [to_example(q, "red context", "") for q in qs.values()]
@@ -131,7 +131,7 @@ def test_candidate_preview_shows_the_shared_prefix_and_per_candidate_readout():
 
 
 def test_candidate_service_rejects_any_overlong_branch_before_running_any_question():
-    from decidophobia.serve.engine import Engine, RequestTooLong
+    from sors.serve.engine import Engine, RequestTooLong
     qs = requests()
     qs["long"].criteria["long green"] = "long context " * 100
     m, tok, d, _ = candidate_model(0)
@@ -145,8 +145,8 @@ def test_candidate_service_rejects_any_overlong_branch_before_running_any_questi
 
 
 def test_candidate_actual_cli_exports_complete_state_and_loadable_service():
-    from decidophobia.core.attention import load_causal_lm
-    from decidophobia.serve.engine import load_engine
+    from sors.core.attention import load_causal_lm
+    from sors.serve.engine import load_engine
     cli = train_cli()
     assert "candidate" in next(a for a in cli.build_parser()._actions if a.dest == "architecture").choices
     for blocks in (0, 2):

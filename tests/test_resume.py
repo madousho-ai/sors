@@ -12,10 +12,10 @@ import torch
 
 from _runner import run
 from test_evaluate import _tiny, _uneven_questions, _Writer
-from decidophobia.core.batch import collate
-from decidophobia.core.menu import MenuExample, with_partners
-from decidophobia.core.model import last_logits
-from decidophobia.training.loop import TrainConfig, step_loss, train
+from sors.core.batch import collate
+from sors.core.menu import MenuExample, with_partners
+from sors.core.model import last_logits
+from sors.training.loop import TrainConfig, step_loss, train
 
 
 def _examples():
@@ -28,7 +28,7 @@ def _examples():
 
 def test_accumulation_matches_whole_batch_gradients_with_unequal_groups_and_soft_labels():
     """抓住按组数均分 loss、拆散 JS 对、每组清梯度、遗漏某组的错误。"""
-    from decidophobia.training.loop import backward_groups
+    from sors.training.loop import backward_groups
 
     tok, ids, m = _tiny()
     exs = _examples()  # 5 对，分 3 组 => 2、2、1 对
@@ -52,7 +52,7 @@ def test_accumulation_matches_whole_batch_gradients_with_unequal_groups_and_soft
 
 def test_each_group_finishes_backward_before_the_next_forward():
     """抓住重新退回整批保留图的实现。"""
-    from decidophobia.training.loop import backward_groups
+    from sors.training.loop import backward_groups
 
     tok, ids, m = _tiny()
     exs = _examples()
@@ -68,7 +68,8 @@ def test_each_group_finishes_backward_before_the_next_forward():
 
 def test_state_file_roundtrips_tensors_rng_tuples_and_integer_optimizer_keys():
     """抓住 RNG tuple 或 optimizer 的整数 key 在 JSON 往返时被破坏。"""
-    from decidophobia.training.resume import read_state, save_state
+    from safetensors import safe_open
+    from sors.training.resume import read_state, save_state
 
     rng = random.Random(4)
     value = {"step": 1500, "rng": rng.getstate(), "optimizer": {0: {"exp_avg": torch.arange(3.)}},
@@ -76,12 +77,35 @@ def test_state_file_roundtrips_tensors_rng_tuples_and_integer_optimizer_keys():
     with tempfile.TemporaryDirectory() as d:
         path = pathlib.Path(d) / "state.safetensors"
         save_state(value, path)
+        with safe_open(str(path), framework="pt") as f:
+            assert f.metadata()["format"] == "sors-training-state-v1"
         got = read_state(path)
     assert got["step"] == 1500 and got["optional"] is None
     assert got["rng"] == value["rng"] and set(got["optimizer"]) == {0}
     torch.testing.assert_close(got["master"][0], value["master"][0], rtol=0, atol=0)
     rng.setstate(got["rng"])
     assert rng.random() == random.Random(4).random()
+
+
+def test_training_state_reads_sors_and_legacy_files_and_rejects_unknown_formats():
+    from safetensors.torch import save_file
+    from sors.training.resume import read_state
+
+    structure = {"type": "dict", "value": [["step", 7], ["master", {"type": "tensor", "value": "weights"}]]}
+    with tempfile.TemporaryDirectory() as d:
+        path = pathlib.Path(d) / "state.safetensors"
+        for kind in ("sors-training-state-v1", "decidophobia-training-state-v1"):
+            save_file({"weights": torch.tensor([1.25])}, str(path),
+                      metadata={"format": kind, "structure": json.dumps(structure)})
+            got = read_state(path)
+            assert got["step"] == 7
+            torch.testing.assert_close(got["master"], torch.tensor([1.25]), atol=0, rtol=0)
+        save_file({}, str(path), metadata={"format": "other-training-state-v1", "structure": "{}"})
+        try:
+            read_state(path)
+        except ValueError:
+            return
+        raise AssertionError("unknown training-state format was accepted")
 
 
 class _Sampler:
@@ -113,7 +137,7 @@ def _training_config():
 
 def test_full_resume_matches_uninterrupted_training_samples_parameters_and_optimizer():
     """抓住 sampler、Adam、LR、torch RNG、统计窗口恢复遗漏；停在非评估边界的第3步。"""
-    from decidophobia.training.resume import read_state, save_state
+    from sors.training.resume import read_state, save_state
 
     cfg = _training_config()
     tok, ids, reference = _tiny()
@@ -173,7 +197,7 @@ def test_legacy_resume_starts_at_next_step_with_original_schedule_and_sampling_p
 def test_tensorboard_resume_keeps_checkpoint_step_and_hides_old_future_events():
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     from torch.utils.tensorboard import SummaryWriter
-    from decidophobia.training.resume import resume_writer, rollback_history
+    from sors.training.resume import resume_writer, rollback_history
 
     with tempfile.TemporaryDirectory() as d:
         out = pathlib.Path(d)
@@ -245,7 +269,7 @@ def test_resume_cli_reads_original_args_and_requires_explicit_legacy_reset_conse
 
 
 def test_rollback_archives_and_drops_a_partial_final_jsonl_record():
-    from decidophobia.training.resume import rollback_history
+    from sors.training.resume import rollback_history
     with tempfile.TemporaryDirectory() as d:
         out = pathlib.Path(d)
         original = '{"step": 1500}\n{"step": 1750, "train_loss":'
@@ -269,13 +293,13 @@ def test_completed_native_state_can_finish_export_after_interruption():
 
 
 def test_sampling_fingerprint_tracks_the_v51_dataset():
-    from decidophobia.training.resume import sampling_fingerprint
+    from sors.training.resume import sampling_fingerprint
 
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
-        for name in ("scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
-                     "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
-                     "src/decidophobia/data/paths.py", "src/decidophobia/training/resume.py",
+        for name in ("scripts/train.py", "src/sors/data/synth_v5.py", "src/sors/core/menu.py",
+                     "src/sors/core/prompt.py", "src/sors/serve/menus.py",
+                     "src/sors/data/paths.py", "src/sors/training/resume.py",
                      "assets/synth-intents-v5.1/schema.py"):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)

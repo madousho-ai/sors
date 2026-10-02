@@ -10,9 +10,9 @@ from torch.utils.checkpoint import set_checkpoint_early_stop
 
 from _runner import run
 from test_decision import batch, examples, tiny_model
-from decidophobia.core.menu import with_partners
-from decidophobia.core.model import decision_logits, trainable_param_groups
-from decidophobia.training.loop import TrainConfig, step_loss
+from sors.core.menu import with_partners
+from sors.core.model import decision_logits, trainable_param_groups
+from sors.training.loop import TrainConfig, step_loss
 
 
 def test_minimal_backward_recomputes_layers_individually_and_decision_blocks_separately():

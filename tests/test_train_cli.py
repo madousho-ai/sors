@@ -11,11 +11,11 @@ import pathlib
 import random
 
 from _runner import run
-from decidophobia.core.menu import row_alignment
-from decidophobia.data.jevbench import load_jevbench
-from decidophobia.data.paths import asset_path
-from decidophobia.data.simple_eval import load_simple_eval
-from decidophobia.data.synth import load_synth
+from sors.core.menu import row_alignment
+from sors.data.jevbench import load_jevbench
+from sors.data.paths import asset_path
+from sors.data.simple_eval import load_simple_eval
+from sors.data.synth import load_synth
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train.py"
 _spec = importlib.util.spec_from_file_location("train_cli", _SCRIPT)
@@ -41,7 +41,7 @@ def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
     from test_synth_v5_fallback import _marked
 
     item = _marked()
-    with patch("decidophobia.data.synth_v5.load_synth_v5", return_value=[item]):
+    with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
         current, _, info = _mod.build_data(_args("synth-v5.1", eval="simple", fallback_rate=1.0))
         legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
     assert current(8, random.Random(0)) == legacy(8, random.Random(0))
@@ -352,7 +352,7 @@ def test_fallback_cli_reaches_both_samplers_and_keeps_consistency_views_equal():
             args = _mod.build_parser().parse_args(["--dataset", "synth-v5", "--eval", "simple",
                                                    "--fallback-rate", str(rate), "--consistency", "1"])
             args.passes = passes
-            with patch("decidophobia.data.synth_v5.load_synth_v5", return_value=[item]):
+            with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
                 sample, _, info = _mod.build_data(args)
             assert info["synth_v5_fallback_rate"] == rate
             batch = sample(8, random.Random(0))
@@ -536,9 +536,9 @@ def _checkpoint(trainable, r, alpha):
 
     from transformers import Qwen3Config, Qwen3ForCausalLM
 
-    from decidophobia.core.checkpoint import save_trained
-    from decidophobia.core.model import prepare_model
-    from decidophobia.training.loop import TrainConfig
+    from sors.core.checkpoint import save_trained
+    from sors.core.model import prepare_model
+    from sors.training.loop import TrainConfig
 
     cfg = Qwen3Config(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
                       num_attention_heads=2, num_key_value_heads=1, head_dim=8)

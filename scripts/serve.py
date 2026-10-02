@@ -15,7 +15,7 @@
 训练时每条提示都以「<标签>: <内容>」开头 (Customer message / Passage / Game state ...). 服务默认不加标签, state
 原样进提示, 要标签就写在 state 开头, 如 "Game state: ..."; 贪吃蛇页面就是这样写的. --context-label 给了才替每个
 请求加上, 如评估对账时用 --context-label "Customer message".
-端点、答案格式与请求怎么跑见 decidophobia.serve.
+端点、答案格式与请求怎么跑见 sors.serve.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ import datetime
 import os
 import pathlib
 
-from decidophobia.serve.engine import recorded_base_model
+from sors.serve.engine import recorded_base_model
 
 DEMOS = pathlib.Path(__file__).resolve().parents[1] / "demos"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="SORS — State-conditioned Option Ranking System")
     ap.add_argument("--init", required=True, help="scripts/train.py 的存档 (.safetensors 或旧的 trained.pt), 必须是 context-first 训的")
     ap.add_argument("--base-model", default=None, help="存档训练时的基模. 不给 = run 目录里 result.json 记的那个")
     ap.add_argument("--model-name", default=None,
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="一次前向的 KV cache 预算: 同组问题数 × (state + 组内最长的问题). 显存紧就调小")
     ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off"], default=None,
                     help="覆盖 candidate 存档的共享前缀执行方式；默认继承存档，旧存档保持 off")
-    ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 DECIDOPHOBIA_API_KEY, 也没有就不查")
+    ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 SORS_API_KEY, 也没有就不查")
     ap.add_argument("--demo", action="store_true", help="把 demos/ 下的演示页挂在 /demo/ (手填请求在 /demo/playground/, 贪吃蛇在 /demo/snake/)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
@@ -68,7 +68,8 @@ def base_model(args) -> str:
 
 
 def api_key(args) -> str | None:
-    return args.api_key or os.environ.get("DECIDOPHOBIA_API_KEY") or None
+    # Keep authentication enabled for deployments using the pre-rebrand variable.
+    return args.api_key or os.environ.get("SORS_API_KEY") or os.environ.get("DECIDOPHOBIA_API_KEY") or None
 
 
 def demo_dir(args) -> pathlib.Path | None:
@@ -80,8 +81,8 @@ def main() -> None:
     import torch
     import uvicorn
 
-    from decidophobia.serve.app import create_app
-    from decidophobia.serve.engine import load_engine
+    from sors.serve.app import create_app
+    from sors.serve.engine import load_engine
 
     name, base = served_name(args), base_model(args)
     engine = load_engine(args.init, base, context_label=args.context_label, device=args.device,

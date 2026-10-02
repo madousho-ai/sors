@@ -1,12 +1,12 @@
-"""decidophobia.serve.menus 的测试: 一道 API 问题 -> 模型看到的菜单样本. 不碰模型.
+"""sors.serve.menus 的测试: 一道 API 问题 -> 模型看到的菜单样本. 不碰模型.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_menus.py
 """
 
 from _runner import run
-from decidophobia.core.prompt import render_menu
-from decidophobia.serve.api import SystemOneRequest
-from decidophobia.serve.menus import to_example
+from sors.core.prompt import render_menu
+from sors.serve.api import SystemOneRequest
+from sors.serve.menus import to_example
 
 STATE = "Help! My payouts have been failing for 3 days."
 

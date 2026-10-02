@@ -1,4 +1,4 @@
-"""decidophobia.data.simple_eval 的测试: datasets/synth-simple-eval 读成按菜单长度分开的评估集.
+"""sors.data.simple_eval 的测试: datasets/synth-simple-eval 读成按菜单长度分开的评估集.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_simple_eval.py
 """
@@ -6,7 +6,7 @@
 import re
 
 from _runner import run
-from decidophobia.data.simple_eval import SIZES, load_simple_eval
+from sors.data.simple_eval import SIZES, load_simple_eval
 
 
 def _says(text: str, word: str) -> bool:

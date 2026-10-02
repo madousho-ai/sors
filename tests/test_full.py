@@ -7,9 +7,9 @@ import torch
 from torch import nn
 
 from _runner import run
-from decidophobia.core.checkpoint import checkpoint_adapter, prepare_from_checkpoint
-from decidophobia.core.model import prepare_model
-from decidophobia.training.loop import Fp32Master, TrainConfig, train
+from sors.core.checkpoint import checkpoint_adapter, prepare_from_checkpoint
+from sors.core.model import prepare_model
+from sors.training.loop import Fp32Master, TrainConfig, train
 from test_checkpoint import _EX, TINY_IDS, _perturbed, _save, _tiny, _tiny_lm, _Tok
 
 

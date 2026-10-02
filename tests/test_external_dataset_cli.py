@@ -12,7 +12,7 @@ from unittest.mock import patch
 from _runner import run
 from test_train_cli import _mod
 from test_synth_v5 import _data
-from decidophobia.data.paths import datasets_root
+from sors.data.paths import datasets_root
 
 
 def test_cli_uses_selected_assets_for_training_and_evaluation():
@@ -27,7 +27,7 @@ def test_cli_uses_selected_assets_for_training_and_evaluation():
         (root / "synth-simple-eval/synth-simple-eval.jsonl").write_text(json.dumps({
             "context": "local fixture", "question": "Proceed?", "qtype": "bool",
             "options": ["no", "yes"], "answer": 1}) + "\n")
-        with patch.dict(os.environ, {"DECIDOPHOBIA_DATASETS_DIR": "/missing/environment-root"}):
+        with patch.dict(os.environ, {"SORS_DATASETS_DIR": "/missing/environment-root"}):
             try:
                 args = _mod.build_parser().parse_args([
                     "--dataset", "synth-v5.1", "--eval", "simple", "--datasets-dir", tmp])
@@ -41,9 +41,9 @@ def test_cli_uses_selected_assets_for_training_and_evaluation():
 
 
 def test_v3_loader_uses_explicit_root_with_an_invalid_environment():
-    from decidophobia.data.synth_v3 import load_synth_v3
+    from sors.data.synth_v3 import load_synth_v3
     root = datasets_root()
-    with patch.dict(os.environ, {"DECIDOPHOBIA_DATASETS_DIR": "/missing/environment-root"}):
+    with patch.dict(os.environ, {"SORS_DATASETS_DIR": "/missing/environment-root"}):
         by_domain = load_synth_v3(datasets_dir=root)
     assert set(by_domain) == {"telecom", "hotel", "browser_agent", "sec_ops", "coding_ci"}
     assert sum(map(len, by_domain.values())) == 688
@@ -64,7 +64,7 @@ def test_v5_overlap_check_uses_the_running_code_checkouts_cache():
             cache.mkdir(parents=True)
             (cache / "easy.jsonl").write_text(json.dumps({"state": text}) + "\n")
             script = '''import sys
-from decidophobia.data.synth_v5 import load_synth_v5
+from sors.data.synth_v5 import load_synth_v5
 try:
     load_synth_v5(sys.argv[1])
 except ValueError as exc:

@@ -507,7 +507,7 @@ wheels = [
 ]
 
 [[package]]
-name = "decidophobia"
+name = "sors"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

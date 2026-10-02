@@ -1,4 +1,4 @@
-"""decidophobia.data.synth_v5 的测试: v5 的材料与绑定读成逐题的样本, 以及训练时按目标配比抽题.
+"""sors.data.synth_v5 的测试: v5 的材料与绑定读成逐题的样本, 以及训练时按目标配比抽题.
 
 数据用临时目录现造 (复制仓库里的 schema.py, 再写两个小领域). 真实数据的读取见 tests/test_train_cli.py.
 
@@ -13,9 +13,9 @@ import shutil
 import tempfile
 
 from _runner import run
-from decidophobia.core.menu import row_alignment, with_partners
-from decidophobia.data.paths import asset_path
-from decidophobia.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
+from sors.core.menu import row_alignment, with_partners
+from sors.data.paths import asset_path
+from sors.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
                                         parse_passes)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent

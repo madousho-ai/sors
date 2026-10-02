@@ -1,4 +1,4 @@
-"""decidophobia.data.synth 的测试: datasets/synth-intents-v2.5 读成菜单题与二元题两个 LabeledSet.
+"""sors.data.synth 的测试: datasets/synth-intents-v2.5 读成菜单题与二元题两个 LabeledSet.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_synth.py
 """
@@ -7,7 +7,7 @@ import collections
 import random
 
 from _runner import run
-from decidophobia.data.synth import load_synth, load_synth_binary, sample_domain_menus
+from sors.data.synth import load_synth, load_synth_binary, sample_domain_menus
 
 
 def test_synth_loads_4096_intents_with_three_utterances_each():

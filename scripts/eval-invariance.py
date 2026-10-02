@@ -28,14 +28,14 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from decidophobia.core.checkpoint import prepare_from_checkpoint
-from decidophobia.core.menu import random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows
-from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
-from decidophobia.data.synth import synth_eval_examples
-from decidophobia.data.paths import add_datasets_argument
-from decidophobia.evaluation.metrics import consistency, summarize
-from decidophobia.evaluation.scoring import score_examples
+from sors.core.checkpoint import prepare_from_checkpoint
+from sors.core.menu import random_rows, reassigned_codes, reorder_menu, shuffled_rows, top_rows
+from sors.core.prompt import DEFAULT_LAYOUT, LAYOUTS
+from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from sors.data.synth import synth_eval_examples
+from sors.data.paths import add_datasets_argument
+from sors.evaluation.metrics import consistency, summarize
+from sors.evaluation.scoring import score_examples
 
 SHORT = 60
 

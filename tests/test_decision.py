@@ -9,8 +9,8 @@ from _runner import run
 
 
 def decision_module():
-    assert importlib.util.find_spec("decidophobia.core.decision") is not None, "decision layers are missing"
-    return importlib.import_module("decidophobia.core.decision")
+    assert importlib.util.find_spec("sors.core.decision") is not None, "decision layers are missing"
+    return importlib.import_module("sors.core.decision")
 
 
 def block(feedback=False):
@@ -89,7 +89,7 @@ def test_decision_reads_context_and_other_options_with_finite_gradients():
 def tokenizer():
     from tokenizers import Tokenizer, models, pre_tokenizers
     from transformers import PreTrainedTokenizerFast
-    from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+    from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 
     words = ["[PAD]", "[UNK]", "red", "blue", "green", "short", "long", "context", "Question",
              "Answer", "Options", "Option", "Which", "color", "Customer", "message", ":", ".", "?"]
@@ -102,14 +102,14 @@ def tokenizer():
 
 
 def examples():
-    from decidophobia.core.menu import MenuExample
+    from sors.core.menu import MenuExample
     return [MenuExample("red context", [10, 20, 30], 0, 10, ["red", "blue", "green"], question="Which color?"),
             MenuExample("long blue context context", [10, 20], 1, 20, ["red", "blue"], question="Which color?",
                         target=[0.2, 0.8])]
 
 
 def tiny_model(kind="structural", feedback=False, grad_ckpt=False, family="qwen3", trainable="decision-only"):
-    from decidophobia.core.model import prepare_model
+    from sors.core.model import prepare_model
 
     module = decision_module()
     assert hasattr(module, "DecisionConfig"), "decision model configuration is missing"
@@ -134,12 +134,12 @@ def tiny_backbone(tok, family="qwen3"):
 
 
 def batch(m, tok, d, exs=None, **kwargs):
-    from decidophobia.core.batch import collate
+    from sors.core.batch import collate
     return collate(exs or examples(), tok, d, 4, architecture=m.decision_config.kind, **kwargs)
 
 
 def test_minimal_batch_preserves_original_prompt_and_tracks_description_ends():
-    from decidophobia.core.batch import collate
+    from sors.core.batch import collate
     m, tok, d, _ = tiny_model("minimal")
     for layout in ("context-first", "menu-first"):
         b = batch(m, tok, d, layout=layout)
@@ -162,7 +162,7 @@ def test_minimal_refuses_truncation_that_removes_a_candidate():
 
 
 def test_structural_inputs_isolate_options_from_order_and_code():
-    from decidophobia.core.menu import reorder_menu
+    from sors.core.menu import reorder_menu
     m, tok, d, _ = tiny_model()
     ex = examples()[0]
     other = reorder_menu(ex, [2, 0, 1], [200, 90, 155])
@@ -197,7 +197,7 @@ def test_both_architectures_produce_menu_probabilities_and_train_new_layers_on_b
 
 
 def test_structural_model_is_equivariant_after_feedback_learns():
-    from decidophobia.core.menu import reorder_menu
+    from sors.core.menu import reorder_menu
     for family in ("qwen3", "qwen35"):
         m, tok, d, _ = tiny_model(feedback=True, family=family)
         m.eval()
@@ -240,7 +240,7 @@ def test_checkpointed_decision_forward_matches_gradients_and_cleans_up_hooks():
 def test_real_tokenizer_preserves_minimal_prompts_markers_and_truncated_context():
     from dataclasses import replace
     from test_batch_loss import _all_tokens
-    from decidophobia.core.batch import collate
+    from sors.core.batch import collate
     tok, d, _, _ = _all_tokens()
     ex = replace(examples()[0], query="a long context " * 100 + " <|D200|> 字符串",
                  option_names=["你好 🔴\nfirst", "literal <|D9|> option", "third option!"], codes=[200, 9, 78])
@@ -260,7 +260,7 @@ def test_real_tokenizer_preserves_minimal_prompts_markers_and_truncated_context(
 
 
 def test_padding_grouping_and_option_chunking_preserve_both_architecture_outputs():
-    from decidophobia.core.model import decision_logits
+    from sors.core.model import decision_logits
     for kind in ("minimal", "structural"):
         m, tok, d, _ = tiny_model(kind, True)
         m.eval()
@@ -293,7 +293,7 @@ def test_feedback_changes_later_backbone_activations_and_decision_probabilities(
 
 
 def test_bfloat16_backbones_and_float32_decision_layers_have_finite_gradients():
-    from decidophobia.core.model import prepare_model
+    from sors.core.model import prepare_model
     for family in ("qwen3", "qwen35"):
         tok, d, ids = tokenizer()
         lm = tiny_backbone(tok, family).to(torch.bfloat16)
@@ -312,7 +312,7 @@ def test_bfloat16_backbones_and_float32_decision_layers_have_finite_gradients():
 
 def test_all_256_candidates_remain_addressable_with_sparse_output_codes():
     from dataclasses import replace
-    from decidophobia.core.batch import collate
+    from sors.core.batch import collate
     for kind in ("minimal", "structural"):
         m, tok, d, _ = tiny_model(kind)
         ex = replace(examples()[0], options=list(range(256)), label=0, gold_idx=0,
@@ -350,8 +350,8 @@ def test_single_channel_decision_is_rejected_before_layernorm_erases_candidate_i
 
 def test_minimal_encoder_rejects_uninstalled_template_markers():
     from test_batch_loss import _tok
-    from decidophobia.core.tokens import install_d_tokens
-    from decidophobia.core.batch import collate
+    from sors.core.tokens import install_d_tokens
+    from sors.core.batch import collate
     tok = _tok()
     d = install_d_tokens(tok)
     for type_marker, context_marker in ((True, False), (False, True)):

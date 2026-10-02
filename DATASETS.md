@@ -1,6 +1,6 @@
 # External dataset assets
 
-Training, serving, dataset adapters and sampling live in this repository. Authored
+SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
 `synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.1/`,
@@ -16,7 +16,8 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 ```
 
 The order is an explicit `--datasets-dir` / API argument, then
-`DECIDOPHOBIA_DATASETS_DIR`, then a sibling `decidophobia-dataset` checkout.
+`SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling
+`decidophobia-dataset` checkout. The separate data repository retains its current name.
 Training and invariance evaluation expose the flag; resume also accepts it.
 Loaders accept `datasets_dir=` and retain their existing explicit asset-directory
 or file arguments. An unavailable requested asset produces a configuration error.
@@ -51,7 +52,7 @@ PYTHONPATH=src .venv/bin/python scripts/resume.py \
 Resume chooses an explicit flag first, then the environment, then the saved
 asset path, then the sibling checkout. A checkpoint whose sampling code or data
 changed is refused. A narrowly pinned migration record in
-`src/decidophobia/training/dataset_split_compat.json` allows pre-split fingerprints
+`src/sors/training/dataset_split_compat.json` allows pre-split fingerprints
 that matched the source snapshot at migration time. This exception requires the
 exact audited post-split fingerprint; subsequent code or data edits invalidate it.
 
@@ -68,7 +69,7 @@ GPU continuation belongs on the original training host with matching dependencie
 Asset-backed integration tests use the same root setting:
 
 ```bash
-DECIDOPHOBIA_DATASETS_DIR=../decidophobia-dataset \
+SORS_DATASETS_DIR=../decidophobia-dataset \
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_train_cli.py
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_dataset_paths.py
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_external_resume.py

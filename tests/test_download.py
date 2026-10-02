@@ -1,4 +1,4 @@
-"""decidophobia.data.download.fetch 的测试: 原始包缺了就下载, 下载与盘上的文件都核对 md5.
+"""sors.data.download.fetch 的测试: 原始包缺了就下载, 下载与盘上的文件都核对 md5.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_download.py
 不联网: urllib.request.urlretrieve 换成往目标路径写字节的假函数.
@@ -10,7 +10,7 @@ import tempfile
 import urllib.request
 
 from _runner import run
-from decidophobia.data.download import fetch
+from sors.data.download import fetch
 
 BODY = b"the archive"
 MD5 = hashlib.md5(BODY).hexdigest()

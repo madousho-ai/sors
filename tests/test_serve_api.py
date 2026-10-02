@@ -1,4 +1,4 @@
-"""decidophobia.serve.api 的测试: 请求体按 TypeSafe API (POST /v1/systemone) 的规范校验. 不碰模型.
+"""sors.serve.api 的测试: 请求体按 TypeSafe API (POST /v1/systemone) 的规范校验. 不碰模型.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_api.py
 """
@@ -6,7 +6,7 @@
 from pydantic import ValidationError
 
 from _runner import run
-from decidophobia.serve.api import Choice, Noul, Score, SystemOneRequest, answer, confidence
+from sors.serve.api import Choice, Noul, Score, SystemOneRequest, answer, confidence
 
 
 def _req(questions, state="Help! My payouts have been failing for 3 days.", model="m"):

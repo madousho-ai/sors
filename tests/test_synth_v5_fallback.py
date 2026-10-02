@@ -5,8 +5,8 @@ import random
 
 from _runner import run
 from test_synth_v5 import TELECOM_C, TELECOM_Q, _data, _find, _paired, PAIR_GOALS
-from decidophobia.core.menu import row_alignment, with_partners
-from decidophobia.data.synth_v5 import V5Rounds, V5Sampler, item_example, load_synth_v5, parse_mix, parse_passes
+from sors.core.menu import row_alignment, with_partners
+from sors.data.synth_v5 import V5Rounds, V5Sampler, item_example, load_synth_v5, parse_mix, parse_passes
 
 
 def _marked(reason="insufficient_evidence", fallback="unknown", control=False):

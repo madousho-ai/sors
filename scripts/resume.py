@@ -31,16 +31,16 @@ from dataclasses import asdict
 import torch
 from transformers import AutoTokenizer
 
-from decidophobia.core.attention import add_attention_arguments, load_causal_lm
-from decidophobia.core.checkpoint import checkpoint_architecture, load_trained, save_trained
-from decidophobia.core.decision import architecture_config, decision_config
-from decidophobia.core.model import adapter_config, prepare_model
-from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
-from decidophobia.data.paths import ENV, add_datasets_argument, datasets_root
-from decidophobia.training.loop import TrainConfig, train
-from decidophobia.training.resume import (read_state, resume_writer, rollback_history, sampling_fingerprint, save_state,
+from sors.core.attention import add_attention_arguments, load_causal_lm
+from sors.core.checkpoint import checkpoint_architecture, load_trained, save_trained
+from sors.core.decision import architecture_config, decision_config
+from sors.core.model import adapter_config, prepare_model
+from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from sors.data.paths import ENV, LEGACY_ENV, add_datasets_argument, datasets_root
+from sors.training.loop import TrainConfig, train
+from sors.training.resume import (read_state, resume_writer, rollback_history, sampling_fingerprint, save_state,
                                          sampling_provenance, verify_sampling_commits, verify_sampling_fingerprint)
-from decidophobia.training.thermal import ThermalGuard
+from sors.training.thermal import ThermalGuard
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -145,7 +145,8 @@ def main():
             config = json.loads(f.metadata()["config"])
         state = {"step": step, "config": config}
         revision = None
-    selected = opts.datasets_dir if opts.datasets_dir is not None else os.environ.get(ENV, getattr(args, "datasets_dir", None))
+    selected = opts.datasets_dir if opts.datasets_dir is not None else os.environ.get(
+        ENV, os.environ.get(LEGACY_ENV, getattr(args, "datasets_dir", None)))
     args.datasets_dir = str(datasets_root(selected))
     if full:
         fingerprint = verify_sampling_fingerprint(ROOT, args.datasets_dir, meta["sampling_fingerprint"])

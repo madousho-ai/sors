@@ -2,18 +2,20 @@
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
 
 from _runner import run
-from decidophobia.training import resume
+from sors.training import resume
 
-SOURCES = ("scripts/train.py", "src/decidophobia/data/synth_v5.py", "src/decidophobia/core/menu.py",
-           "src/decidophobia/core/prompt.py", "src/decidophobia/serve/menus.py",
-           "src/decidophobia/data/paths.py", "src/decidophobia/training/resume.py")
+SOURCES = ("scripts/train.py", "src/sors/data/synth_v5.py", "src/sors/core/menu.py",
+           "src/sors/core/prompt.py", "src/sors/serve/menus.py",
+           "src/sors/data/paths.py", "src/sors/training/resume.py")
 
 
 def _fixture(base):
@@ -48,7 +50,7 @@ def test_sampling_fingerprint_survives_relocation_and_detects_data_and_code_chan
         data = relocated / "synth-intents-v5.1/toy.contexts.json"
         data.write_text('{"contexts":[{"id":"changed"}]}')
         assert resume.sampling_fingerprint(code, relocated) != before
-        (code / "src/decidophobia/data/paths.py").write_text("# changed resolver\n")
+        (code / "src/sors/data/paths.py").write_text("# changed resolver\n")
         assert resume.sampling_fingerprint(code, assets) != before
 
 
@@ -57,7 +59,7 @@ def test_legacy_fingerprint_is_accepted_only_for_the_exact_audited_migration():
         code, assets = _fixture(pathlib.Path(tmp))
         current = resume.sampling_fingerprint(code, assets)
         old = hashlib.sha256(b"old checkpoint fingerprint").hexdigest()
-        manifest = code / "src/decidophobia/training/dataset_split_compat.json"
+        manifest = code / "src/sors/training/dataset_split_compat.json"
         manifest.write_text(json.dumps({"current_fingerprint": current, "legacy_fingerprints": [old],
                                         "legacy_commits": ["a" * 40]}))
         assert resume.verify_sampling_fingerprint(code, assets, old) == current
@@ -74,10 +76,10 @@ def test_legacy_compatibility_refuses_a_changed_sampler():
     with tempfile.TemporaryDirectory() as tmp:
         code, assets = _fixture(pathlib.Path(tmp))
         current = resume.sampling_fingerprint(code, assets)
-        manifest = code / "src/decidophobia/training/dataset_split_compat.json"
+        manifest = code / "src/sors/training/dataset_split_compat.json"
         manifest.write_text(json.dumps({"current_fingerprint": current, "legacy_fingerprints": ["old"],
                                         "legacy_commits": ["a" * 40]}))
-        (code / "src/decidophobia/core/menu.py").write_text("# changed sampler\n")
+        (code / "src/sors/core/menu.py").write_text("# changed sampler\n")
         _refused(lambda: resume.verify_sampling_fingerprint(code, assets, "old"))
 
 
@@ -117,11 +119,51 @@ def test_optional_provenance_works_when_git_is_unavailable():
     with tempfile.TemporaryDirectory() as tmp:
         code, assets = _fixture(pathlib.Path(tmp))
         expected = resume.sampling_fingerprint(code, assets)
-        with patch("decidophobia.training.resume.subprocess.run", side_effect=FileNotFoundError("git")):
+        with patch("sors.training.resume.subprocess.run", side_effect=FileNotFoundError("git")):
             assert resume.sampling_provenance(code, assets) == {
                 "datasets_dir": str(assets), "code_commit": None, "code_dirty": None,
                 "data_commit": None, "data_dirty": None}
             assert resume.verify_sampling_fingerprint(code, assets, expected) == expected
+
+
+def test_resume_resolves_both_environment_names_before_the_saved_dataset_path():
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts/resume.py"
+    spec = importlib.util.spec_from_file_location("resume_environment_cli", script)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    class SelectionReached(Exception):
+        pass
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        run_dir = root / "run"
+        (run_dir / "checkpoints").mkdir(parents=True)
+        saved, legacy, current, explicit = (root / name for name in ("saved", "legacy", "current", "explicit"))
+        resume.save_state({"metadata": {"versions": cli._versions(), "args": {"datasets_dir": str(saved)},
+                                         "sampling_fingerprint": "fixture"}, "config": {}},
+                          run_dir / "checkpoints/latest.trainstate.safetensors")
+        selected = []
+
+        def stop_after_selection(repo, datasets_dir, fingerprint):
+            selected.append(pathlib.Path(datasets_dir))
+            raise SelectionReached
+
+        cases = [({}, [], saved),
+                 ({"DECIDOPHOBIA_DATASETS_DIR": str(legacy)}, [], legacy),
+                 ({"DECIDOPHOBIA_DATASETS_DIR": str(legacy), "SORS_DATASETS_DIR": str(current)}, [], current),
+                 ({"SORS_DATASETS_DIR": str(current)}, ["--datasets-dir", str(explicit)], explicit)]
+        for env, flags, expected in cases:
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(sys, "argv", ["resume.py", "--run", str(run_dir), *flags]), \
+                 patch.object(cli, "verify_sampling_fingerprint", side_effect=stop_after_selection):
+                try:
+                    cli.main()
+                except SelectionReached:
+                    pass
+                else:
+                    raise AssertionError("resume skipped sampling verification")
+            assert selected[-1] == expected, (selected[-1], expected)
 
 
 if __name__ == "__main__":

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import torch
 
-from decidophobia.core.attention import load_causal_lm
-from decidophobia.core.checkpoint import prepare_from_checkpoint, save_trained
-from decidophobia.core.model import last_logits, prepare_model
-from decidophobia.training.loop import TrainConfig
+from sors.core.attention import load_causal_lm
+from sors.core.checkpoint import prepare_from_checkpoint, save_trained
+from sors.core.model import last_logits, prepare_model
+from sors.training.loop import TrainConfig
 from test_qwen35 import tiny_qwen35
 
 

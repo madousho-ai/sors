@@ -253,9 +253,9 @@ def main() -> None:
     from huggingface_hub import snapshot_download
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from decidophobia.data.banking77 import DATA_COMMIT, load_banking77
-    from decidophobia.evaluation.metrics import summarize
-    from decidophobia.training.thermal import ThermalGuard
+    from sors.data.banking77 import DATA_COMMIT, load_banking77
+    from sors.evaluation.metrics import summarize
+    from sors.training.thermal import ThermalGuard
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")

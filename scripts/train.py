@@ -9,7 +9,7 @@
   synth-menu  synth 只要菜单题, 不要二元题 (不与 synth 并用)
   synth-v3    外部资产 synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
-              写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
+              写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 sors/data/synth_v3.py)
   synth-v5.1  外部资产 synth-intents-v5.1: 客户消息、工单与规则材料统一成「材料 + 绑定的题」；synth-v5 保留为别名.
               选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
               edge_case / long_context / ambiguous), 再领域、题型、材料各自均分; 或者给 --passes 按轮抽, 一轮每个绑定都出,
@@ -27,7 +27,7 @@
 --eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench (见 build_eval_sets).
 训练中 (step 0 与每 --eval-every 步) 只跑探针: 每个评估集固定 --probe-size 道题, 固定 --probe-passes 种随机排法
 (行打乱、D 码随机), 报 accuracy / agree / js. 最后一步再跑全量评估集: 部署形态 (连续编号) 下的正确率那一套,
-与全量题的同一种一致性. 见 decidophobia.training.loop.eval_record.
+与全量题的同一种一致性. 见 sors.training.loop.eval_record.
 
   PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth --grad-ckpt --steps 2000
   PYTHONPATH=src .venv/bin/python scripts/train.py --init runs/<run>/trained.safetensors --steps 0   # 只评估: 探针 + 全量
@@ -57,19 +57,19 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoTokenizer
 
-from decidophobia.core.attention import add_attention_arguments, load_causal_lm
-from decidophobia.core.checkpoint import checkpoint_adapter, checkpoint_architecture, load_trained, save_trained
-from decidophobia.core.decision import DecisionConfig, architecture_config, decision_config
-from decidophobia.core.menu import RandomCodes, class_split, menu_k_range, with_partners
-from decidophobia.core.model import TRAINABLE, prepare_model
-from decidophobia.core.prompt import DEFAULT_LAYOUT, LAYOUTS
-from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
-from decidophobia.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_public_decisions
-from decidophobia.data.paths import add_datasets_argument, datasets_root
-from decidophobia.evaluation.scoring import EvalSet
-from decidophobia.training.loop import TrainConfig, train
-from decidophobia.training.loss import LOSSES
-from decidophobia.training.thermal import ThermalGuard
+from sors.core.attention import add_attention_arguments, load_causal_lm
+from sors.core.checkpoint import checkpoint_adapter, checkpoint_architecture, load_trained, save_trained
+from sors.core.decision import DecisionConfig, architecture_config, decision_config
+from sors.core.menu import RandomCodes, class_split, menu_k_range, with_partners
+from sors.core.model import TRAINABLE, prepare_model
+from sors.core.prompt import DEFAULT_LAYOUT, LAYOUTS
+from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from sors.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_public_decisions
+from sors.data.paths import add_datasets_argument, datasets_root
+from sors.evaluation.scoring import EvalSet
+from sors.training.loop import TrainConfig, train
+from sors.training.loss import LOSSES
+from sors.training.thermal import ThermalGuard
 
 KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.1", "synth-v5", "massive") + PUBLIC_DATASETS
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench")
@@ -105,14 +105,14 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     out = {}
     for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
         if name == "simple":
-            from decidophobia.data.simple_eval import load_simple_eval
+            from sors.data.simple_eval import load_simple_eval
 
             for sub, exs in load_simple_eval(datasets_dir=getattr(args, "datasets_dir", None)).items():
                 pos = 1 if sub == "simple_bool" else None
                 out[sub] = EvalSet(exs, args.eval_batch_size, pos_class=pos)
             continue
         if name == "jevbench":
-            from decidophobia.data.jevbench import load_jevbench
+            from sors.data.jevbench import load_jevbench
 
             for sub, exs in load_jevbench().items():
                 bs = max(1, args.eval_batch_size // 4) if sub == "jevbench_hard" else args.eval_batch_size
@@ -120,22 +120,22 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
             continue
         if name == "banking77":
             if b77_test is None:
-                from decidophobia.data.banking77 import load_banking77
+                from sors.data.banking77 import load_banking77
 
                 b77_test = load_banking77(args.data_dir)[1]
             te, bs, pos = b77_test, args.eval_batch_size, None
         elif name == "banking77-desc":
-            from decidophobia.data.banking77 import load_banking77
+            from sors.data.banking77 import load_banking77
 
             te, bs, pos = load_banking77(args.data_dir, labels="desc", datasets_dir=getattr(args, "datasets_dir", None))[1], args.eval_batch_size, None
         elif name in ("massive", "massive-desc"):
-            from decidophobia.data.massive import load_massive
+            from sors.data.massive import load_massive
 
             labels = "desc" if name == "massive-desc" else "raw"
             te, bs, pos = load_massive(partition="test", labels=labels, datasets_dir=getattr(args, "datasets_dir", None)), args.eval_batch_size, None
         else:
             if boolq_val is None:
-                from decidophobia.data.boolq import load_boolq
+                from sors.data.boolq import load_boolq
 
                 boolq_val = load_boolq()[1]
             te, bs, pos = boolq_val, max(1, args.eval_batch_size // 2), 1
@@ -178,7 +178,7 @@ def build_data(args):
     ktr = menu_k_range(args.k_min, args.k_max)
     b77 = None
     if "banking77" in datasets:
-        from decidophobia.data.banking77 import load_banking77
+        from sors.data.banking77 import load_banking77
 
         b77 = load_banking77(args.data_dir)
         tr, te = b77
@@ -192,7 +192,7 @@ def build_data(args):
     if "synth" in datasets or "synth-menu" in datasets:
         # 每条消息两道题: 菜单题只列正确意图所在领域的意图 (k 256 即整个领域), 二元题问消息里的一个细节.
         # 两种题各占一个 sampler, 于是一批里各一半. synth-menu 只要菜单题, 一批全是它.
-        from decidophobia.data.synth import load_synth, load_synth_binary, sample_domain_menus
+        from sors.data.synth import load_synth, load_synth_binary, sample_domain_menus
 
         synth, synth_domains = load_synth(datasets_dir=getattr(args, "datasets_dir", None))
         samplers.append(lambda n, rng: sample_domain_menus(synth, synth_domains, ktr, n, rng))
@@ -203,7 +203,7 @@ def build_data(args):
     if "synth-v3" in datasets:
         # 题自带选项, 不组菜单: 每条先挑领域 (五个领域机会均等) 再挑题, 每次换问法、重新打乱选项.
         # --k-min / --k-max 管不到它, 菜单长度就是题的选项数.
-        from decidophobia.data.synth_v3 import load_synth_v3, sample_synth_v3
+        from sors.data.synth_v3 import load_synth_v3, sample_synth_v3
 
         v3 = load_synth_v3(datasets_dir=getattr(args, "datasets_dir", None))
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
@@ -211,7 +211,7 @@ def build_data(args):
     if "synth-v5" in datasets:
         # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
         # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
-        from decidophobia.data.synth_v5 import V5Rounds, V5Sampler, load_synth_v5, parse_mix, parse_passes
+        from sors.data.synth_v5 import V5Rounds, V5Sampler, load_synth_v5, parse_mix, parse_passes
 
         v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
         goals = {it.goal for it in v5}
@@ -232,14 +232,14 @@ def build_data(args):
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
-        from decidophobia.data.massive import load_massive
+        from sors.data.massive import load_massive
 
         mtr = load_massive(partition="train")
         m_classes = list(range(len(mtr.names)))
         samplers.append(lambda n, rng: mtr.sample_examples(m_classes, ktr, n, rng))
         split_info["massive_classes"] = len(m_classes)
     if "boolq" in datasets:
-        from decidophobia.data.boolq import load_boolq
+        from sors.data.boolq import load_boolq
 
         btr, bva = load_boolq()
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
@@ -279,7 +279,7 @@ def build_data(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Train SORS — State-conditioned Option Ranking System")
     add_attention_arguments(ap)
     add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
@@ -514,7 +514,7 @@ def main() -> None:
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
     sample_fn, eval_sets, split_info = build_data(args)
-    from decidophobia.training.resume import sampling_provenance
+    from sors.training.resume import sampling_provenance
     provenance = sampling_provenance(pathlib.Path(__file__).resolve().parents[1], args.datasets_dir)
 
     # ---- 模型 ---------------------------------------------------------------------
@@ -569,7 +569,7 @@ def main() -> None:
     on_state = None
     if args.save_training_state:
         import transformers
-        from decidophobia.training.resume import sampling_fingerprint, save_state
+        from sors.training.resume import sampling_fingerprint, save_state
         metadata = {"args": vars(args), "sampling_fingerprint": sampling_fingerprint(pathlib.Path(__file__).resolve().parents[1], args.datasets_dir),
                     "sampling_provenance": provenance,
                     "versions": {"python": sys.version, "torch": str(torch.__version__), "transformers": transformers.__version__},

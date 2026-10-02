@@ -1,4 +1,4 @@
-"""decidophobia.data.massive 的测试: 只做评估的留出数据集, 训练里一条都不出现.
+"""sors.data.massive 的测试: 只做评估的留出数据集, 训练里一条都不出现.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_massive.py
 data/massive/amazon-massive-dataset-1.0.tar.gz 不在盘上时第一次用到会自动下载 (39.5MB).
@@ -12,8 +12,8 @@ import tempfile
 import urllib.request
 
 from _runner import run
-from decidophobia.data.paths import asset_path
-from decidophobia.data.massive import DEFAULT_DIR, TARBALL, URL, load_massive
+from sors.data.paths import asset_path
+from sors.data.massive import DEFAULT_DIR, TARBALL, URL, load_massive
 
 
 def test_test_split_has_2974_utterances_over_60_intents():

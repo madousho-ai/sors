@@ -13,12 +13,12 @@ import sys
 import tempfile
 
 from _runner import run
-from decidophobia.core.menu import row_alignment, with_partners
-from decidophobia.core.prompt import render_menu
+from sors.core.menu import row_alignment, with_partners
+from sors.core.prompt import render_menu
 
 
 def _api():
-    name = "decidophobia.data.public_decisions"
+    name = "sors.data.public_decisions"
     assert importlib.util.find_spec(name) is not None, "official decision adapters are missing"
     return importlib.import_module(name)
 
@@ -408,7 +408,7 @@ def test_preflight_command_runs_without_a_model_and_reports_filters():
         manifest, _ = _fixture(root)
         # Assert capability before spawning, so the RED phase names the missing behavior.
         _load("contractnli", manifest)
-        proc = subprocess.run([sys.executable, "-m", "decidophobia.data.public_decisions",
+        proc = subprocess.run([sys.executable, "-m", "sors.data.public_decisions",
                                "--manifest", str(manifest), "--dataset", "contractnli"],
                               text=True, capture_output=True, timeout=30)
         assert proc.returncode == 0, proc.stderr

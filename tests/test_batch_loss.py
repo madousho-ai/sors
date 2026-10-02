@@ -1,4 +1,4 @@
-"""decidophobia.core.tokens / batch / loss / metrics 的测试.
+"""sors.core.tokens / batch / loss / metrics 的测试.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_batch_loss.py
 """
@@ -8,15 +8,15 @@ import sys
 
 import torch
 
-from decidophobia.core.batch import collate, fit, length_groups, pair_alignment, trim_left_padding
-from decidophobia.core.menu import MenuExample, reorder_menu
-from decidophobia.core.prompt import encode_prompts, prompt_pieces, render_menu
-from decidophobia.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
+from sors.core.batch import collate, fit, length_groups, pair_alignment, trim_left_padding
+from sors.core.menu import MenuExample, reorder_menu
+from sors.core.prompt import encode_prompts, prompt_pieces, render_menu
+from sors.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
                                       install_type_tokens)
-from decidophobia.evaluation.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
+from sors.evaluation.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
                                              first_two_slots, menu_size_summary, nll_multiclass, pass_consistency, topk_accuracy)
-from decidophobia.training.loop import scalar_items
-from decidophobia.training.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, menu_hits,
+from sors.training.loop import scalar_items
+from sors.training.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, menu_hits,
                                         slot_cross_entropy, smooth_target, training_loss, vocab_cross_entropy)
 
 MODEL = "Qwen/Qwen3-0.6B-Base"

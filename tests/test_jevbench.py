@@ -1,4 +1,4 @@
-"""decidophobia.data.jevbench 的测试: JevBench 的三档公开题 (下载到 data/jevbench) 读成部署形态的评估集.
+"""sors.data.jevbench 的测试: JevBench 的三档公开题 (下载到 data/jevbench) 读成部署形态的评估集.
 
 跑:  PYTHONPATH=src .venv/bin/python tests/test_jevbench.py
 """
@@ -12,10 +12,10 @@ import urllib.request
 from pydantic import TypeAdapter
 
 from _runner import run
-from decidophobia.core.prompt import state_text
-from decidophobia.data.jevbench import COMMIT, DEFAULT_DIR, TIERS, load_jevbench, to_eval_example
-from decidophobia.serve.api import Question
-from decidophobia.serve.menus import to_example
+from sors.core.prompt import state_text
+from sors.data.jevbench import COMMIT, DEFAULT_DIR, TIERS, load_jevbench, to_eval_example
+from sors.serve.api import Question
+from sors.serve.menus import to_example
 
 
 def _rows(tier: str, data_dir=DEFAULT_DIR) -> list[dict]:

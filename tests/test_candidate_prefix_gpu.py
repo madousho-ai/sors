@@ -18,11 +18,11 @@ import torch
 from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples
 from test_candidate_prefix import trace
-from decidophobia.core.batch import collate
-from decidophobia.core.candidate_cache import frozen_encoder, shared_candidate_hidden
-from decidophobia.core.decision import DecisionConfig
-from decidophobia.core.model import prepare_model
-from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from sors.core.batch import collate
+from sors.core.candidate_cache import frozen_encoder, shared_candidate_hidden
+from sors.core.decision import DecisionConfig
+from sors.core.model import prepare_model
+from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 
 
 def compare(m, data, label, *, probability_atol=5e-3):
@@ -86,7 +86,7 @@ def tiny(family, blocks):
 
 def real_model(args):
     from transformers import AutoTokenizer
-    from decidophobia.core.attention import load_causal_lm
+    from sors.core.attention import load_causal_lm
     print(f"START real prefix {args.real_model} revision={args.revision}", flush=True)
     tok = AutoTokenizer.from_pretrained(args.real_model, revision=args.revision, local_files_only=True)
     d = install_d_tokens(tok)

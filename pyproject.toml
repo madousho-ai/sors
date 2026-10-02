@@ -1,5 +1,6 @@
 [project]
-name = "decidophobia"
+name = "sors"
+description = "State-conditioned Option Ranking System"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [

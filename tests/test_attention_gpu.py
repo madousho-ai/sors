@@ -13,9 +13,9 @@ import tempfile
 import torch
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
-from decidophobia.core import attention
-from decidophobia.core.model import last_logits, prepare_model
-from decidophobia.training.loss import slot_cross_entropy
+from sors.core import attention
+from sors.core.model import last_logits, prepare_model
+from sors.training.loss import slot_cross_entropy
 
 
 def main():
@@ -25,7 +25,7 @@ def main():
     args = parser.parse_args()
     assert hasattr(attention, "load_causal_lm"), "the shared model loader is not implemented"
     assert torch.cuda.is_available(), "a CUDA GPU is required"
-    with tempfile.TemporaryDirectory(prefix="decidophobia-flash-attention-") as directory:
+    with tempfile.TemporaryDirectory(prefix="sors-flash-attention-") as directory:
         cfg = Qwen3Config(vocab_size=256, hidden_size=256, intermediate_size=512, num_hidden_layers=2,
                           num_attention_heads=2, num_key_value_heads=1, head_dim=128,
                           attention_dropout=0.0, use_cache=False)

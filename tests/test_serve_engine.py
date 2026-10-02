@@ -1,4 +1,4 @@
-"""decidophobia.serve.engine 的测试. 一层、hidden 16 的随机 Qwen3 配真的 tokenizer, CPU fp32.
+"""sors.serve.engine 的测试. 一层、hidden 16 的随机 Qwen3 配真的 tokenizer, CPU fp32.
 
 要钉住的是: 服务端的路 (state 算一次 KV cache、各问题的分支接在后面分组前向) 给每道题的菜单分布,
 与评估的路 (evaluation.scoring.score_examples: 整条提示、左填充成批、一次前向) 对同一份菜单给的相同.
@@ -13,15 +13,15 @@ import tempfile
 import torch
 
 from _runner import run
-from decidophobia.core.checkpoint import save_trained
-from decidophobia.core.model import prepare_model
-from decidophobia.core.prompt import render_menu
-from decidophobia.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
-from decidophobia.evaluation.scoring import score_examples
-from decidophobia.serve.api import SystemOneRequest
-from decidophobia.serve.engine import Engine, RequestTooLong, load_engine, recorded_base_model
-from decidophobia.serve.menus import to_example
-from decidophobia.training.loop import TrainConfig
+from sors.core.checkpoint import save_trained
+from sors.core.model import prepare_model
+from sors.core.prompt import render_menu
+from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
+from sors.evaluation.scoring import score_examples
+from sors.serve.api import SystemOneRequest
+from sors.serve.engine import Engine, RequestTooLong, load_engine, recorded_base_model
+from sors.serve.menus import to_example
+from sors.training.loop import TrainConfig
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 STATE = {"ticket": "Help! My payouts have been failing for 3 days.", "plan": "pro"}

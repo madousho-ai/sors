@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import tempfile
+from unittest.mock import patch
 
 from _runner import run
 
@@ -50,14 +51,19 @@ def test_the_base_model_comes_from_the_flag_or_else_from_the_run_it_was_trained_
 
 
 def test_the_api_key_comes_from_the_flag_or_the_environment():
-    os.environ.pop("DECIDOPHOBIA_API_KEY", None)
-    assert _mod.api_key(_args("--init", "x")) is None
-    os.environ["DECIDOPHOBIA_API_KEY"] = "from-env"
-    try:
+    with patch.dict(os.environ, {}, clear=True):
+        assert _mod.api_key(_args("--init", "x")) is None
+        os.environ["SORS_API_KEY"] = "from-env"
         assert _mod.api_key(_args("--init", "x")) == "from-env"
         assert _mod.api_key(_args("--init", "x", "--api-key", "flag")) == "flag"
-    finally:
-        del os.environ["DECIDOPHOBIA_API_KEY"]
+
+
+def test_existing_api_keys_keep_auth_enabled_and_sors_takes_precedence():
+    with patch.dict(os.environ, {"DECIDOPHOBIA_API_KEY": "legacy"}, clear=True):
+        assert _mod.api_key(_args("--init", "x")) == "legacy"
+        os.environ["SORS_API_KEY"] = "current"
+        assert _mod.api_key(_args("--init", "x")) == "current"
+        assert _mod.api_key(_args("--init", "x", "--api-key", "flag")) == "flag"
 
 
 def test_it_listens_on_localhost_by_default():
