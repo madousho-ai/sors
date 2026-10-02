@@ -1,6 +1,6 @@
-"""synth-intents v5.1 适配: datasets/synth-intents-v5.1/ 的材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
+"""synth-intents v5.1 适配: 外部数据仓库的 synth-intents-v5.1/ 材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
 
-格式与检查见 datasets/synth-intents-v5.1/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
+格式与检查见外部数据仓库的 synth-intents-v5.1/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
 这里一个绑定读成一个 V5Item, 数据目录里的 schema.py 先把每个领域检查一遍, 有问题就报 ValueError.
 
   选项   模型看到的样子与推理服务相同 (serve.menus.option_row): 键写法「键: 说明」, 说明为 null 只有键;

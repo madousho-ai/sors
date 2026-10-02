@@ -4,13 +4,13 @@
 --dataset 是用加号连起来的训练集列表, 一个 batch 里各占一份:
   banking77   Banking77, 按类留出 17 个测泛化 (seen / unseen)
   boolq       BoolQ, k=2, 逐条问句
-  synth       datasets/synth-intents-v2.5, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
+  synth       外部资产 synth-intents-v2.5, 4096 个合成意图 × 3 条消息. 每条消息两道题, 各占一份:
               菜单题只列正确意图所在领域的意图 (k 256 即整个领域 256 个), 二元题问消息里的一个细节 (no / yes)
   synth-menu  synth 只要菜单题, 不要二元题 (不与 synth 并用)
-  synth-v3    datasets/synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
+  synth-v3    外部资产 synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 decidophobia/data/synth_v3.py)
-  synth-v5.1  datasets/synth-intents-v5.1: 客户消息、工单与规则材料统一成「材料 + 绑定的题」；synth-v5 保留为别名.
+  synth-v5.1  外部资产 synth-intents-v5.1: 客户消息、工单与规则材料统一成「材料 + 绑定的题」；synth-v5 保留为别名.
               选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
               edge_case / long_context / ambiguous), 再领域、题型、材料各自均分; 或者给 --passes 按轮抽, 一轮每个绑定都出,
               列出的目标多出几遍. --mask-descriptions 按比例遮掉可遮的题的选项说明;
@@ -21,6 +21,7 @@
               官方决策子任务，从 --public-manifest 声明的本地 train 文件读取；全量菜单、硬标签，
               按数据集各占一份。筛选统计和原始文件 SHA256 写进 result.json 的 split.public_decisions。
 每个训练集各自组菜单, 干扰项不跨集合抽.
+--datasets-dir 指定外部数据仓库根目录，默认取环境变量或同级 decidophobia-dataset；详见 DATASETS.md。
 "both" 仍可用, 等于 banking77+boolq.
 
 --eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench (见 build_eval_sets).
@@ -96,9 +97,9 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     """--eval 列的评估集, 与训练集无关. 菜单全量、连续编号; 每个集合的菜单用 Random(seed + 菜单长度) 组,
     MASSIVE 那份因此与 scripts/eval-massive.py 的 k=60 逐题相同. 训练里已读过的 split 可以传进来复用.
     banking77 / massive 的菜单显示原始 label 名; -desc 那两个显示「原始名: description」(description 在
-    datasets/label-descriptions, 写法同推理服务的选项), 菜单用同一个 Random 组, 于是与不带 -desc 的逐题相同
+    外部数据仓库的 label-descriptions, 写法同推理服务的选项), 菜单用同一个 Random 组, 于是与不带 -desc 的逐题相同
     (消息、选项顺序、正确位置), 只换了选项的文字.
-    simple 是 datasets/synth-simple-eval, 菜单写死在文件里 (不受 --k-eval / --seed 影响), 展开成每个菜单长度一个集合.
+    simple 是外部数据仓库的 synth-simple-eval, 菜单写死在文件里 (不受 --k-eval / --seed 影响), 展开成每个菜单长度一个集合.
     jevbench 是 JevBench 的三档公开题 (第一次用时下载到 data/jevbench, 不进仓库), 同样写死, 展开成 jevbench_easy / _original / _hard;
     hard 的提示最长 3838 token, 批取四分之一, 一批的 token 数与 BoolQ 那档相当."""
     out = {}

@@ -380,7 +380,7 @@ def load_public_decisions(name: str, manifest=DEFAULT_MANIFEST) -> Decisions:
         raise ValueError(f"unknown public dataset {name!r}; choose from {PUBLIC_DATASETS}")
     manifest = pathlib.Path(manifest).resolve()
     if not manifest.is_file():
-        raise ValueError(f"missing public dataset manifest {manifest}; see datasets/public-decisions/README.md")
+        raise ValueError(f"missing public dataset manifest {manifest}; see public-decisions/README.md in the dataset repository")
     data = json.loads(manifest.read_text(encoding="utf-8"))
     if data.get("version") != 1 or not isinstance(data.get("sources"), list):
         raise ValueError("public manifest needs version=1 and a sources list")

@@ -1,4 +1,4 @@
-"""synth-simple-eval 适配: datasets/synth-simple-eval/synth-simple-eval.jsonl -> 按菜单长度分开的评估集. 只做评估.
+"""synth-simple-eval 适配: 外部数据仓库的 synth-simple-eval/synth-simple-eval.jsonl -> 按菜单长度分开的评估集. 只做评估.
 
 客户消息直接说出答案, 选项是常见名词: 5 / 10 / 20 / 40 / 60 / 100 / 255 项各 10 题, 另有 10 道 no / yes 题.
 题目是固定文件 (菜单顺序、正确答案位置都已写死), 由同目录的 generate.py 生成, 设计见那里的说明.

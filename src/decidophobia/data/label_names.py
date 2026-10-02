@@ -2,7 +2,7 @@
 
   raw   原始 label 名, 一字不改: 'Refund_not_showing_up', 'reverted_card_payment?', 'iot_hue_lightchange'
   desc  「原始 label 名: description」, 与推理服务、synth-v5 的选项同一种写法 (serve.menus.option_row).
-        description 在 datasets/label-descriptions/<数据集>.json: 照 TypeSafe (jev) 文档里人写选项描述的样子,
+        description 在外部数据仓库的 label-descriptions/<数据集>.json: 照 TypeSafe (jev) 文档里人写选项描述的样子,
         首字母大写的话题名词短语, 不带句号, 不出现 I/my/you 这类人称 (如 'Card payment still showing as pending');
         每句写明与近邻类的分界 (只照 train 写, 见那两个文件的提交说明)
 """
@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import json
-import pathlib
 
 from decidophobia.serve.menus import option_row
 from decidophobia.data.paths import asset_path, datasets_root

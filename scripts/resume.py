@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 """在原 run 续训。保留原 train.py 与数据版本，恢复从 completed step 后的一次更新。
 
-旧权重档须显式给 --allow-optimizer-reset 与 --expected-data-commit；原参数从 TensorBoard 读取。
+旧权重档须显式给 --allow-optimizer-reset 与 --expected-data-commit；拆仓后的版本同时给 --expected-code-commit。
+--datasets-dir 选择数据仓库；原参数从 TensorBoard 读取。迁移兼容范围见 DATASETS.md。
 之后默认从 checkpoints/latest.trainstate.safetensors 恢复完整状态。--stop-after N 可暂停并保存现场，
 原目标总步数/LR 日程保持不变。所有验证和训练应在原服务器进行。
 
 首次恢复旧档（先确认原数据/采样代码与该 commit 相同）：
   PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<原run> \
     --checkpoint runs/<原run>/checkpoints/step-01500.safetensors \
-    --allow-optimizer-reset --expected-data-commit c8a2330
+    --allow-optimizer-reset --expected-code-commit CODE_REV --expected-data-commit DATA_REV
 后续完整恢复：
   PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<原run>
 latest.trainstate.safetensors 原子替换，仅保留最新完整状态；推理权重仍按原 save_every 单独存档。

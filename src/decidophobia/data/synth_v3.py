@@ -1,4 +1,4 @@
-"""synth-intents-v3 适配: datasets/synth-intents-v3/ -> 逐题的 MenuExample. 只做训练.
+"""synth-intents-v3 适配: 外部数据仓库的 synth-intents-v3/ -> 逐题的 MenuExample. 只做训练.
 
 一个领域是 <domain>.py (题与文本, 格式见同目录 schema.py) 加参考模型的答案 <domain>.answer.json;
 有 answer.json 的都读. 每份文本被问到的每道题 (needs / texts 满足) 是一条 V3Item, 标签按来源分三种:
