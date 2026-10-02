@@ -109,5 +109,17 @@ def test_partial_unknown_score_distribution_becomes_an_explicit_unknown_choice()
     assert item.target == [0.0, 0.25, 0.75]
 
 
+def test_unknown_controls_keep_a_listed_hard_answer_after_augmentation():
+    bank = [{"id": "service", "ask": ["Which service?"], "options": ["Broadband", "Phone", "TV package"]}]
+    contexts = [{"id": cid, "label": "Customer message", "goal": "ambiguous", "text": "Please fix my TV package",
+                 "questions": [{"question": "service", "answer": "TV package", "fallback": "unknown"}]}
+                for cid in ("telecom_t1", "telecom_amb/service_mix/0")]
+    items = load_synth_v5(_data(telecom=(bank, contexts)))
+    for cid in ("telecom_t1", "telecom_amb/service_mix/0"):
+        example = item_example(_find(items, cid, "service"), random.Random(0), 0.0, fallback_rate=1.0)
+        assert len(example.options) == 4 and example.option_names[example.gold_idx] == "TV package"
+        assert example.target is None
+
+
 if __name__ == "__main__":
     run(globals())
