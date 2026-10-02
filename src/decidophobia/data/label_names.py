@@ -12,10 +12,10 @@ from __future__ import annotations
 import json
 
 from decidophobia.serve.menus import option_row
-from decidophobia.data.paths import asset_path, datasets_root
+from decidophobia.data.paths import DEFAULT_ROOT, asset_path
 
 LABEL_STYLES = ("raw", "desc")
-DESC_DIR = datasets_root() / "label-descriptions"
+DESC_DIR = DEFAULT_ROOT / "label-descriptions"
 
 
 def label_names(dataset: str, raw_names: list[str], style: str, *, datasets_dir=None) -> dict[int, str]:

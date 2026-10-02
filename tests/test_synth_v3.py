@@ -17,7 +17,10 @@ import shutil
 import tempfile
 
 from _runner import run
-from decidophobia.data.synth_v3 import DEFAULT_DIR, load_synth_v3, sample_synth_v3
+from decidophobia.data.synth_v3 import load_synth_v3, sample_synth_v3
+from decidophobia.data.paths import asset_path
+
+DEFAULT_DIR = asset_path("synth-intents-v3")
 
 DOMAINS = {"browser_agent", "coding_ci", "hotel", "sec_ops", "telecom"}
 

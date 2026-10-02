@@ -3,6 +3,8 @@ import argparse
 import json
 import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
 
@@ -76,6 +78,22 @@ def test_asset_configuration_resolves_cli_before_environment_and_reports_missing
                 assert "--datasets-dir" in str(exc) and str(root) in str(exc)
             else:
                 raise AssertionError("missing assets must fail with configuration guidance")
+
+
+def test_first_import_allows_explicit_assets_despite_an_empty_environment():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "label-descriptions").mkdir()
+        (root / "label-descriptions/banking77.json").write_text(json.dumps({"close": "Close it"}))
+        script = '''import sys
+from decidophobia.data.label_names import label_names
+from decidophobia.data import synth, synth_v3, synth_v5, simple_eval
+assert label_names("banking77", ["close"], "raw") == {0: "close"}
+assert label_names("banking77", ["close"], "desc", datasets_dir=sys.argv[1]) == {0: "close: Close it"}
+'''
+        result = subprocess.run([sys.executable, "-B", "-c", script, tmp], capture_output=True,
+                                env={**os.environ, "DECIDOPHOBIA_DATASETS_DIR": ""})
+        assert result.returncode == 0, result.stderr.decode()
 
 
 if __name__ == "__main__":

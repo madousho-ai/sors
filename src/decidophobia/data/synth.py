@@ -13,9 +13,9 @@ import pathlib
 import random
 
 from decidophobia.core.menu import LabeledSet, MenuExample, compose_menu, draw_k
-from decidophobia.data.paths import asset_path, datasets_root
+from decidophobia.data.paths import DEFAULT_ROOT, asset_path
 
-DEFAULT_DIR = datasets_root() / "synth-intents-v2.5"
+DEFAULT_DIR = DEFAULT_ROOT / "synth-intents-v2.5"
 CONTEXT_LABEL = "Customer message"
 
 

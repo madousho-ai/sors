@@ -23,9 +23,9 @@ from dataclasses import dataclass, replace
 
 from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import state_text
-from decidophobia.data.paths import asset_path, datasets_root
+from decidophobia.data.paths import DEFAULT_ROOT, asset_path
 
-DEFAULT_DIR = datasets_root() / "synth-intents-v3"
+DEFAULT_DIR = DEFAULT_ROOT / "synth-intents-v3"
 
 
 @dataclass(frozen=True)

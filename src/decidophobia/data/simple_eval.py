@@ -13,9 +13,9 @@ import json
 import pathlib
 
 from decidophobia.core.menu import MenuExample
-from decidophobia.data.paths import asset_path, datasets_root
+from decidophobia.data.paths import DEFAULT_ROOT, asset_path
 
-DEFAULT_PATH = datasets_root() / "synth-simple-eval" / "synth-simple-eval.jsonl"
+DEFAULT_PATH = DEFAULT_ROOT / "synth-simple-eval" / "synth-simple-eval.jsonl"
 SIZES = (5, 10, 20, 40, 60, 100, 255)
 CONTEXT_LABEL = "Customer message"
 _BOOL = {"no": 0, "yes": 1}

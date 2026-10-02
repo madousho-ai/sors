@@ -25,6 +25,7 @@ fallback_rate 默认 0.5，每次抽取出一个菜单版本。既有 other_of �
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import random
 from dataclasses import dataclass, replace
@@ -32,9 +33,9 @@ from dataclasses import dataclass, replace
 from decidophobia.core.menu import MenuExample, reorder_menu
 from decidophobia.core.prompt import state_text
 from decidophobia.serve.menus import option_row
-from decidophobia.data.paths import asset_path, datasets_root
+from decidophobia.data.paths import DEFAULT_ROOT, asset_path
 
-DEFAULT_DIR = datasets_root() / "synth-intents-v5.1"
+DEFAULT_DIR = DEFAULT_ROOT / "synth-intents-v5.1"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,8 @@ def _schema(data_dir: pathlib.Path):
     spec = importlib.util.spec_from_file_location(f"synth_v5_schema_{abs(hash(str(data_dir)))}", data_dir / "schema.py")
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
+    if "JEVBENCH_DIR" not in os.environ and hasattr(m, "JEVBENCH"):
+        m.JEVBENCH = pathlib.Path(__file__).resolve().parents[3] / "data" / "jevbench"
     return m
 
 

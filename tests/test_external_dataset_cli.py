@@ -4,6 +4,8 @@ import os
 import pathlib
 import random
 import shutil
+import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
 
@@ -45,6 +47,38 @@ def test_v3_loader_uses_explicit_root_with_an_invalid_environment():
         by_domain = load_synth_v3(datasets_dir=root)
     assert set(by_domain) == {"telecom", "hotel", "browser_agent", "sec_ops", "coding_ci"}
     assert sum(map(len, by_domain.values())) == 688
+
+
+def test_v5_overlap_check_uses_the_running_code_checkouts_cache():
+    text = "violet lanterns illuminate quiet corridors beneath ancient stone arches"
+    bank = [{"id": "pick", "ask": ["Which?"], "options": ["first", "second"]}]
+    contexts = [{"id": "telecom_a", "label": "", "goal": "breadth", "text": text,
+                 "questions": [{"question": "pick", "answer": "first"}]}]
+    fixture = _data(telecom=(bank, contexts))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            code = pathlib.Path(tmp) / "custom-code-name"
+            shutil.copytree(pathlib.Path(__file__).resolve().parents[1] / "src", code / "src",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            cache = code / "data/jevbench"
+            cache.mkdir(parents=True)
+            (cache / "easy.jsonl").write_text(json.dumps({"state": text}) + "\n")
+            script = '''import sys
+from decidophobia.data.synth_v5 import load_synth_v5
+try:
+    load_synth_v5(sys.argv[1])
+except ValueError as exc:
+    assert "JevBench" in str(exc), str(exc)
+else:
+    raise AssertionError("overlap was silently accepted under a custom checkout name")
+'''
+            env = {**os.environ, "PYTHONPATH": str(code / "src")}
+            env.pop("JEVBENCH_DIR", None)
+            result = subprocess.run([sys.executable, "-B", "-c", script, str(fixture)], cwd=code,
+                                    env=env, capture_output=True)
+            assert result.returncode == 0, result.stderr.decode()
+    finally:
+        shutil.rmtree(fixture)
 
 
 if __name__ == "__main__":

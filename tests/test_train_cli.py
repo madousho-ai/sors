@@ -13,7 +13,6 @@ import random
 from _runner import run
 from decidophobia.core.menu import row_alignment
 from decidophobia.data.jevbench import load_jevbench
-from decidophobia.data.label_names import DESC_DIR
 from decidophobia.data.paths import asset_path
 from decidophobia.data.simple_eval import load_simple_eval
 from decidophobia.data.synth import load_synth
@@ -86,7 +85,7 @@ def test_desc_eval_sets_ask_the_same_questions_with_descriptions_on_the_menu():
     只有菜单上显示的文字换成「原始名: description」(description 取自 datasets/label-descriptions)."""
     _, ev, _ = _mod.build_data(_args("massive", eval="banking77+banking77-desc+massive+massive-desc"))
     for raw, desc, f in (("banking77", "banking77-desc", "banking77.json"), ("massive", "massive-desc", "massive.json")):
-        d = json.loads((DESC_DIR / f).read_text())
+        d = json.loads(asset_path(f"label-descriptions/{f}").read_text())
         a, b = ev[raw].examples, ev[desc].examples
         assert len(a) == len(b) and ev[desc].pos_class is None
         for x, y in zip(a, b):

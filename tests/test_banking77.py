@@ -8,7 +8,7 @@ import json
 
 from _runner import run
 from decidophobia.data.banking77 import load_banking77
-from decidophobia.data.label_names import DESC_DIR
+from decidophobia.data.paths import asset_path
 
 
 def test_names_are_the_raw_labels_unchanged():
@@ -25,7 +25,7 @@ def test_desc_names_are_key_and_description_with_the_same_class_ids():
     与推理服务、synth-v5 的选项同一种写法; 题目与标签不变."""
     raw_tr, raw_te = load_banking77()
     tr, te = load_banking77(labels="desc")
-    desc = json.loads((DESC_DIR / "banking77.json").read_text())
+    desc = json.loads(asset_path("label-descriptions/banking77.json").read_text())
     assert te.names == {c: f"{n}: {desc[n]}" for c, n in raw_te.names.items()}
     assert te.names[0] == "Refund_not_showing_up: Refund from a merchant that has not yet appeared in the account"
     assert te.queries == raw_te.queries and te.labels == raw_te.labels and tr.labels == raw_tr.labels
