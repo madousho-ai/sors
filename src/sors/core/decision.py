@@ -4,11 +4,24 @@ from __future__ import annotations
 
 import math
 import threading
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
+from functools import partial
 
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
+
+_OPTION_CHUNK_OWNER = ContextVar('sors_option_chunk_owner', default=None)
+# Bound the activation scale of a whole option-chunk replay. Larger chunks keep
+# native layer checkpoints; the long common text always keeps them.
+_OPTION_CHECKPOINT_ELEMENTS = 128 * 1024 * 1024
+
+
+def _checkpoint_layer(owner, function, *args, **kwargs):
+    if _OPTION_CHUNK_OWNER.get() is owner:
+        return function(*args, **kwargs)
+    return checkpoint(function, *args, use_reentrant=False, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -144,9 +157,13 @@ class DecisionModel(nn.Module):
         self.checkpoint_forward = grad_ckpt
         self.candidate_prefix_cache = "auto" if config.kind == "candidate" else "off"
         self._read_only = config.kind in ("minimal", "structural") and not config.feedback
+        self._checkpoint_owner = object()
         if self._read_only and grad_ckpt:
             base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             base.enable_input_require_grads()
+            if config.kind == "structural":
+                for layer in raw.model.layers:
+                    layer._gradient_checkpointing_func = partial(_checkpoint_layer, self._checkpoint_owner)
         else:
             base.gradient_checkpointing_disable()
         hidden = self.config.hidden_size
@@ -186,19 +203,32 @@ class DecisionModel(nn.Module):
                             use_cache=False).last_hidden_state
 
     def _encode_option_chunk(self, ids, mask, dtype):
+        scale = ids.numel() * self.config.hidden_size * len(self.decoder.layers)
+        if self._read_only and self.decision_config.kind == "structural" and scale <= _OPTION_CHECKPOINT_ELEMENTS:
+            # The enclosing chunk checkpoint already discards its activations.
+            # A call-local owner avoids a third forward without changing another
+            # thread/model's native checkpoint policy during backward replay.
+            token = _OPTION_CHUNK_OWNER.set(self._checkpoint_owner)
+            try:
+                return self._encode(ids, mask)[:, -1].to(dtype)
+            finally:
+                _OPTION_CHUNK_OWNER.reset(token)
         return self._encode(ids, mask)[:, -1].to(dtype)
 
     def _encode_options(self, batch, valid, dtype, option_batch_size):
         ids, masks = batch["option_input_ids"][valid], batch["option_attention_mask"][valid]
         chunk = min(option_batch_size or self.decision_config.option_batch_size, self.decision_config.option_batch_size)
+        lengths = masks.sum(1)
+        padded = torch.nn.functional.pad(lengths, (0, (-len(lengths)) % chunk))
+        widths = padded.reshape(-1, chunk).amax(1).cpu().tolist()
         pieces = []
-        for start in range(0, len(ids), chunk):
+        for start, width in zip(range(0, len(ids), chunk), widths):
+            width = int(width)  # Float 0/1 masks produce floats in the CPU list.
             part_ids, part_mask = ids[start:start + chunk], masks[start:start + chunk]
-            width = int(part_mask.sum(1).max())
             args = (part_ids[:, -width:], part_mask[:, -width:], dtype)
             if self._read_only and self.checkpoint_forward and self.training and torch.is_grad_enabled():
-                # Keep one readout per option between chunks. The nested native
-                # layer checkpoints also bound a single chunk's backward replay.
+                # Keep one readout per option between chunks. Large chunks also
+                # retain native layer checkpoints to bound backward memory.
                 encoded = checkpoint(self._encode_option_chunk, *args, use_reentrant=False)
             else:
                 encoded = self._encode_option_chunk(*args)

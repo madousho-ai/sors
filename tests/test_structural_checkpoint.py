@@ -1,5 +1,7 @@
 """Read-only structural checkpoints bound saved activations and preserve training."""
 from dataclasses import replace
+import copy
+import io
 import random
 import threading
 from unittest.mock import patch
@@ -42,6 +44,126 @@ def test_option_chunks_save_inputs_instead_of_all_decoder_activations():
         assert not any(floating and size for floating, size in saved), (family, sum(n for f, n in saved if f))
         encoded.square().sum().backward()
         assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in m.decoder.parameters())
+
+
+def test_option_chunk_checkpoint_replays_each_layer_once():
+    for family in ('qwen3', 'qwen35'):
+        m, tok, d, _ = tiny_model('structural', False, grad_ckpt=True, family=family, trainable='full')
+        data = batch(m, tok, d)
+        calls = [0] * len(m.decoder.layers)
+        handles = []
+        for i, layer in enumerate(m.decoder.layers):
+            def count(_module, _args, index=i):
+                calls[index] += 1
+            handles.append(layer.register_forward_pre_hook(count))
+        try:
+            with set_checkpoint_early_stop(False):
+                encoded = m.train()._encode_options(data, data['slot_ids'] >= 0, torch.float32, 2)
+            # Five options in chunks of 2, 2, 1: three forwards and three replays.
+            assert calls == [3] * len(calls), (family, calls)
+            encoded.square().mean().backward()
+            assert calls == [6] * len(calls), (family, calls)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+
+def test_option_widths_are_read_in_bulk_without_changing_chunk_inputs():
+    m, tok, d, _ = tiny_model('structural', False, grad_ckpt=True, trainable='full')
+    exs = examples()
+    exs[0] = replace(exs[0], option_names=['red blue', 'red', 'green long'])
+    data = batch(m, tok, d, exs)
+    valid = data['slot_ids'] >= 0
+    ids, masks = data['option_input_ids'][valid], data['option_attention_mask'][valid]
+    expected = []
+    for start in range(0, len(ids), 2):
+        width = int(masks[start:start + 2].sum(1).max())
+        expected.append((ids[start:start + 2, -width:], masks[start:start + 2, -width:]))
+    actual, scalar_reads, bulk_reads = [], [], []
+    encode, original_int, original_list = m._encode_option_chunk, torch.Tensor.__int__, torch.Tensor.tolist
+
+    def tracked_encode(chunk_ids, chunk_mask, dtype):
+        actual.append((chunk_ids.clone(), chunk_mask.clone()))
+        return encode(chunk_ids, chunk_mask, dtype)
+
+    def scalar(tensor):
+        scalar_reads.append(tensor.shape)
+        return original_int(tensor)
+
+    def bulk(tensor):
+        bulk_reads.append(tensor.shape)
+        return original_list(tensor)
+
+    with patch.object(m, '_encode_option_chunk', side_effect=tracked_encode), \
+         patch.object(torch.Tensor, '__int__', scalar), patch.object(torch.Tensor, 'tolist', bulk):
+        encoded = m.train()._encode_options(data, valid, torch.float32, 2)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert not scalar_reads, scalar_reads
+    assert bulk_reads == [torch.Size([3])], bulk_reads
+    encoded.square().sum().backward()
+    assert all(torch.isfinite(p.grad).all() for p in m.parameters() if p.grad is not None)
+
+
+def test_large_option_chunks_keep_layer_checkpoints():
+    m, tok, d, _ = tiny_model('structural', False, grad_ckpt=True, trainable='full')
+    data = batch(m, tok, d)
+    calls = []
+    handle = m.decoder.layers[0].register_forward_pre_hook(lambda *_: calls.append(1))
+    try:
+        with patch('sors.core.decision._OPTION_CHECKPOINT_ELEMENTS', 0), set_checkpoint_early_stop(False):
+            encoded = m.train()._encode_options(data, data['slot_ids'] >= 0, torch.float32, 2)
+            encoded.square().mean().backward()
+        assert len(calls) == 9, calls
+    finally:
+        handle.remove()
+
+
+def test_option_failure_restores_the_common_stream_checkpoint_policy():
+    m, tok, d, _ = tiny_model('structural', False, grad_ckpt=True, trainable='full')
+    data = batch(m, tok, d)
+    with patch.object(m, '_encode', side_effect=RuntimeError('injected option failure')):
+        try:
+            m._encode_option_chunk(data['input_ids'], data['attention_mask'], torch.float32)
+        except RuntimeError as exc:
+            assert str(exc) == 'injected option failure'
+        else:
+            raise AssertionError('option failure was not injected')
+    calls = []
+    handle = m.decoder.layers[0].register_forward_pre_hook(lambda *_: calls.append(1))
+    try:
+        m.train()._encode(data['input_ids'], data['attention_mask']).square().mean().backward()
+        assert len(calls) == 2, calls
+    finally:
+        handle.remove()
+
+
+def test_structural_decoder_parts_keep_copy_and_pickle_compatibility():
+    m, tok, d, _ = tiny_model('structural', False, grad_ckpt=True, trainable='full')
+    try:
+        for part in (m.base, m.decoder, m.decoder.layers[0]):
+            copy.deepcopy(part)
+        stream = io.BytesIO()
+        torch.save(m.decoder.layers[0], stream)
+    except (TypeError, AttributeError) as exc:
+        raise AssertionError(f'checkpoint callbacks captured unrelated model state: {exc}') from exc
+    assert stream.tell() > 0
+
+
+def test_option_masks_keep_float_and_bool_compatibility():
+    for family in ('qwen3', 'qwen35'):
+        m, tok, d, _ = tiny_model('structural', False, grad_ckpt=True, family=family, trainable='full')
+        data = batch(m, tok, d)
+        expected = m.train().forward_batch(data).detach()
+        for dtype in (torch.float32, torch.bool):
+            changed = data | {'option_attention_mask': data['option_attention_mask'].to(dtype)}
+            m.zero_grad(set_to_none=True)
+            try:
+                actual = m.forward_batch(changed)
+            except TypeError as exc:
+                raise AssertionError(f'option mask {dtype} lost compatibility: {exc}') from exc
+            torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+            (-actual.log_softmax(-1)[:, d[0]].mean()).backward()
+            assert all(torch.isfinite(p.grad).all() for p in m.parameters() if p.grad is not None)
 
 
 def test_structural_common_stream_recomputes_layers_in_reverse_and_blocks_separately():
