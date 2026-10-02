@@ -13,14 +13,16 @@ import json
 import pathlib
 
 from decidophobia.core.menu import MenuExample
+from decidophobia.data.paths import asset_path, datasets_root
 
-DEFAULT_PATH = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-simple-eval" / "synth-simple-eval.jsonl"
+DEFAULT_PATH = datasets_root() / "synth-simple-eval" / "synth-simple-eval.jsonl"
 SIZES = (5, 10, 20, 40, 60, 100, 255)
 CONTEXT_LABEL = "Customer message"
 _BOOL = {"no": 0, "yes": 1}
 
 
-def load_simple_eval(path=DEFAULT_PATH) -> dict[str, list[MenuExample]]:
+def load_simple_eval(path=None, *, datasets_dir=None) -> dict[str, list[MenuExample]]:
+    path = path if path is not None else asset_path("synth-simple-eval/synth-simple-eval.jsonl", datasets_dir)
     with pathlib.Path(path).open(encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     nouns = sorted({o for r in rows if r["qtype"] == "choice" for o in r["options"]})

@@ -37,7 +37,7 @@ def _read_rows(cache_dir) -> list[dict]:
         return [json.loads(line) for line in f]
 
 
-def load_massive(cache_dir=DEFAULT_DIR, partition: str = "test", labels: str = "raw") -> LabeledSet:
+def load_massive(cache_dir=DEFAULT_DIR, partition: str = "test", labels: str = "raw", *, datasets_dir=None) -> LabeledSet:
     rows = _read_rows(cache_dir)
     raw_names = sorted({r["intent"] for r in rows})
     idx = {c: i for i, c in enumerate(raw_names)}
@@ -45,6 +45,6 @@ def load_massive(cache_dir=DEFAULT_DIR, partition: str = "test", labels: str = "
     return LabeledSet(
         queries=[r["utt"] for r in part],
         labels=[idx[r["intent"]] for r in part],
-        names=label_names("massive", raw_names, labels),
+        names=label_names("massive", raw_names, labels, datasets_dir=datasets_dir),
         context_label=CONTEXT_LABEL,
     )

@@ -41,12 +41,12 @@ def _fetch(split: str, cache_dir) -> list[tuple[str, str]]:
     return rows
 
 
-def load_banking77(cache_dir="data/banking77", labels: str = "raw") -> tuple[LabeledSet, LabeledSet]:
+def load_banking77(cache_dir="data/banking77", labels: str = "raw", *, datasets_dir=None) -> tuple[LabeledSet, LabeledSet]:
     """返回 (train, test). 类 id 按原始 label 名字母序编, 两个 split 共用同一张表; labels 见 label_names."""
     tr, te = _fetch("train", cache_dir), _fetch("test", cache_dir)
     raw_names = sorted({c for _, c in tr} | {c for _, c in te})
     idx = {c: i for i, c in enumerate(raw_names)}
-    names = label_names("banking77", raw_names, labels)
+    names = label_names("banking77", raw_names, labels, datasets_dir=datasets_dir)
 
     def mk(rows):
         return LabeledSet(queries=[t for t, _ in rows], labels=[idx[c] for _, c in rows], names=names,

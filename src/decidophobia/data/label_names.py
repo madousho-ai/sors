@@ -13,19 +13,21 @@ import json
 import pathlib
 
 from decidophobia.serve.menus import option_row
+from decidophobia.data.paths import asset_path, datasets_root
 
 LABEL_STYLES = ("raw", "desc")
-DESC_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "label-descriptions"
+DESC_DIR = datasets_root() / "label-descriptions"
 
 
-def label_names(dataset: str, raw_names: list[str], style: str) -> dict[int, str]:
+def label_names(dataset: str, raw_names: list[str], style: str, *, datasets_dir=None) -> dict[int, str]:
     """类 id (raw_names 的下标) -> 菜单上显示的文字. desc 缺了哪个类就报错, 不静默退回原名."""
     if style == "raw":
         return dict(enumerate(raw_names))
     if style == "desc":
-        desc = json.loads((DESC_DIR / f"{dataset}.json").read_text(encoding="utf-8"))
+        path = asset_path(f"label-descriptions/{dataset}.json", datasets_dir)
+        desc = json.loads(path.read_text(encoding="utf-8"))
         missing = [n for n in raw_names if n not in desc]
         if missing:
-            raise ValueError(f"{DESC_DIR / f'{dataset}.json'} has no description for {missing}")
+            raise ValueError(f"{path} has no description for {missing}")
         return {i: option_row(n, desc[n]) for i, n in enumerate(raw_names)}
     raise ValueError(f"unknown label style {style!r}; expected one of {LABEL_STYLES}")

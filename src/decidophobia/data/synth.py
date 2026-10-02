@@ -13,23 +13,27 @@ import pathlib
 import random
 
 from decidophobia.core.menu import LabeledSet, MenuExample, compose_menu, draw_k
+from decidophobia.data.paths import asset_path, datasets_root
 
-DEFAULT_DIR = pathlib.Path(__file__).resolve().parents[3] / "datasets" / "synth-intents-v2.5"
+DEFAULT_DIR = datasets_root() / "synth-intents-v2.5"
 CONTEXT_LABEL = "Customer message"
 
 
-def _rows(data_dir) -> list[dict]:
+def _rows(data_dir=None, datasets_dir=None) -> list[dict]:
     """全部意图, 按 intent id 字母序 —— 行号就是类 id."""
+    data_dir = pathlib.Path(data_dir) if data_dir is not None else asset_path("synth-intents-v2.5", datasets_dir)
     rows = []
     for f in sorted(pathlib.Path(data_dir).glob("*.jsonl")):
         with f.open(encoding="utf-8") as fh:
             rows += [json.loads(line) for line in fh if line.strip()]
+    if not rows:
+        raise ValueError(f"{data_dir}: no synthetic intent rows; check --datasets-dir")
     rows.sort(key=lambda r: r["id"])
     return rows
 
 
-def load_synth(data_dir=DEFAULT_DIR) -> tuple[LabeledSet, list[str]]:
-    rows = _rows(data_dir)
+def load_synth(data_dir=None, *, datasets_dir=None) -> tuple[LabeledSet, list[str]]:
+    rows = _rows(data_dir, datasets_dir)
     queries, labels = [], []
     for c, r in enumerate(rows):
         for u in r["utterances"]:
@@ -40,11 +44,11 @@ def load_synth(data_dir=DEFAULT_DIR) -> tuple[LabeledSet, list[str]]:
     return s, [r["domain"] for r in rows]
 
 
-def load_synth_binary(data_dir=DEFAULT_DIR) -> LabeledSet:
+def load_synth_binary(data_dir=None, *, datasets_dir=None) -> LabeledSet:
     """二元题: 每条消息配它所属意图的问句, 答案取 answers 里对应的那一个.
     消息顺序与 load_synth 相同. 类 id 0 = no, 1 = yes, 与 boolq.NAMES 一致."""
     queries, labels, questions = [], [], []
-    for r in _rows(data_dir):
+    for r in _rows(data_dir, datasets_dir):
         for u, a in zip(r["utterances"], r["answers"], strict=True):
             queries.append(u)
             labels.append(1 if a else 0)
@@ -69,8 +73,8 @@ def sample_domain_menus(s: LabeledSet, domains: list[str], k_range: tuple[int, i
     return out
 
 
-def synth_eval_examples(k: int, seed: int, data_dir=DEFAULT_DIR) -> list[MenuExample]:
+def synth_eval_examples(k: int, seed: int, data_dir=None, *, datasets_dir=None) -> list[MenuExample]:
     """scripts/eval-invariance.py 的题: 每条合成消息配一个 k 项菜单, 选项从全部 4096 个合成意图里抽 (跨领域),
     连续编号. 同 seed 即同一批题. 合成意图现在全部进训练, 这批题测的是训练见过的消息."""
-    s, _ = load_synth(data_dir)
+    s, _ = load_synth(data_dir, datasets_dir=datasets_dir)
     return s.build_examples(list(range(len(s.names))), (k, k), random.Random(seed))
