@@ -83,5 +83,31 @@ def test_the_demo_pages_are_served_only_with_the_demo_flag():
     assert (d / "snake" / "index.html").is_file()
 
 
+def test_offline_serving_accepts_explicit_attention_and_warmup():
+    try:
+        args = _args("--init", "x", "--attn-implementation", "flash_attention_2",
+                     "--no-allow-kernel-download", "--local-files-only", "--warmup")
+    except SystemExit as exc:
+        raise AssertionError("serve rejected the offline container arguments") from exc
+    assert args.attn_implementation == "flash_attention_2"
+    assert args.allow_kernel_download is False and args.local_files_only and args.warmup
+
+
+def test_warmup_runs_real_engine_predictions_and_checks_probabilities():
+    import torch
+    from sors.serve.engine import Engine
+    from sors.serve.api import Choice
+    from test_decision import tiny_model
+
+    assert hasattr(_mod, "warmup"), "serve warmup is missing"
+    model, tok, d, _ = tiny_model("minimal")
+    engine = Engine(model, tok, d)
+    _mod.warmup(engine)
+    result = engine.evaluate("red context", {"q": Choice(type="choice", instructions="Which color?",
+                                                        criteria={"red": None, "blue": None})})
+    assert torch.isfinite(torch.tensor(result.probs["q"])).all()
+    assert abs(sum(result.probs["q"]) - 1) < 1e-5
+
+
 if __name__ == "__main__":
     run(globals())

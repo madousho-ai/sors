@@ -177,13 +177,16 @@ def recorded_base_model(checkpoint) -> str | None:
 
 def load_engine(checkpoint, base_model, context_label: str = "", device: str = "cuda",
                 dtype: torch.dtype = torch.bfloat16, max_tokens: int = 8192, max_batch_tokens: int = 16384,
-                candidate_prefix_cache: str | None = None) -> Engine:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+                candidate_prefix_cache: str | None = None, *, attn_implementation: str = "sdpa",
+                allow_kernel_download: bool = False, local_files_only: bool = False) -> Engine:
+    from transformers import AutoTokenizer
+    from sors.core.attention import load_causal_lm
 
-    tok = AutoTokenizer.from_pretrained(base_model)
+    tok = AutoTokenizer.from_pretrained(base_model, local_files_only=local_files_only)
     d_ids = install_d_tokens(tok)
     train_ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
-    lm = AutoModelForCausalLM.from_pretrained(base_model, dtype=dtype).to(device)
+    lm, _ = load_causal_lm(base_model, device=device, dtype=dtype, attn_implementation=attn_implementation,
+                          allow_kernel_download=allow_kernel_download, local_files_only=local_files_only)
     m, cfg = prepare_from_checkpoint(lm, train_ids, checkpoint)
     layout = cfg.get("layout", LAYOUT)
     if layout != LAYOUT:

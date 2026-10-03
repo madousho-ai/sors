@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import math
 import os
 import pathlib
 
@@ -31,6 +32,8 @@ DEMOS = pathlib.Path(__file__).resolve().parents[1] / "demos"
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from sors.core.attention import add_attention_arguments
+
     ap = argparse.ArgumentParser(description="SORS — State-conditioned Option Ranking System")
     ap.add_argument("--init", required=True, help="scripts/train.py 的存档 (.safetensors 或旧的 trained.pt), 必须是 context-first 训的")
     ap.add_argument("--base-model", default=None, help="存档训练时的基模. 不给 = run 目录里 result.json 记的那个")
@@ -49,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--device", default="cuda")
+    add_attention_arguments(ap)
+    ap.set_defaults(attn_implementation="sdpa", allow_kernel_download=False)
+    ap.add_argument("--local-files-only", action="store_true", help="基模和 tokenizer 只从本地加载")
+    ap.add_argument("--warmup", action="store_true", help="监听 HTTP 前执行真实推理并检查输出概率")
     return ap
 
 
@@ -76,6 +83,27 @@ def demo_dir(args) -> pathlib.Path | None:
     return DEMOS if args.demo else None
 
 
+def warmup(engine) -> None:
+    """Exercise the serving path, including cache branching, before readiness."""
+    from sors.serve.api import Choice, Noul, Score
+
+    questions = {
+        "color": Choice(type="choice", instructions="Which color?", criteria={"red": None, "blue": None}),
+        "mentioned": Noul(type="noul", instructions="Does the message mention a red object?"),
+        "score": Score(type="score", instructions="How much detail does the message contain?",
+                       criteria=["little", "some", "much"]),
+    }
+    for repetitions in (1, 16):
+        result = engine.evaluate("red blue context. " * repetitions, questions)
+        for name, expected_count in (("color", 2), ("mentioned", 2), ("score", 3)):
+            probabilities = result.probs[name]
+            if (len(probabilities) != expected_count
+                    or not all(math.isfinite(p) and 0 <= p <= 1 for p in probabilities)
+                    or abs(sum(probabilities) - 1) > 1e-4):
+                raise ValueError(f"warmup returned invalid probabilities for {name}: {probabilities}")
+    print("warmup: real serving requests passed", flush=True)
+
+
 def main() -> None:
     args = build_parser().parse_args()
     import torch
@@ -87,8 +115,13 @@ def main() -> None:
     name, base = served_name(args), base_model(args)
     engine = load_engine(args.init, base, context_label=args.context_label, device=args.device,
                          dtype=torch.bfloat16 if args.device.startswith("cuda") else torch.float32,
-                         max_tokens=args.max_tokens, max_batch_tokens=args.max_batch_tokens,
-                         candidate_prefix_cache=args.candidate_prefix_cache)
+                          max_tokens=args.max_tokens, max_batch_tokens=args.max_batch_tokens,
+                          candidate_prefix_cache=args.candidate_prefix_cache,
+                          attn_implementation=args.attn_implementation,
+                          allow_kernel_download=args.allow_kernel_download,
+                          local_files_only=args.local_files_only)
+    if args.warmup:
+        warmup(engine)
     released = datetime.date.fromtimestamp(pathlib.Path(args.init).stat().st_mtime).isoformat()
     app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {base}",
                      release_date=released, demo_dir=demo_dir(args))
