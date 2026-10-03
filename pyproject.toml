@@ -23,3 +23,11 @@ dev = [
     "tensorboard>=2.21.0",
     "torchmetrics>=1.9.0",
 ]
+gpu = [
+    "kernels>=0.16.2,<0.17",
+    "flash-linear-attention==0.5.2",
+]
+gpu-fa4 = [
+    "apache-tvm-ffi",
+    "nvidia-cutlass-dsl",
+]

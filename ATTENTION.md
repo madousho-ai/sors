@@ -29,7 +29,7 @@ Qwen3.5 的线性注意力另用 `flash-linear-attention` 加速 Gated DeltaNet�
 
 ```bash
 # 经操作者确认后安装；加载器自身负责选择内核。
-uv pip install --python .venv/bin/python 'flash-linear-attention==0.5.2' 'kernels>=0.16,<0.17'
+uv sync --group gpu
 ```
 
 缺少加速包时可使用 PyTorch 参考实现。`--no-allow-kernel-download` 保留本地包和
@@ -65,11 +65,13 @@ HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synt
 ```
 
 预编译 Hub 内核下载默认启用；使用 `--no-allow-kernel-download` 可限制为本地包。
-在 Transformers 5.17.0 环境中，可选依赖的兼容范围为 `kernels>=0.16,<0.17`：
+`pyproject.toml` 的可选 `gpu` 依赖组包含 `kernels>=0.16.2,<0.17` 和
+`flash-linear-attention==0.5.2`，对应已验证的 Transformers 5.17.0 组合。
+Python 包版本由 `uv.lock` 管理；Hub 预编译内核继续在运行时按显卡选择和下载。
 
 ```bash
 # 依赖安装由操作者执行；训练脚本自身只负责加载。
-uv pip install --python .venv/bin/python 'kernels>=0.16,<0.17'
+uv sync --group gpu
 
 HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --dataset synth-v5.1 --grad-ckpt \
