@@ -24,6 +24,9 @@
 --datasets-dir 指定外部数据仓库根目录，默认取环境变量或同级 decidophobia-dataset；详见 DATASETS.md。
 "both" 仍可用, 等于 banking77+boolq.
 
+数据准备默认用 2 个 CPU 线程，提前准备最多 2 批；--data-workers / --data-prefetch 可调。
+--data-workers 0 使用同步准备。抽样顺序与有效 batch 保持原样，worker 只做分词和组批。
+
 --eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench (见 build_eval_sets).
 训练中 (step 0 与每 --eval-every 步) 只跑探针: 每个评估集固定 --probe-size 道题, 固定 --probe-passes 种随机排法
 (行打乱、D 码随机), 报 accuracy / agree / js. 最后一步再跑全量评估集: 部署形态 (连续编号) 下的正确率那一套,
@@ -68,6 +71,7 @@ from sors.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_p
 from sors.data.paths import add_datasets_argument, datasets_root
 from sors.evaluation.scoring import EvalSet
 from sors.training.loop import TrainConfig, train
+from sors.training.prefetch import validate_data_preparation
 from sors.training.loss import LOSSES
 from sors.training.thermal import ThermalGuard
 
@@ -328,6 +332,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=300, help="0 = 只评估")
     ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument("--data-workers", type=int, default=2,
+                    help="后台 CPU 分词/组批线程数 (>= 0)，0 = 同步准备；抽样仍按原顺序")
+    ap.add_argument("--data-prefetch", type=int, default=2,
+                    help="提前准备的批数上限 (>= 1)，独立于 batch-size 与 micro-batches")
     ap.add_argument("--micro-batches", type=int, default=2,
                     help="每步的 prompt 按长度分几组各自前向, 每组只补齐到组里最长的那条 (>= 1). "
                          "每行的 logits 与整批一次前向相同, loss 照旧对整批算、反传一次; 省下的是填充的计算. "
@@ -493,6 +501,10 @@ def run_tag(args) -> str:
 
 def main() -> None:
     args = build_parser().parse_args()
+    try:
+        validate_data_preparation(args.data_workers, args.data_prefetch)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     args.datasets_dir = str(datasets_root(args.datasets_dir))
     architecture = resolve_architecture(args)
     args.architecture = architecture["kind"]
@@ -541,6 +553,7 @@ def main() -> None:
     k_pad = max([args.k_max, args.k_eval] + [len(e.options) for es in eval_sets.values() for e in es.examples])
     cfg = TrainConfig(
         steps=args.steps, batch_size=args.batch_size, micro_batches=args.micro_batches, k_max=k_pad,
+        data_workers=args.data_workers, data_prefetch=args.data_prefetch,
         max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
@@ -557,6 +570,7 @@ def main() -> None:
     print(f"dataset={'+'.join(datasets)} architecture={args.architecture} prefix_cache={args.candidate_prefix_cache} trainable={args.trainable} layout={args.layout} loss={args.loss} "
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"consistency={args.consistency:g} "
+          f"data_workers={cfg.data_workers} data_prefetch={cfg.data_prefetch} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)

@@ -13,6 +13,8 @@
 后续完整恢复：
   PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<原run>
 latest.trainstate.safetensors 原子替换，仅保留最新完整状态；推理权重仍按原 save_every 单独存档。
+--data-workers / --data-prefetch 可覆盖后台准备线程数与预取上限；默认继承存档，旧档默认 2/2。
+预取批次按原抽样顺序消费；完整状态里的采样 RNG 对应已完成训练的批次。
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from sors.core.model import adapter_config, prepare_model
 from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from sors.data.paths import ENV, LEGACY_ENV, add_datasets_argument, datasets_root
 from sors.training.loop import TrainConfig, train
+from sors.training.prefetch import validate_data_preparation
 from sors.training.resume import (read_state, resume_writer, rollback_history, sampling_fingerprint, save_state,
                                          sampling_provenance, verify_sampling_commits, verify_sampling_fingerprint)
 from sors.training.thermal import ThermalGuard
@@ -93,7 +96,23 @@ def build_parser():
     ap.add_argument("--expected-code-commit", help="code revision paired with --expected-data-commit for split repositories")
     ap.add_argument("--stop-after", type=int)
     ap.add_argument("--micro-batches", type=int)
+    ap.add_argument("--data-workers", type=int, help="覆盖后台 CPU 分词/组批线程数；0 = 同步准备")
+    ap.add_argument("--data-prefetch", type=int, help="覆盖提前准备的批数上限 (>= 1)")
     return ap
+
+
+def resume_config(config, opts):
+    """Restore training semantics while allowing execution-only overrides."""
+    cfg = TrainConfig(**config)
+    cfg.accumulate_gradients = True
+    for key in ("micro_batches", "data_workers", "data_prefetch"):
+        value = getattr(opts, key)
+        if value is not None:
+            setattr(cfg, key, value)
+    if cfg.micro_batches < 1:
+        raise ValueError("micro_batches must be positive")
+    validate_data_preparation(cfg.data_workers, cfg.data_prefetch)
+    return cfg
 
 
 def prepare_resume_model(lm, train_ids, args, state, path, *, full):
@@ -155,16 +174,12 @@ def main():
         fingerprint = sampling_fingerprint(ROOT, args.datasets_dir)
     if args.dataset not in ("synth-v5", "synth-v5.1"):
         raise ValueError("this recovery entry point currently verifies synth-v5.1 runs (legacy alias: synth-v5) only")
-    cfg = TrainConfig(**config)
-    cfg.accumulate_gradients = True
-    if opts.micro_batches is not None:
-        if opts.micro_batches < 1:
-            raise ValueError("micro_batches must be positive")
-        cfg.micro_batches = opts.micro_batches
+    cfg = resume_config(config, opts)
     start = state["step"]
     validate_resume_step(start, cfg.steps, full=full)
     args.out = str(out)
     args.micro_batches = cfg.micro_batches
+    args.data_workers, args.data_prefetch = cfg.data_workers, cfg.data_prefetch
     spec = importlib.util.spec_from_file_location("original_train_cli", ROOT / "scripts/train.py")
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
@@ -195,6 +210,7 @@ def main():
     record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "checkpoint": str(path), "completed_step": start,
               "target_step": cfg.steps, "optimizer_reset": not full, "accumulate_gradients": True,
               "micro_batches": cfg.micro_batches, "sampling_fingerprint": fingerprint,
+              "data_workers": cfg.data_workers, "data_prefetch": cfg.data_prefetch,
               "previous_attention": previous_attention, "attention": args.attention}
     with (out / "resume.jsonl").open("a") as f:
         f.write(json.dumps(record) + "\n")
