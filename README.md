@@ -180,6 +180,19 @@ PYTHONPATH=src .venv/bin/python scripts/serve.py \
 ```
 
 The exporter accepts a new output directory and preserves the loaded model.
+The serving CLI also accepts complete Sors models hosted on Hugging Face:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/serve.py \
+  --init SakuraYuyuko/Sors-0.8B --demo --port 9999 --host 0.0.0.0
+```
+
+Hub references use the standard Hugging Face cache and the current machine's
+saved login or `HF_TOKEN` for private repositories. `--local-files-only` selects
+an existing cached snapshot; `--revision` selects a branch, tag or commit.
+Existing local paths take precedence. Models downloaded with `--local-dir` can
+be served by passing that directory directly, such as `--init data/models/Sors-0.8B`.
+
 Complete-directory serving preserves the saved mixed precision, including FP32
 decision layers. Training checkpoints retain their existing format for evaluation
 and recovery; their serving path continues to accept a separate `--base-model`.

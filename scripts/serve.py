@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-"""推理服务: 完整模型目录或训练存档, 照 TypeSafe 的 System One API 回答请求.
+"""推理服务: HF 模型仓库、完整模型目录或训练存档，照 TypeSafe 的 System One API 回答请求.
 
+  PYTHONPATH=src .venv/bin/python scripts/serve.py --init SakuraYuyuko/Sors-0.8B
   PYTHONPATH=src .venv/bin/python scripts/serve.py --init /path/to/Sors-0.8B
   PYTHONPATH=src .venv/bin/python scripts/serve.py --init runs/<run>/trained.safetensors
   curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
@@ -8,7 +9,7 @@
     "questions": {"is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}'
 
 官方 SDK 也能直接连: TYPESAFE_BASE_URL=http://127.0.0.1:8000, TYPESAFE_DEFAULT_MODEL=<服务名>.
-服务名默认是存档所在的 run 目录名 (途中的档再接上 step-<步数>), --model-name 另起; 请求的 model 必须是它.
+服务名默认取模型目录名、HF 仓库名或存档的 run 目录名；--model-name 可覆盖，请求的 model 必须匹配.
 训练存档的基模默认读 run 目录里的 result.json，也可用 --base-model 指定；完整目录自带权重.
 --demo 把仓库的 demos/ 挂在 /demo/ 下, 默认不挂. 手填请求: http://127.0.0.1:8000/demo/playground/,
 左边表单右边 JSON, 发送后显示每项概率与模型读到的提示 (见 demos/playground/). 贪吃蛇: /demo/snake/,
@@ -36,10 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     from sors.core.attention import add_attention_arguments
 
     ap = argparse.ArgumentParser(description="SORS — State-conditioned Option Ranking System")
-    ap.add_argument("--init", required=True, help="完整模型目录，或 scripts/train.py 的存档；必须是 context-first 训的")
+    ap.add_argument("--init", required=True, help="HF 完整模型仓库 ID、本地完整模型目录或训练存档；必须是 context-first 训的")
+    ap.add_argument("--revision", default=None, help="HF 模型的分支、tag 或 commit；默认 main")
     ap.add_argument("--base-model", default=None, help="旧训练存档的基模，默认读 result.json；完整模型目录省略此项")
     ap.add_argument("--model-name", default=None,
-                    help="服务名: 响应里的 model, 也是请求的 model 必须写的值. 不给 = run 目录名 (途中的档接上 step-<步数>)")
+                     help="服务名: 请求与响应的 model；默认取模型目录名、HF 仓库名或存档 run 名")
     ap.add_argument("--context-label", default="",
                     help="给了就在每个请求的 state 前面加「<标签>: 」, 如 'Customer message'. 不给 = 不加, state 原样进提示")
     ap.add_argument("--max-tokens", type=int, default=8192,
@@ -55,9 +57,40 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--device", default="cuda")
     add_attention_arguments(ap)
     ap.set_defaults(attn_implementation="sdpa", allow_kernel_download=False)
-    ap.add_argument("--local-files-only", action="store_true", help="基模和 tokenizer 只从本地加载")
+    ap.add_argument("--local-files-only", action="store_true", help="仅使用本地文件和已有 HF 缓存")
     ap.add_argument("--warmup", action="store_true", help="监听 HTTP 前执行真实推理并检查输出概率")
     return ap
+
+
+def resolve_init(args) -> None:
+    """Resolve an existing local path or download/reuse a complete Hub snapshot."""
+    reference = args.init
+    path = pathlib.Path(reference).expanduser()
+    if path.exists():
+        args.init = str(path)
+        return
+    if reference.startswith(("/", "./", "../", "~")) or path.suffix in (".safetensors", ".pt", ".pth", ".bin"):
+        raise SystemExit(f"local model path does not exist: {reference}")
+
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    try:
+        validate_repo_id(reference)
+    except HFValidationError as exc:
+        raise SystemExit(f"--init {reference!r}: supply an existing local path or a valid HF model repo ID: {exc}") from None
+    if args.base_model is not None:
+        raise SystemExit("a complete HF model includes its weights; omit --base-model")
+    try:
+        snapshot = snapshot_download(repo_id=reference, revision=args.revision,
+                                     local_files_only=args.local_files_only)
+    except (HfHubHTTPError, LocalEntryNotFoundError) as exc:
+        raise SystemExit(f"HF model {reference!r}: {exc}") from None
+    args.init = str(snapshot)
+    if not args.model_name:
+        args.model_name = reference.rsplit("/", 1)[-1]
+    print(f"resolved HF model {reference} to {snapshot}", flush=True)
 
 
 def served_name(args) -> str:
@@ -113,6 +146,7 @@ def warmup(engine) -> None:
 
 def main() -> None:
     args = build_parser().parse_args()
+    resolve_init(args)
     import torch
     import uvicorn
 

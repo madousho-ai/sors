@@ -177,7 +177,19 @@ PYTHONPATH=src .venv/bin/python scripts/serve.py \
   --init ../Sors-0.8B --local-files-only --warmup
 ```
 
-导出目录必须尚未存在，导出过程保持内存中的模型原样。完整模型加载保留存档中的混合精度，
+导出目录必须尚未存在，导出过程保持内存中的模型原样。服务 CLI 同时接受 HF 上的完整 Sors 模型仓库：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/serve.py \
+  --init SakuraYuyuko/Sors-0.8B --demo --port 9999 --host 0.0.0.0
+```
+
+HF 仓库使用标准 Hugging Face 缓存；私有仓库读取当前机器的 HF 登录信息或 `HF_TOKEN`。
+`--local-files-only` 只使用已有缓存，`--revision` 可指定分支、tag 或 commit。
+已存在的本地路径优先使用。通过 `--local-dir` 下载的模型可直接传入目录，
+例如 `--init data/models/Sors-0.8B`。
+
+完整模型加载保留存档中的混合精度，
 包括 FP32 决策层。训练存档继续保留原格式用于评估和恢复，其服务入口仍支持单独指定 `--base-model`。
 Docker 和 Podman 使用同一份模型目录，见[容器部署](docker/README.md)。
 
