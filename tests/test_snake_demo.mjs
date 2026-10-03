@@ -140,19 +140,24 @@ test("the state is the page's own Game state label followed by the board as JSON
   assert.equal(request(g, "consequences", "m").state, request(g, "board", "m").state);
 });
 
-test("the state opens with the goal of the game: eat the food, keep off the walls and the body", () => {
+test("both request styles open with survival as the first priority", () => {
   // System One 的请求没有 system prompt; state 排在提示最前、所有题共用, 目标写在它的第一个字段
-  const s = boardState(game());
-  assert.equal(Object.keys(s)[0], "goal");
-  assert.match(s.goal, /head onto the food's cell/);
-  assert.match(s.goal, /wall/);
-  assert.match(s.goal, /body/);
-  // 同 moving 那次: state 里出现方向词, 模型会拿它去对同名的选项
-  assert.doesNotMatch(s.goal, /\b(up|down|left|right)\b/i);
+  for (const style of ["board", "consequences"]) {
+    const s = JSON.parse(request(game(), style, "m").state.slice("Game state: ".length));
+    assert.equal(Object.keys(s)[0], "goal");
+    assert.match(s.goal, /head onto the food's cell/);
+    assert.match(s.goal, /^Prioritize staying alive\./);
+    assert.doesNotMatch(s.goal, /The game ends if the head hits a wall or the snake's own body\./);
+    // 同 moving 那次: state 里出现方向词, 模型会拿它去对同名的选项
+    assert.doesNotMatch(s.goal, /\b(up|down|left|right)\b/i);
+  }
 });
 
-test("the goal ends by telling the model to move the head toward the food", () => {
-  assert.match(boardState(game()).goal, /Make the head move toward the food\.$/);
+test("both request styles tell the model to maximize food and length while staying alive", () => {
+  for (const style of ["board", "consequences"]) {
+    const s = JSON.parse(request(game(), style, "m").state.slice("Game state: ".length));
+    assert.match(s.goal, /Eat as much food as possible and grow as long as possible while staying alive\.$/);
+  }
 });
 
 test("the state draws the whole board row by row, one word per cell between two walls, and says where the snake and the food are", () => {
