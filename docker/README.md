@@ -41,19 +41,31 @@ Python 包由 `uv.lock` 固定；系统编译工具从基础镜像对应的 Debi
 
 ## 准备模型
 
-推理需要与训练一致的**基模及 tokenizer**，加一份 SORS **推理存档**。
-公共运行镜像接受以下目录：
+HF 发布、只读挂载和模型镜像统一使用**一份完整 Sors 模型目录**。
+先从训练存档导出，导出过程补齐冻结参数，并将共享权重保存一次：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/export-model.py \
+  --init /path/to/run/trained.safetensors \
+  --base-model /path/to/pinned-base \
+  --out /absolute/path/model-payload --device cpu --dtype bfloat16 --local-files-only
+```
+
+输出目录必须尚未存在。运行镜像使用导出后的目录：
 
 ```text
 model-payload/
-  base/                  # Hugging Face config、tokenizer、完整权重或全部分片
-  trained.safetensors    # scripts/train.py 导出的推理存档
+  model.safetensors       # 训练后主干、冻结词嵌入和决策层的完整权重
+  config.json            # 架构、token ID、混合精度和训练配置
+  tokenizer.json
+  tokenizer_config.json
+  ...                    # tokenizer 附件、模型说明和许可证
 ```
 
-`base/` 使用固定 revision 的完整本地快照，复制时展开指向 Hugging Face 缓存的符号链接。
-`trained.safetensors` 可以取中途导出的推理 checkpoint；续跑用的 `latest.trainstate.safetensors` 另作训练用途。
-准备目录时记录基模 revision、存档 SHA256 和对应代码 commit。容器默认明确使用 `/models/base`，
-服务名称为 `sors`；也支持原有 `--base-model`、`--init` 和 `--model-name` 参数。
+基模只在导出阶段使用，交付目录独立包含推理所需的全部参数。原训练存档和
+`latest.trainstate.safetensors` 保留在训练环境，用于评估和恢复。
+准备目录时记录模型文件 SHA256 和对应代码 commit。容器默认 `--init /models`，
+服务名称为 `sors`；`--init`、`--model-name` 可覆盖，旧存档仍可显式提供 `--base-model`。
 
 开发时将该目录只读挂载；正式交付时可用第三份 Dockerfile 将它封装进镜像：
 
@@ -64,6 +76,7 @@ $ENGINE build -f "$REPO/docker/Dockerfile.model" \
   -t localhost/sors-submission:sm8x /absolute/path/model-payload
 ```
 
+模型镜像直接基于公共 runtime 构建，完整权重只进入一个新镜像层；构建时校验完整模型格式和单份权重。
 这次构建的 context 是单独的模型目录。仓库的 `.dockerignore` 采用允许清单，runtime 构建只接收代码、
 锁文件和容器配置。运行记录、训练数据、开发环境及凭据保留在宿主机。
 
@@ -152,7 +165,8 @@ podman run --rm --device nvidia.com/gpu=all --security-opt label=disable \
 同时确认 attention 和卷积内核从 `/opt/kernels` 加载；模型和 tokenizer 均在本地临时生成。
 
 本轮实测环境为 Podman 5.8.4、RTX 3070 Ti Laptop（SM86）、驱动 610.57.04。
-base、sm8x 和包含 tiny 模型的最终镜像均已成功构建；禁网、只读条件下的 FA2 前后向、
+此前双份存档布局下，base、sm8x 和包含 tiny 模型的最终镜像已成功构建；禁网、只读条件下的 FA2 前后向、
 Qwen3.5 本地卷积/FLA、真实服务入口及三种 HTTP 问题类型通过。
 本机 Docker 命令是 Podman 兼容入口；独立 Docker Engine 和其他 GPU profile 的实机验收尚待执行。
-正式模型仍按前述提交验收步骤验证，构建和 GPU 验证的具体结果以执行日志为准。
+单份模型布局已在已有 runtime 上通过禁网构建、重复权重拒绝检查，并通过挂载当前源码的 CPU 离线推理。
+其 GPU 验收按前述步骤执行，构建和 GPU 验证的具体结果以对应日志为准。

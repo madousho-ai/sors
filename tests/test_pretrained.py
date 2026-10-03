@@ -174,5 +174,25 @@ def test_public_engine_loads_complete_directory_and_matches_reference_probabilit
             raise AssertionError("an extra base model was silently ignored")
 
 
+def test_complete_slot_model_preserves_the_language_model_readout():
+    module = api()
+    from sors.core.batch import collate
+    from sors.core.model import last_logits
+    from test_decision import examples
+
+    tok, d_ids, ids = tokenizer()
+    model = prepare_model(tiny_backbone(tok), ids, 4, 8, 0., trainable="full").eval()
+    data = collate(examples(), tok, d_ids, 4)
+    with torch.inference_mode():
+        expected = last_logits(model, data["input_ids"], data["attention_mask"])
+    with tempfile.TemporaryDirectory() as directory:
+        folder = Path(directory) / "release"
+        module.save_pretrained(model, tok, settings(), folder)
+        restored, _, _, _ = module.load_pretrained(folder, device="cpu")
+        with torch.inference_mode():
+            actual = last_logits(restored, data["input_ids"], data["attention_mask"])
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
 if __name__ == "__main__":
     run(globals())

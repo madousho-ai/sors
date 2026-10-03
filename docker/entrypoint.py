@@ -10,7 +10,7 @@ import sys
 
 
 def server_arguments(arguments, attention):
-    return ["--init", "/models/trained.safetensors", "--base-model", "/models/base",
+    return ["--init", "/models",
             "--model-name", "sors", "--host", "0.0.0.0", "--attn-implementation", attention,
             *arguments, "--no-allow-kernel-download", "--local-files-only", "--warmup"]
 

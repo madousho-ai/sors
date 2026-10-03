@@ -1,7 +1,6 @@
-# Optional final packaging. Use the prepared model directory as build context:
-#   base/                  self-contained Hugging Face model + tokenizer
-#   trained.safetensors    SORS inference checkpoint
+# Use scripts/export-model.py's complete model directory as build context.
+# RUNTIME_IMAGE is the weight-free runtime, so the image contains one model copy.
 ARG RUNTIME_IMAGE=localhost/sors:sm8x
 FROM ${RUNTIME_IMAGE}
-COPY base /models/base
-COPY trained.safetensors /models/trained.safetensors
+COPY . /models/
+RUN python -c 'import json; from pathlib import Path; p=Path("/models"); assert json.loads((p/"config.json").read_text())["format"] == "sors-pretrained-v1"; assert list(p.rglob("*.safetensors")) == [p/"model.safetensors"], "expected one complete model weight file"'

@@ -53,5 +53,23 @@ def test_warmup_rejects_nonfinite_real_model_output():
         raise AssertionError("warmup accepted nonfinite predictions")
 
 
+def test_complete_model_payload_restores_and_answers_with_downloads_blocked():
+    from sors.core.pretrained import save_pretrained
+
+    for architecture in ("minimal", "candidate"):
+        model, tok, codes, _ = tiny_model(architecture, trainable="full")
+        question = {"q": Choice(type="choice", instructions="Which color?", criteria={"red": None, "blue": None})}
+        expected = Engine(model, tok, codes).evaluate("red context", question)
+        with tempfile.TemporaryDirectory() as directory:
+            payload = Path(directory) / "payload"
+            save_pretrained(model, tok, TrainConfig(layout="context-first"), payload)
+            assert [path.name for path in payload.glob("*.safetensors")] == ["model.safetensors"]
+            with patch("httpx.Client.send", side_effect=AssertionError("offline service attempted HTTP")):
+                engine = load_engine(payload, device="cpu", attn_implementation="sdpa",
+                                     allow_kernel_download=False, local_files_only=True)
+                result = engine.evaluate("red context", question)
+            assert result.probs == expected.probs
+
+
 if __name__ == "__main__":
     run(globals())

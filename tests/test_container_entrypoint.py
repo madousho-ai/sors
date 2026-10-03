@@ -27,5 +27,15 @@ def test_container_flags_keep_model_overrides_and_force_offline_warmup():
     assert args.local_files_only and args.warmup and not args.allow_kernel_download
 
 
+def test_container_defaults_to_one_complete_model_directory():
+    root = Path(__file__).resolve().parents[1]
+    entry = load("complete_container_entrypoint", root / "docker" / "entrypoint.py")
+    serve = load("complete_container_serve", root / "scripts" / "serve.py")
+    args = serve.build_parser().parse_args(entry.server_arguments([], "flash_attention_2"))
+    assert args.init == "/models", "container still requires a separate training checkpoint"
+    assert args.base_model is None, "container still ships a separate base model"
+    assert args.local_files_only and args.warmup and not args.allow_kernel_download
+
+
 if __name__ == "__main__":
     run(globals())

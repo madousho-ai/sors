@@ -1,4 +1,4 @@
-"""Offline container GPU smoke: tiny local checkpoints, real serving, no downloads.
+"""Offline container GPU smoke: complete local models, real serving, no downloads.
 
 Run inside a runtime image with /tests mounted and /app/docker on PYTHONPATH.
 --payload-dir also exports test-only assets for checking the real HTTP entrypoint.
@@ -16,9 +16,9 @@ import torch
 
 
 def exercise(root, attention):
-    from transformers import Qwen3Config, Qwen3ForCausalLM, Qwen3_5TextConfig, Qwen3_5ForCausalLM
+    from transformers import AutoModelForCausalLM, Qwen3Config, Qwen3_5TextConfig
     from test_decision import tokenizer
-    from sors.core.checkpoint import save_trained
+    from sors.core.pretrained import save_pretrained
     from sors.core.decision import DecisionConfig
     from sors.core.model import prepare_model
     from sors.serve.api import Choice, Noul
@@ -36,35 +36,31 @@ def exercise(root, attention):
     for family in ("qwen3-slots", "qwen35-candidate"):
         torch.manual_seed(51)
         directory = root / family
-        directory.mkdir(parents=True)
         tok, codes, ids = tokenizer()
         if family == "qwen3-slots":
-            source = Qwen3ForCausalLM(Qwen3Config(
+            config = Qwen3Config(
                 vocab_size=len(tok) + 4, hidden_size=128, intermediate_size=256, num_hidden_layers=2,
-                num_attention_heads=2, num_key_value_heads=1, head_dim=64, use_cache=False))
+                num_attention_heads=2, num_key_value_heads=1, head_dim=64, use_cache=False)
             decision, trainable = None, "full"
         else:
-            source = Qwen3_5ForCausalLM(Qwen3_5TextConfig(
+            config = Qwen3_5TextConfig(
                 vocab_size=len(tok) + 4, hidden_size=64, intermediate_size=128, num_hidden_layers=2,
                 num_attention_heads=2, num_key_value_heads=1, head_dim=32,
                 linear_num_key_heads=2, linear_num_value_heads=2, linear_key_head_dim=32,
                 linear_value_head_dim=32, layer_types=["linear_attention", "full_attention"],
-                tie_word_embeddings=True, use_cache=False))
+                tie_word_embeddings=True, use_cache=False)
             decision, trainable = DecisionConfig(kind="candidate", blocks=0, dim=32, heads=4), "decision-only"
-        base = directory / "base"
-        source.save_pretrained(base)
-        tok.save_pretrained(base)
+        source = AutoModelForCausalLM.from_config(config, dtype=torch.bfloat16, attn_implementation="sdpa")
         model = prepare_model(source, ids, None, None, 0.0, trainable=trainable, decision=decision)
-        checkpoint = directory / "trained.safetensors"
-        save_trained(model, ids, TrainConfig(layout="context-first"), checkpoint)
+        save_pretrained(model, tok, TrainConfig(layout="context-first"), directory)
         del source, model
 
         options = dict(device="cuda", dtype=torch.bfloat16, allow_kernel_download=False,
                        local_files_only=True, max_tokens=2048, max_batch_tokens=4096)
         if family == "qwen35-candidate":
             options["candidate_prefix_cache"] = "on"
-        reference = load_engine(checkpoint, base, attn_implementation="sdpa", **options)
-        actual = load_engine(checkpoint, base, attn_implementation=attention, **options)
+        reference = load_engine(directory, attn_implementation="sdpa", **options)
+        actual = load_engine(directory, attn_implementation=attention, **options)
         cli.warmup(actual)
         for repeats in (1, 16, 96):
             state = "red blue context. " * repeats
