@@ -143,6 +143,43 @@ def test_optional_hub_kernels_require_download_opt_in():
         assert mod._probe_backend("flash_attention_2", True) == "kernels-community/flash-attn2"
 
 
+def test_explicit_local_kernel_loads_with_hub_downloads_disabled():
+    import os
+    import tempfile
+    from transformers import utils
+    from transformers import modeling_flash_attention_utils as flash
+
+    mod = _module()
+    with tempfile.TemporaryDirectory() as directory, \
+         patch.dict(os.environ, {"LOCAL_KERNELS": f"kernels-community/flash-attn2={directory}"}), \
+         patch.object(utils, "is_flash_attn_2_available", return_value=False), \
+         patch.object(utils, "is_kernels_available", return_value=True), \
+         patch.object(flash, "_lazy_imports", return_value=None):
+        try:
+            selected = mod._probe_backend("flash_attention_2", False, capability=(8, 6))
+        except ImportError as exc:
+            raise AssertionError(f"explicit local kernel was blocked by the download policy: {exc}") from exc
+        assert selected == "kernels-community/flash-attn2"
+
+
+def test_missing_explicit_local_kernel_fails_before_any_import_or_download():
+    import os
+    import tempfile
+    from transformers import modeling_flash_attention_utils as flash
+
+    with tempfile.TemporaryDirectory() as directory, \
+         patch.dict(os.environ, {"LOCAL_KERNELS": f"kernels-community/flash-attn2={directory}/missing"}), \
+         patch.object(flash, "_lazy_imports", side_effect=AssertionError("tried another kernel")):
+        try:
+            _module()._probe_backend("flash_attention_2", True, capability=(8, 6))
+        except (ValueError, FileNotFoundError) as exc:
+            assert "missing" in str(exc)
+        except ImportError as exc:
+            raise AssertionError(f"local path was not validated: {exc}") from exc
+        else:
+            raise AssertionError("missing local kernel did not fail")
+
+
 def test_native_binary_import_errors_are_explained_by_auto_fallback():
     mod = _module()
     from transformers import utils

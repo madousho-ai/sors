@@ -8,9 +8,11 @@ SDPA on dependency failures, while explicit requests fail early.
 from __future__ import annotations
 
 import argparse
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from importlib.metadata import version
+from pathlib import Path
 
 import torch
 from packaging.version import Version
@@ -35,11 +37,30 @@ class AttentionChoice:
     linear_attention: dict[str, str] | None = None
 
 
+def _local_kernel_path(repo: str) -> Path | None:
+    """Honor kernels' explicit local overrides independently of Hub permission."""
+    for entry in os.environ.get("LOCAL_KERNELS", "").split(":"):
+        name, separator, value = entry.partition("=")
+        if name == repo and separator:
+            path = Path(value)
+            if not path.is_absolute() or not path.is_dir():
+                raise FileNotFoundError(f"local kernel directory is missing or not absolute: {value}")
+            return path
+    return None
+
+
 def _probe_backend(backend: str, allow_kernel_download: bool, *, capability=None) -> str:
     from transformers import utils
     # The cached lazy importer marks a backend loaded before imports succeed. Probe
     # the uncached importer so a failed attempt cannot poison later model loads.
     from transformers.modeling_flash_attention_utils import _lazy_imports
+
+    implementation = _HUB_KERNELS[backend]
+    if _local_kernel_path(implementation) is not None:
+        if not utils.is_kernels_available():
+            raise ImportError("loading a local kernel requires the kernels Python package")
+        _lazy_imports(implementation)
+        return implementation
 
     available = getattr(utils, f"is_flash_attn_{backend[-1]}_available")
     if available():
@@ -119,10 +140,10 @@ def resolve_attention(
 
 def add_attention_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--attn-implementation", choices=ATTENTION_CHOICES, default="auto",
-                        help="attention 后端；默认 auto 按 GPU 架构与可用依赖选择，缺少兼容内核时使用 SDPA。")
+                        help="attention 后端；auto 按 GPU 架构与可用依赖选择，缺少兼容内核时使用 SDPA。")
     parser.add_argument("--allow-kernel-download", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="默认允许 Transformers 从 kernels-community 下载预编译 attention 内核；"
+                        help="允许 Transformers 从 kernels-community 下载预编译 attention 内核；"
                              "可用 --no-allow-kernel-download 关闭，需自行安装兼容 kernels")
 
 
@@ -138,27 +159,32 @@ def _configure_linear_attention(lm, *, allow_kernel_download: bool) -> dict[str,
     from transformers import KernelConfig, utils
 
     native_conv = utils.is_causal_conv1d_available()
+    repo = "kernels-community/causal-conv1d"
+    local_path = _local_kernel_path(repo)
     selected = {
         "causal_conv1d": "causal-conv1d" if native_conv else "torch",
         "gated_delta_rule": "flash-linear-attention" if utils.is_flash_linear_attention_available() else "torch",
     }
-    if native_conv or not allow_kernel_download or not utils.is_kernels_available():
+    if local_path is None and (native_conv or not allow_kernel_download or not utils.is_kernels_available()):
         return selected
 
-    from kernels import Mode, get_kernel
+    from kernels import Mode, get_kernel, get_local_kernel
 
-    repo = "kernels-community/causal-conv1d"
     names = ("causal_conv1d_fn", "causal_conv1d_update")
     try:
-        kernel = get_kernel(repo, version=2)
+        kernel = get_local_kernel(local_path) if local_path is not None else get_kernel(repo, version=2)
         if not all(callable(getattr(kernel, name, None)) for name in names):
             raise ImportError(f"{repo} does not provide both causal convolution functions")
     except (ImportError, OSError, ValueError) as exc:
+        if local_path is not None:
+            raise
         selected["fallback_reason"] = str(exc)
         return selected
 
     config = KernelConfig(
-        kernel_mapping={name: {"cuda": (f"{repo}:{name}", {"version": 2})} for name in names},
+        kernel_mapping={name: {"cuda": f"{local_path}:{name}" if local_path is not None
+                              else (f"{repo}:{name}", {"version": 2})} for name in names},
+        use_local_kernel=local_path is not None,
         inherit_mapping=False,
     )
     config.sanitize_kernel_mapping(lm)
@@ -175,7 +201,7 @@ def _configure_linear_attention(lm, *, allow_kernel_download: bool) -> dict[str,
         config.kernel_mapping.setdefault(name, {})
     lm.kernel_config = config
     lm.set_use_kernels(True)
-    selected["causal_conv1d"] = f"{repo}@v2"
+    selected["causal_conv1d"] = f"local:{local_path}" if local_path is not None else f"{repo}@v2"
     return selected
 
 
