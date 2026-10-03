@@ -19,9 +19,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from sors.core.menu import MenuExample, reorder_menu
-from sors.core.prompt import state_text
+from sors.core.prompt import Special, prompt_pieces, state_text
+from sors.core.tokens import D_TOKENS
 
-PUBLIC_DATASETS = ("contractnli", "maud", "legalbench", "sharc", "conditionalqa", "mind2web", "toolace")
+PUBLIC_DATASETS = ("contractnli", "maud", "legalbench", "sharc", "conditionalqa", "mind2web", "toolace",
+                   "quality", "reclor", "logiqa2")
 DEFAULT_MANIFEST = pathlib.Path(__file__).resolve().parents[3] / "data/public-decisions/manifest.json"
 
 
@@ -353,6 +355,101 @@ def toolace(rows: list[dict]) -> Decisions:
     return out
 
 
+def _four_options(names, out: Decisions):
+    if not isinstance(names, list) or len(names) != 4:
+        raise ValueError("official MCQ needs four options")
+    for name in names:
+        _text(name, "option")
+    if len(set(names)) != len(names):
+        out.skipped["duplicate_options"] += 1
+        return None
+    return names
+
+
+def max_menu_tokens(ex: MenuExample, token_length, *, type_marker=False, context_marker=False) -> int:
+    """Exact maximum context-first length over all row orders; token_length encodes plain text.
+
+    Special D codes separate the rows. Only the final row's suffix changes under
+    permutation, so the maximum needs O(k) short encodings and one full prefix.
+    The caller may cache plain-text lengths; raw reserved-token spellings must
+    use split_special_tokens=True, matching the training encoder.
+    """
+    prefix, buf = 0, []
+    first_code = D_TOKENS[ex.slot_codes[0]]
+    for piece in sum(prompt_pieces(ex, "context-first", type_marker, context_marker), []):
+        if isinstance(piece, Special):
+            if buf:
+                prefix += token_length("".join(buf))
+                buf.clear()
+            if piece == first_code:
+                break
+            prefix += 1
+        else:
+            buf.append(piece)
+    ordinary = [token_length(f". {name}\n") for name in ex.option_names]
+    final = [token_length(f". {name}\n\nAnswer:") for name in ex.option_names]
+    return prefix + len(ex.options) + sum(ordinary) + max(b - a for a, b in zip(ordinary, final))
+
+
+def quality(rows: list[dict]) -> Decisions:
+    """QuALITY v1.0.1: retain both author sets; validated gold is one-based."""
+    out, seen = Decisions(), set()
+    for article in rows:
+        text = _text(article["article"], "article")
+        for question in article["questions"]:
+            uid = _text(question["question_unique_id"], "question ID")
+            if uid in seen:
+                raise ValueError(f"duplicate QuALITY question ID {uid}")
+            seen.add(uid)
+            names = _four_options(question["options"], out)
+            if names is None:
+                continue
+            out.add(uid, text, question["question"], names,
+                    _integer(question["gold_label"], "answer") - 1, label="Article")
+    return out
+
+
+def reclor(rows: list[dict]) -> Decisions:
+    """ReClor's released answers field is the four-option menu; label is zero-based."""
+    out, seen = Decisions(), set()
+    for row in rows:
+        uid = _text(row["id_string"], "question ID")
+        if uid in seen:
+            raise ValueError(f"duplicate ReClor question ID {uid}")
+        seen.add(uid)
+        names = _four_options(row["answers"], out)
+        if names is None:
+            continue
+        out.add(uid, _text(row["context"], "context"), row["question"],
+                names, row["label"], label="Argument")
+    return out
+
+
+def logiqa2(rows: list[dict]) -> Decisions:
+    """English MRC: source IDs repeat, so retain row indices; exclude conflicting hard labels."""
+    out, records, labels = Decisions(), [], {}
+    for i, row in enumerate(rows):
+        text = _text(row["text"], "text")
+        question = _text(row["question"], "question")
+        names = _four_options(row["options"], out)
+        if names is None:
+            continue
+        gold = _integer(row["answer"], "answer")
+        if not 0 <= gold < 4:
+            raise ValueError("answer index outside the four-option menu")
+        uid = f"{i}/{_integer(row['id'], 'source ID')}"
+        key = (text, question, tuple(names))
+        labels.setdefault(key, set()).add(gold)
+        records.append((uid, key, gold))
+    for uid, key, gold in records:
+        if len(labels[key]) > 1:
+            out.skipped["conflicting_labels"] += 1
+            continue
+        text, question, names = key
+        out.add(uid, text, question, list(names), gold, label="Logical reasoning passage")
+    return out
+
+
 def _read_source(path: pathlib.Path, files: list[dict], expected: str | None = None):
     with path.open("rb") as f:
         digest = hashlib.file_digest(f, "sha256").hexdigest()
@@ -416,7 +513,22 @@ def load_public_decisions(name: str, manifest=DEFAULT_MANIFEST) -> Decisions:
             elif name == "conditionalqa":
                 part = conditionalqa(raw, auxiliary("documents"))
             else:
-                part = {"sharc": sharc, "mind2web": mind2web, "toolace": toolace}[name](raw)
+                part = {"sharc": sharc, "mind2web": mind2web, "toolace": toolace,
+                        "quality": quality, "reclor": reclor, "logiqa2": logiqa2}[name](raw)
+            if "include_ids" in entry:
+                allowed = _read_source((manifest.parent / _text(entry["include_ids"], "include_ids")).resolve(),
+                                       files, entry.get("include_ids_sha256"))
+                if (not isinstance(allowed, list) or any(not isinstance(uid, str) for uid in allowed)
+                        or len(allowed) != len(set(allowed))):
+                    raise ValueError("include_ids must be a list of distinct string IDs")
+                eligible = {str(uid) for uid in part.ids}
+                if len(eligible) != len(part.ids) or set(allowed) - eligible:
+                    raise ValueError("include_ids contains unknown IDs or the source has ambiguous IDs")
+                allowed = set(allowed)
+                keep = [i for i, uid in enumerate(part.ids) if str(uid) in allowed]
+                part.skipped["excluded_by_include_ids"] += len(part.examples) - len(keep)
+                part.examples = [part.examples[i] for i in keep]
+                part.ids = [part.ids[i] for i in keep]
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise ValueError(f"{name} {path}: {exc}") from exc
         out.examples.extend(part.examples)

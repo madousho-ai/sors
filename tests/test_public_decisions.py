@@ -416,5 +416,138 @@ def test_preflight_command_runs_without_a_model_and_reports_filters():
         assert result["contractnli"]["items"] == 2 and result["contractnli"]["skipped"] == {}
 
 
+def test_manifest_allowlist_keeps_complete_examples_and_records_selection_hash():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        manifest, _ = _fixture(root, include_ids="keep.json")
+        (root / "keep.json").write_text(json.dumps(["4/nda-2"]))
+        out = _load("contractnli", manifest)
+        assert len(out.examples) == 1, "length-selection allowlist was ignored"
+        assert out.examples[0].gold_idx == 2 and len(out.examples[0].options) == 3
+        assert out.examples[0].query == "The agreement lasts two years."
+        assert out.ids == ["contractnli/contractnli.json//4/nda-2"]
+        assert out.skipped["excluded_by_include_ids"] == 1
+        digest = hashlib.sha256((root / "keep.json").read_bytes()).hexdigest()
+        assert out.sources[0]["files"][-1]["sha256"] == digest
+
+
+def test_manifest_allowlist_rejects_unknown_duplicate_or_nonstring_ids():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        manifest, _ = _fixture(root, include_ids="keep.json")
+        for ids in (["unknown"], ["4/nda-2", "4/nda-2"], [2], {"4/nda-2": True}):
+            (root / "keep.json").write_text(json.dumps(ids))
+            _raises(lambda: _load("contractnli", manifest), "include_ids")
+        (root / "keep.json").write_text("[]")
+        _raises(lambda: _load("contractnli", manifest), "no eligible")
+
+
+def test_manifest_allowlist_verifies_its_declared_checksum():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        manifest, _ = _fixture(root, include_ids="keep.json", include_ids_sha256="0" * 64)
+        (root / "keep.json").write_text(json.dumps(["4/nda-2"]))
+        _raises(lambda: _load("contractnli", manifest), "sha256")
+
+
+def _quality():
+    return [{"article_id": "article-1", "set_unique_id": "writer-a", "article": "A complete long article.",
+             "questions": [{"question_unique_id": "q-a", "question": "Why did she leave?",
+                            "options": ["Work", "Travel", "Study", "Family"],
+                            "gold_label": 3, "writer_label": 2, "difficult": 1,
+                            "validation": [{"secret": "SECRET"}]}]},
+            {"article_id": "article-1", "set_unique_id": "writer-b", "article": "A complete long article.",
+             "questions": [{"question_unique_id": "q-b", "question": "Where did she go?",
+                            "options": ["North", "South", "East", "West"],
+                            "gold_label": 1, "writer_label": 1, "difficult": 0}]}]
+
+
+def test_quality_keeps_both_author_sets_and_uses_validated_one_based_gold():
+    assert hasattr(_api(), "quality"), "QuALITY adapter is missing"
+    out = _api().quality(_quality())
+    assert out.ids == ["q-a", "q-b"] and len(out.examples) == 2
+    assert [ex.gold_idx for ex in out.examples] == [2, 0]
+    assert all(ex.query == "A complete long article." for ex in out.examples)
+    assert "SECRET" not in render_menu(out.examples[0])
+    assert all(ex.target is None and ex.qtype == "choice" for ex in out.examples)
+
+
+def test_quality_rejects_missing_gold_duplicate_ids_and_wrong_option_counts():
+    assert hasattr(_api(), "quality"), "QuALITY adapter is missing"
+    raw = _quality()
+    raw[0]["questions"][0]["gold_label"] = 0
+    _raises(lambda: _api().quality(raw), "answer")
+    raw = _quality()
+    raw[1]["questions"][0]["question_unique_id"] = "q-a"
+    _raises(lambda: _api().quality(raw), "duplicate")
+    raw = _quality()
+    raw[0]["questions"][0]["options"].pop()
+    _raises(lambda: _api().quality(raw), "four")
+
+
+def _reclor():
+    return [{"context": "If a permit is valid, work may begin.", "question": "Which follows?",
+             "answers": ["A", "B", "C", "D"], "label": 1, "id_string": "train_0"}]
+
+
+def test_reclor_reads_answers_and_keeps_zero_based_label():
+    assert hasattr(_api(), "reclor"), "ReClor adapter is missing"
+    out = _api().reclor(_reclor())
+    assert out.ids == ["train_0"] and out.examples[0].gold_idx == 1
+    assert out.examples[0].option_names == ["A", "B", "C", "D"]
+    assert out.examples[0].question == "Which follows?"
+    assert out.examples[0].query == "If a permit is valid, work may begin."
+
+
+def _logiqa2():
+    return [{"id": 4554, "answer": 0, "text": "All applicants have permits.",
+             "question": "Which follows?", "options": ["A", "B", "C", "D"],
+             "type": {"SECRET reasoning label": True}},
+            {"id": 4554, "answer": 2, "text": "No applicants have permits.",
+             "question": "Which follows?", "options": ["A", "B", "C", "D"], "type": {}}]
+
+
+def test_logiqa2_preserves_distinct_rows_with_repeated_official_ids():
+    assert hasattr(_api(), "logiqa2"), "LogiQA 2.0 adapter is missing"
+    out = _api().logiqa2(_logiqa2())
+    assert out.ids == ["0/4554", "1/4554"] and len(out.examples) == 2
+    assert [ex.gold_idx for ex in out.examples] == [0, 2]
+    assert "SECRET" not in render_menu(out.examples[0])
+
+
+def test_logiqa2_excludes_every_row_of_a_conflicting_gold_group():
+    assert hasattr(_api(), "logiqa2"), "LogiQA 2.0 adapter is missing"
+    raw = _logiqa2()
+    raw += [{**raw[0], "id": 7, "answer": 1}]
+    out = _api().logiqa2(raw)
+    assert out.ids == ["1/4554"]
+    assert out.skipped == {"conflicting_labels": 2}
+
+
+def test_new_mcq_sources_load_through_manifest_and_preserve_hard_gold():
+    for name, raw, expected in (("quality", _quality(), [2, 0]), ("reclor", _reclor(), [1]),
+                                ("logiqa2", _logiqa2(), [0, 2])):
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _fixture(pathlib.Path(d), name, raw)
+            out = _load(name, manifest)
+            assert [ex.gold_idx for ex in out.examples] == expected
+            assert all(ex.target is None for ex in out.examples)
+
+
+def test_official_mcq_duplicate_options_are_counted_and_excluded_as_whole_questions():
+    raw = _quality()
+    raw[0]["questions"][0]["options"][1] = raw[0]["questions"][0]["options"][0]
+    out = _api().quality(raw)
+    assert out.ids == ["q-b"] and out.skipped == {"duplicate_options": 1}
+    raw = _reclor()
+    raw[0]["answers"] = ["same"] * 4
+    out = _api().reclor(raw)
+    assert not out.examples and out.skipped == {"duplicate_options": 1}
+    raw = _logiqa2()
+    raw[0]["options"][2] = raw[0]["options"][3]
+    out = _api().logiqa2(raw)
+    assert out.ids == ["1/4554"] and out.skipped == {"duplicate_options": 1}
+
+
 if __name__ == "__main__":
     run(globals())
