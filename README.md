@@ -161,9 +161,34 @@ Banking77 test, n=3080, 77-option menu, Qwen3-1.7B-Base: accuracy 0.260 / 0.269 
 
 Each baseline writes a JSON of metrics plus an NPZ holding hidden states, slot logits, full-vocabulary logsumexp and top-k, so probes, temperature scaling and ablations fit offline without a second forward pass. The Banking77 script binds each intent to a two-letter code that tokenizes as a single token both with and without a leading space, and runs two permutation seeds to establish the preference-noise floor.
 
+## Export and serve a complete model
+
+Publish one complete model directory. Its `model.safetensors` contains trained
+parameters, frozen embeddings and decision layers together; shared tensors are
+stored once. `config.json` records the architecture and parameter precision, and
+the tokenizer files preserve the trained token IDs. The directory is sufficient
+for offline loading with the Sors runtime.
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/export-model.py \
+  --init runs/<run>/trained.safetensors \
+  --base-model /path/to/pinned-base \
+  --out ../Sors-0.8B --device cpu --dtype bfloat16 --local-files-only
+
+PYTHONPATH=src .venv/bin/python scripts/serve.py \
+  --init ../Sors-0.8B --local-files-only --warmup
+```
+
+The exporter accepts a new output directory and preserves the loaded model.
+Complete-directory serving preserves the saved mixed precision, including FP32
+decision layers. Training checkpoints retain their existing format for evaluation
+and recovery; their serving path continues to accept a separate `--base-model`.
+See [container deployment](docker/README.md) for the same model directory in
+Docker and Podman.
+
 ## Limitations
 
-- **No server.** This is a training and measurement repo. There is no `/v1/systemone` endpoint, no SDK, no released weights. `cache.py` has the prefix-sharing path a server would need; nothing is wired on top of it.
+- **Deployment uses the Sors runtime.** The service exposes `/v1/systemone`; custom decision architectures are loaded through the project's model-directory loader.
 - **`score` is unimplemented.** `<|score|>` holds a token id. An ordered loss and a dataset with ordered levels are both missing, so only `choice` and its k=2 case are trained today.
 - **BoolQ exceeds pure readout.** A probe fitted on frozen hidden states of the same base model tops out at AUROC 0.745; the trained run reaches 0.877. Attention LoRA moved representations there, so on that task the claim "only the format is trained" is too strong.
 - **One base size measured end to end.** Everything trained is 0.6B. The zero-shot ladder says a 1.7B base starts at AUROC 0.858 on BoolQ, above where 0.6B's trained readout lands — base-model scale is the larger lever, and it is untested here past the baselines.

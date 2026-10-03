@@ -146,5 +146,33 @@ def test_export_refuses_overwriting_and_rejects_mismatched_token_ids():
             raise AssertionError("a tokenizer/embedding coordinate mismatch was accepted")
 
 
+def test_public_engine_loads_complete_directory_and_matches_reference_probabilities():
+    module = api()
+    from sors.serve.api import Choice
+    from sors.serve.engine import Engine, load_engine
+
+    model, tok, d_ids, _ = tiny_model("minimal", trainable="full")
+    questions = {"color": Choice(type="choice", instructions="Which color?",
+                                  criteria={"red": None, "blue": None})}
+    reference = Engine(model, tok, d_ids).evaluate("red context", questions)
+    with tempfile.TemporaryDirectory() as directory:
+        folder = Path(directory) / "release"
+        module.save_pretrained(model, tok, settings(), folder)
+        with patch("sors.core.attention.load_causal_lm", side_effect=AssertionError("base model was fetched")):
+            try:
+                engine = load_engine(folder, device="cpu", local_files_only=True)
+            except TypeError as exc:
+                raise AssertionError("complete directory loading still requires a separate base model") from exc
+        actual = engine.evaluate("red context", questions)
+        assert actual.probs == reference.probs
+        assert actual.input_tokens == reference.input_tokens
+        try:
+            load_engine(folder, "an/unrelated-base", device="cpu")
+        except ValueError as exc:
+            assert "base" in str(exc).lower()
+        else:
+            raise AssertionError("an extra base model was silently ignored")
+
+
 if __name__ == "__main__":
     run(globals())

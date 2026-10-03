@@ -161,9 +161,29 @@ Banking77 test，n=3080，77 选 1 菜单，Qwen3-1.7B-Base：两套 permutation
 
 每个基线写出一份 JSON（指标）加一份 NPZ（隐状态、槽 logit、全词表 logsumexp、top-k），探针、温度标定和消融因此可以离线拟合，无需再跑一次前向。Banking77 那份给每个意图绑一个两字母码，带空格和不带空格都是单 token，并跑两套 permutation seed 来量出偏好噪声的地板。
 
+## 导出完整模型与部署
+
+发布时使用一份完整模型目录。`model.safetensors` 同时包含训练后的参数、冻结词嵌入和决策层，
+共享张量只保存一次；`config.json` 记录架构和参数精度，tokenizer 文件保留训练时的 token ID。
+Sors 运行时可直接从这份目录离线加载。
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/export-model.py \
+  --init runs/<run>/trained.safetensors \
+  --base-model /path/to/pinned-base \
+  --out ../Sors-0.8B --device cpu --dtype bfloat16 --local-files-only
+
+PYTHONPATH=src .venv/bin/python scripts/serve.py \
+  --init ../Sors-0.8B --local-files-only --warmup
+```
+
+导出目录必须尚未存在，导出过程保持内存中的模型原样。完整模型加载保留存档中的混合精度，
+包括 FP32 决策层。训练存档继续保留原格式用于评估和恢复，其服务入口仍支持单独指定 `--base-model`。
+Docker 和 Podman 使用同一份模型目录，见[容器部署](docker/README.md)。
+
 ## 已知限制
 
-- **没有服务端。** 这是一个训练与测量的仓库。没有 `/v1/systemone` 端点，没有 SDK，没有发布权重。`cache.py` 里有服务端需要的前缀共享通路，上面还什么都没接。
+- **部署依赖 Sors 运行时。** 服务提供 `/v1/systemone`，自定义决策架构通过项目的完整模型目录加载入口使用。
 - **`score` 没实现。** `<|score|>` 只占着一个 token id。有序损失和带有序档位的数据集两样都缺，所以今天训的只有 `choice` 及其 k=2 的情形。
 - **BoolQ 超出了纯读出。** 同一基模冻结隐状态上拟合的探针天花板是 AUROC 0.745，训练后的运行到了 0.877。attention LoRA 在那里动了表征，所以「只训格式」这句话在这个任务上说得太满。
 - **端到端只量过一个基模尺寸。** 训过的全是 0.6B。零样本阶梯显示 1.7B 基模在 BoolQ 上起点就是 AUROC 0.858，高于 0.6B 训练后读出的落点 —— 基模规模是更大的那根杠杆，而它在这里除了基线之外没被测过。

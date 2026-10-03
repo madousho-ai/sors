@@ -175,19 +175,33 @@ def recorded_base_model(checkpoint) -> str | None:
     return None
 
 
-def load_engine(checkpoint, base_model, context_label: str = "", device: str = "cuda",
+def load_engine(checkpoint, base_model=None, context_label: str = "", device: str = "cuda",
                 dtype: torch.dtype = torch.bfloat16, max_tokens: int = 8192, max_batch_tokens: int = 16384,
                 candidate_prefix_cache: str | None = None, *, attn_implementation: str = "sdpa",
                 allow_kernel_download: bool = False, local_files_only: bool = False) -> Engine:
+    """Load a complete model directory or a legacy checkpoint plus its base.
+
+    Complete exports preserve their saved mixed precision and use local model
+    assets. The dtype argument controls legacy base-model loading.
+    """
     from transformers import AutoTokenizer
     from sors.core.attention import load_causal_lm
 
-    tok = AutoTokenizer.from_pretrained(base_model, local_files_only=local_files_only)
-    d_ids = install_d_tokens(tok)
-    train_ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
-    lm, _ = load_causal_lm(base_model, device=device, dtype=dtype, attn_implementation=attn_implementation,
-                          allow_kernel_download=allow_kernel_download, local_files_only=local_files_only)
-    m, cfg = prepare_from_checkpoint(lm, train_ids, checkpoint)
+    if pathlib.Path(checkpoint).is_dir():
+        if base_model is not None:
+            raise ValueError("a complete model directory already contains its base weights; omit base_model")
+        from sors.core.pretrained import load_pretrained
+        m, tok, d_ids, cfg = load_pretrained(checkpoint, device=device, attn_implementation=attn_implementation,
+                                            allow_kernel_download=allow_kernel_download)
+    else:
+        if base_model is None:
+            raise ValueError("a training checkpoint requires its base_model")
+        tok = AutoTokenizer.from_pretrained(base_model, local_files_only=local_files_only)
+        d_ids = install_d_tokens(tok)
+        train_ids = d_ids + install_type_tokens(tok) + install_context_tokens(tok)
+        lm, _ = load_causal_lm(base_model, device=device, dtype=dtype, attn_implementation=attn_implementation,
+                               allow_kernel_download=allow_kernel_download, local_files_only=local_files_only)
+        m, cfg = prepare_from_checkpoint(lm, train_ids, checkpoint)
     layout = cfg.get("layout", LAYOUT)
     if layout != LAYOUT:
         raise ValueError(f"{checkpoint} was trained {layout}; the server needs a {LAYOUT} checkpoint, "

@@ -109,5 +109,20 @@ def test_warmup_runs_real_engine_predictions_and_checks_probabilities():
     assert abs(sum(result.probs["q"]) - 1) < 1e-5
 
 
+def test_complete_model_directory_sets_its_own_name_and_needs_no_base_model():
+    with tempfile.TemporaryDirectory() as directory:
+        folder = pathlib.Path(directory) / "Sors-0.8B"
+        folder.mkdir()
+        args = _args("--init", str(folder), "--local-files-only")
+        assert _mod.served_name(args) == "Sors-0.8B"
+        assert _mod.base_model(args) is None
+        try:
+            _mod.base_model(_args("--init", str(folder), "--base-model", "another/base"))
+        except SystemExit as exc:
+            assert "--base-model" in str(exc)
+        else:
+            raise AssertionError("a complete model accepted a separate base model")
+
+
 if __name__ == "__main__":
     run(globals())

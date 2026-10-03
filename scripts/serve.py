@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-"""推理服务: 一份训好的存档, 照 TypeSafe 的 System One API 回答请求.
+"""推理服务: 完整模型目录或训练存档, 照 TypeSafe 的 System One API 回答请求.
 
+  PYTHONPATH=src .venv/bin/python scripts/serve.py --init /path/to/Sors-0.8B
   PYTHONPATH=src .venv/bin/python scripts/serve.py --init runs/<run>/trained.safetensors
   curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
     "state": "Help! My payouts have been failing for 3 days.", "model": "<run>",
@@ -8,7 +9,7 @@
 
 官方 SDK 也能直接连: TYPESAFE_BASE_URL=http://127.0.0.1:8000, TYPESAFE_DEFAULT_MODEL=<服务名>.
 服务名默认是存档所在的 run 目录名 (途中的档再接上 step-<步数>), --model-name 另起; 请求的 model 必须是它.
-基模默认读 run 目录里 result.json 记的 --model; 存档不在 run 目录里时用 --base-model 给.
+训练存档的基模默认读 run 目录里的 result.json，也可用 --base-model 指定；完整目录自带权重.
 --demo 把仓库的 demos/ 挂在 /demo/ 下, 默认不挂. 手填请求: http://127.0.0.1:8000/demo/playground/,
 左边表单右边 JSON, 发送后显示每项概率与模型读到的提示 (见 demos/playground/). 贪吃蛇: /demo/snake/,
 每一步由服务里的模型决定往哪走 (见 demos/snake/).
@@ -35,8 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     from sors.core.attention import add_attention_arguments
 
     ap = argparse.ArgumentParser(description="SORS — State-conditioned Option Ranking System")
-    ap.add_argument("--init", required=True, help="scripts/train.py 的存档 (.safetensors 或旧的 trained.pt), 必须是 context-first 训的")
-    ap.add_argument("--base-model", default=None, help="存档训练时的基模. 不给 = run 目录里 result.json 记的那个")
+    ap.add_argument("--init", required=True, help="完整模型目录，或 scripts/train.py 的存档；必须是 context-first 训的")
+    ap.add_argument("--base-model", default=None, help="旧训练存档的基模，默认读 result.json；完整模型目录省略此项")
     ap.add_argument("--model-name", default=None,
                     help="服务名: 响应里的 model, 也是请求的 model 必须写的值. 不给 = run 目录名 (途中的档接上 step-<步数>)")
     ap.add_argument("--context-label", default="",
@@ -63,10 +64,16 @@ def served_name(args) -> str:
     if args.model_name:
         return args.model_name
     p = pathlib.Path(args.init)
+    if p.is_dir():
+        return p.name
     return f"{p.parent.parent.name}-{p.stem}" if p.parent.name == "checkpoints" else p.parent.name
 
 
-def base_model(args) -> str:
+def base_model(args) -> str | None:
+    if pathlib.Path(args.init).is_dir():
+        if args.base_model is not None:
+            raise SystemExit("a complete model directory includes its weights; omit --base-model")
+        return None
     found = args.base_model or recorded_base_model(args.init)
     if not found:
         raise SystemExit(f"{args.init} is not inside a run directory with a result.json; name its base model "
@@ -123,9 +130,10 @@ def main() -> None:
     if args.warmup:
         warmup(engine)
     released = datetime.date.fromtimestamp(pathlib.Path(args.init).stat().st_mtime).isoformat()
-    app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {base}",
+    source = base or "self-contained model weights"
+    app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {source}",
                      release_date=released, demo_dir=demo_dir(args))
-    print(f"serving {args.init} on {base} as {name!r}, type_marker={engine.type_marker}, "
+    print(f"serving {args.init} on {source} as {name!r}, type_marker={engine.type_marker}, "
           f"context_marker={engine.context_marker}, "
           f"context label {repr(args.context_label) if args.context_label else 'none'}, auth {'on' if api_key(args) else 'off'}", flush=True)
     if args.demo:
