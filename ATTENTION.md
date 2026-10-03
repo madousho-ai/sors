@@ -4,6 +4,11 @@
 启动日志打印请求的后端、实际加载的实现、GPU 架构和回退原因；训练参数、TensorBoard
 和续跑记录保存实际选择。训练目标、微批划分、优化器与采样算法保持原设置。
 
+Docker / Podman 的共享 base、按 SM 划分的离线推理镜像见 [docker/README.md](docker/README.md)。
+推理服务支持 `--attn-implementation`、`--allow-kernel-download`、`--local-files-only` 和 `--warmup`；
+普通服务默认使用 SDPA 并关闭 Hub 下载，容器入口按内核 profile 显式选择后端。
+`LOCAL_KERNELS` 中配置的本地内核可在 `--no-allow-kernel-download` 下加载。
+
 ## Qwen3 / Qwen3.5 Base 切换
 
 `--model` 选择基模，两种架构共用数据、提示格式、损失和存档接口。本轮验证使用

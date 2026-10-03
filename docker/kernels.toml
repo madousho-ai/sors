@@ -1,0 +1,50 @@
+# These are GPU profiles, independent of the container's CPU architecture.
+# Update revisions and variants together, then repeat the offline GPU checks.
+[environment]
+torch = "2.14.0"
+cuda = "13.0"
+python = "3.13"
+system = "Linux"
+machine = "x86_64"
+
+[kernels.fa2]
+repo = "kernels-community/flash-attn2"
+revision = "81fb77c12b2ad5d69380669b46739d5868614502"
+variant = "torch-stable-abi210-cu130-x86_64-linux"
+
+[kernels.fa3]
+repo = "kernels-community/vllm-flash-attn3"
+revision = "867af20731c4690484bf76c4e04c09bcd818e115"
+variant = "torch-stable-abi29-cu130-x86_64-linux"
+
+[kernels.fa4]
+repo = "kernels-community/flash-attn4"
+revision = "ed382ded331d0521a2aaba90959a0fcb1d803413"
+variant = "torch-cuda"
+
+[kernels.conv]
+repo = "kernels-community/causal-conv1d"
+revision = "5b5f06d4ed57f9410a1837bf0393958e2da15297"
+variant = "torch-stable-abi210-cu130-x86_64-linux"
+
+[profiles.sm8x]
+capabilities = [80, 86, 87, 89]
+attention = "flash_attention_2"
+kernels = ["fa2", "conv"]
+
+[profiles.sm90]
+capabilities = [90]
+attention = "flash_attention_3"
+kernels = ["fa3", "conv"]
+
+[profiles.sm100]
+capabilities = [100]
+attention = "flash_attention_4"
+kernels = ["fa4", "conv"]
+
+# The existing attention policy skips Hub FA4 on SM120. This pinned FA2 build
+# explicitly includes SM120; keep the profile independent of sm100.
+[profiles.sm120]
+capabilities = [120]
+attention = "flash_attention_2"
+kernels = ["fa2", "conv"]

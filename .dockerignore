@@ -1,0 +1,14 @@
+# Allowlist the build context: model weights, runs, local environments, and secrets
+# stay out of the runtime image. Dockerfile.model uses a separate model context.
+**
+!pyproject.toml
+!uv.lock
+!LICENSE
+!docker/
+!docker/**
+!src/
+!src/**
+!scripts/
+!scripts/serve.py
+**/__pycache__/
+**/*.pyc

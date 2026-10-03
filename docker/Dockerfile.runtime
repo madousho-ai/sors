@@ -1,0 +1,38 @@
+ARG BASE_IMAGE=localhost/sors-base:cu130
+FROM ${BASE_IMAGE} AS runtime
+
+WORKDIR /app
+COPY docker/kernel_bundle.py docker/kernels.toml docker/entrypoint.py /app/docker/
+COPY src /app/src
+COPY scripts/serve.py /app/scripts/serve.py
+COPY LICENSE /app/LICENSE
+
+# Assets and kernels are read-only; JIT/module caches live on a writable mount.
+ENV PYTHONPATH=/app/src \
+    HF_HUB_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HOME=/tmp/sors/hf \
+    HF_MODULES_CACHE=/tmp/sors/hf/modules \
+    XDG_CACHE_HOME=/tmp/sors/cache \
+    TRITON_CACHE_DIR=/tmp/sors/triton \
+    TORCH_EXTENSIONS_DIR=/tmp/sors/torch-extensions \
+    CUDA_CACHE_PATH=/tmp/sors/cuda \
+    HOME=/tmp/sors
+RUN mkdir -p /models /tmp/sors
+EXPOSE 8000
+ENTRYPOINT ["python", "/app/docker/entrypoint.py"]
+
+FROM runtime AS sm8x
+RUN HF_HUB_OFFLINE=0 python docker/kernel_bundle.py --profile sm8x
+
+FROM runtime AS sm90
+RUN HF_HUB_OFFLINE=0 python docker/kernel_bundle.py --profile sm90
+
+FROM runtime AS sm100
+RUN uv sync --frozen --no-default-groups --group gpu --group gpu-fa4 --no-install-project --no-build \
+    && uv cache clean \
+    && HF_HUB_OFFLINE=0 python docker/kernel_bundle.py --profile sm100
+
+FROM runtime AS sm120
+RUN HF_HUB_OFFLINE=0 python docker/kernel_bundle.py --profile sm120

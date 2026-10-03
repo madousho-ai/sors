@@ -1,0 +1,7 @@
+# Optional final packaging. Use the prepared model directory as build context:
+#   base/                  self-contained Hugging Face model + tokenizer
+#   trained.safetensors    SORS inference checkpoint
+ARG RUNTIME_IMAGE=localhost/sors:sm8x
+FROM ${RUNTIME_IMAGE}
+COPY base /models/base
+COPY trained.safetensors /models/trained.safetensors
