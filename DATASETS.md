@@ -34,6 +34,46 @@ The v5 loader uses this code checkout's JevBench cache for overlap checks, even
 when either repository has a custom directory name. `JEVBENCH_DIR` explicitly
 overrides that cache location.
 
+## Public decision training
+
+The public adapters also support `quality` (QuALITY v1.0.1 HTML-stripped),
+`reclor`, and `logiqa2` (English MRC). Use their official train partitions and
+preserve source licenses: QuALITY is CC BY 4.0, ReClor is restricted to
+non-commercial research, and LogiQA 2.0 is CC BY-NC-SA 4.0. ReClor reads the
+`answers` field with a zero-based label; QuALITY uses the validated one-based
+`gold_label`. QuALITY retains both author sets for each article. LogiQA IDs
+include the source row index because the official numeric IDs repeat.
+The three adapters count and exclude complete questions with duplicate option
+text; LogiQA additionally excludes every row in a conflicting-label group.
+
+`--dataset-weights` sets relative question counts across training sources,
+before consistency pairing. Give a positive weight for every selected dataset:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/train.py \
+  --datasets-dir ../decidophobia-dataset \
+  --dataset synth-v5.1+sharc+toolace \
+  --dataset-weights synth-v5.1=27,sharc=6,toolace=3 \
+  --batch-size 36 --consistency 1
+```
+
+This draws 27 synth questions, six ShARC questions and three ToolACE questions,
+then creates 72 prompts. Fractions use deterministic largest-remainder
+allocation. Legacy `synth` shares its dataset quota between its two samplers.
+Omitting the flag preserves the existing equal-sampler allocation and random
+sequence. `--mix` and `--passes` continue to control only the synth goals.
+
+A public manifest source may specify `include_ids` as a JSON file of adapter-local
+string IDs, plus `include_ids_sha256`. This selects complete questions while
+preserving every option and the original label; unknown or repeated IDs are
+rejected. The loader records selection hashes and exclusion counts alongside
+the raw source hashes. `max_menu_tokens` in `sors.data.public_decisions` computes
+the maximum complete context-first prompt length over all menu permutations;
+its text-length callback must use the run tokenizer with
+`add_special_tokens=False, split_special_tokens=True`. Length screening can then
+write an allowlist before training, preserving complete evidence within the
+configured token budget.
+
 ## Reproduce and resume
 
 Training records the resolved asset path, both repositories' revisions and their

@@ -93,5 +93,56 @@ def test_old_dataset_defaults_and_sampling_are_unchanged():
         assert len(sample(4, random.Random(0))) == 4
 
 
+def test_dataset_weights_control_real_draws_before_pairing():
+    with tempfile.TemporaryDirectory() as d:
+        manifest = _all_sources(pathlib.Path(d))
+        args = _args(manifest, "contractnli+sharc+toolace", "--batch-size", "36",
+                     "--dataset-weights", "contractnli=27,sharc=6,toolace=3",
+                     "--consistency", "1", "--random-codes", "1")
+        sample, _, info = _mod.build_data(args)
+        batch = sample(36, random.Random(2))
+        assert len(batch) == 72
+        counts = collections.Counter(ex.context_label for ex in batch[::2])
+        assert counts["Contract"] == 27, counts
+        assert sorted(counts.values()) == [3, 6, 27], counts
+        assert info["dataset_batch"] == {"contractnli": 27, "sharc": 6, "toolace": 3}
+        for a, b in zip(batch[::2], batch[1::2]):
+            assert a.option_names[a.gold_idx] == b.option_names[b.gold_idx]
+            assert row_alignment(a, b)
+
+
+def test_weighted_draws_keep_exact_half_synth_with_seven_public_sources():
+    assert hasattr(_mod, "dataset_parts"), "dataset-level batch allocation is missing"
+    names = ["synth-v5", "sharc", "toolace", "contractnli", "maud", "quality", "reclor", "logiqa2"]
+    weights = _mod.parse_dataset_weights(
+        "synth-v5.1=18,sharc=3,toolace=2,contractnli=4,maud=2,quality=3,reclor=2,logiqa2=2", names)
+    assert _mod.dataset_parts(36, names, weights) == [18, 3, 2, 4, 2, 3, 2, 2]
+
+
+def test_weighted_remainders_and_legacy_two_sampler_dataset_preserve_batch_size():
+    assert hasattr(_mod, "dataset_parts"), "dataset-level batch allocation is missing"
+    weights = _mod.parse_dataset_weights("synth=3,sharc=1", ["synth", "sharc"])
+    assert _mod.dataset_parts(10, ["synth", "synth", "sharc"], weights) == [4, 4, 2]
+    assert _mod.dataset_parts(10, ["synth", "synth", "sharc"], None) == [4, 3, 3]
+    assert _mod.dataset_parts(0, ["synth", "synth", "sharc"], weights) == [0, 0, 0]
+
+
+def test_dataset_weights_reject_missing_repeated_unknown_or_nonpositive_values():
+    assert hasattr(_mod, "parse_dataset_weights"), "dataset weight validation is missing"
+    for spec in ("sharc=1", "sharc=1,toolace=1,other=2", "sharc=1,toolace=0",
+                 "sharc=1,toolace=-1", "sharc=1,toolace=nan", "sharc=1,toolace=inf",
+                 "sharc=1,sharc=2,toolace=1", "sharc,toolace=1", ""):
+        try:
+            _mod.parse_dataset_weights(spec, ["sharc", "toolace"])
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid weights accepted: {spec}")
+    try:
+        _mod.parse_dataset_weights("synth-v5=1,synth-v5.1=1", ["synth-v5"])
+    except ValueError:
+        return
+    raise AssertionError("duplicate alias weights accepted")
+
+
 if __name__ == "__main__":
     run(globals())

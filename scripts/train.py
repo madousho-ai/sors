@@ -17,9 +17,9 @@
               --consistency 下材料有几种说法时, 配对的第二份读另一种说法. --fallback-rate 默认 0.5,
               随机加入题目标记的 Other / 信息不足选项；既有 other 配对每次随机选一版，一次抽取出一道题
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
-  contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace
+  contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / quality / reclor / logiqa2
               官方决策子任务，从 --public-manifest 声明的本地 train 文件读取；全量菜单、硬标签，
-              按数据集各占一份。筛选统计和原始文件 SHA256 写进 result.json 的 split.public_decisions。
+              默认按数据集各占一份，--dataset-weights 可指定配比。筛选统计和原始文件 SHA256 写进 result.json 的 split.public_decisions。
 每个训练集各自组菜单, 干扰项不跨集合抽.
 --datasets-dir 指定外部数据仓库根目录，默认取环境变量或同级 decidophobia-dataset；详见 DATASETS.md。
 "both" 仍可用, 等于 banking77+boolq.
@@ -55,6 +55,7 @@ import random
 import sys
 import time
 from dataclasses import asdict
+from fractions import Fraction
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -95,6 +96,50 @@ def parse_datasets(spec: str) -> list[str]:
     if {"synth", "synth-menu"} <= set(names):
         raise SystemExit("--dataset: synth already includes synth-menu's menu questions; pick one")
     return names
+
+
+def parse_dataset_weights(spec: str | None, names: list[str]) -> dict[str, Fraction] | None:
+    """Require an explicit positive weight for every selected dataset; normalize the v5 alias."""
+    if spec is None:
+        return None
+    weights = {}
+    try:
+        for entry in spec.split(","):
+            name, value = (part.strip() for part in entry.split("="))
+            name = "synth-v5" if name == "synth-v5.1" else name
+            if name in weights:
+                raise ValueError(f"repeated dataset {name}")
+            weight = Fraction(value)
+            if weight <= 0:
+                raise ValueError(f"{name} needs a positive weight")
+            weights[name] = weight
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ValueError(f"--dataset-weights: {exc}") from exc
+    if set(weights) != set(names):
+        raise ValueError(f"--dataset-weights must name every selected dataset exactly once: {names}")
+    return weights
+
+
+def dataset_parts(n: int, names: list[str], weights: dict[str, Fraction] | None) -> list[int]:
+    """Allocate whole questions deterministically, then share each dataset's quota among its samplers."""
+    if weights is None:
+        parts = [n // len(names)] * len(names)
+        parts[0] += n - sum(parts)
+        return parts
+    unique = list(dict.fromkeys(names))
+    total = sum(weights.values())
+    exact = {name: n * weights[name] / total for name in unique}
+    quota = {name: int(exact[name]) for name in unique}
+    largest = sorted(unique, key=lambda name: exact[name] - quota[name], reverse=True)
+    for name in largest[:n - sum(quota.values())]:
+        quota[name] += 1
+    parts = [0] * len(names)
+    for name in unique:
+        indices = [i for i, value in enumerate(names) if value == name]
+        for i in indices:
+            parts[i] = quota[name] // len(indices)
+        parts[indices[0]] += quota[name] % len(indices)
+    return parts
 
 
 def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
@@ -153,6 +198,10 @@ def build_data(args):
     """每个数据集给一个 sampler 和若干评估集. 返回 (sample_fn, eval_sets, split_info).
     只读数据, 不碰模型 —— tests/test_train_cli.py 直接调它."""
     datasets = parse_datasets(args.dataset)
+    try:
+        weights = parse_dataset_weights(getattr(args, "dataset_weights", None), datasets)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     if not 0.0 <= args.random_codes <= 1.0:
         raise SystemExit(f"--random-codes is a share of training menus, 0..1; got {args.random_codes}")
     if not 0.0 <= args.label_smoothing < 1.0:
@@ -178,7 +227,7 @@ def build_data(args):
     if args.mix and args.passes:
         raise SystemExit("--mix draws goals by weight and --passes draws in rounds; pick one")
     erng = random.Random(args.seed + 1)
-    samplers, eval_sets, split_info = [], {}, {}
+    samplers, sampler_names, eval_sets, split_info = [], [], {}, {}
     ktr = menu_k_range(args.k_min, args.k_max)
     b77 = None
     if "banking77" in datasets:
@@ -191,6 +240,7 @@ def build_data(args):
         eval_sets["seen"] = EvalSet(te.build_examples(split.train, kr, erng), args.eval_batch_size)
         eval_sets["unseen"] = EvalSet(te.build_examples(split.held_out, kr, erng), args.eval_batch_size)
         samplers.append(lambda n, rng: tr.sample_examples(split.train, ktr, n, rng, k_log=args.k_log))
+        sampler_names.append("banking77")
         split_info = {"train": split.train, "held_out": split.held_out,
                       "held_out_names": [tr.names[c] for c in split.held_out]}
     if "synth" in datasets or "synth-menu" in datasets:
@@ -200,9 +250,11 @@ def build_data(args):
 
         synth, synth_domains = load_synth(datasets_dir=getattr(args, "datasets_dir", None))
         samplers.append(lambda n, rng: sample_domain_menus(synth, synth_domains, ktr, n, rng))
+        sampler_names.append("synth" if "synth" in datasets else "synth-menu")
         if "synth" in datasets:
             synth_bin = load_synth_binary(datasets_dir=getattr(args, "datasets_dir", None))
             samplers.append(lambda n, rng: synth_bin.sample_examples([0, 1], (2, 2), n, rng))
+            sampler_names.append("synth")
         split_info["synth_classes"] = len(synth.names)
     if "synth-v3" in datasets:
         # 题自带选项, 不组菜单: 每条先挑领域 (五个领域机会均等) 再挑题, 每次换问法、重新打乱选项.
@@ -211,6 +263,7 @@ def build_data(args):
 
         v3 = load_synth_v3(datasets_dir=getattr(args, "datasets_dir", None))
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
+        sampler_names.append("synth-v3")
         split_info["synth_v3_items"] = sum(len(v) for v in v3.values())
     if "synth-v5" in datasets:
         # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
@@ -233,6 +286,7 @@ def build_data(args):
                 split_info["synth_v5_mix"] = mix
         except ValueError as e:
             raise SystemExit(str(e)) from None
+        sampler_names.append("synth-v5")
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
@@ -241,12 +295,14 @@ def build_data(args):
         mtr = load_massive(partition="train")
         m_classes = list(range(len(mtr.names)))
         samplers.append(lambda n, rng: mtr.sample_examples(m_classes, ktr, n, rng))
+        sampler_names.append("massive")
         split_info["massive_classes"] = len(m_classes)
     if "boolq" in datasets:
         from sors.data.boolq import load_boolq
 
         btr, bva = load_boolq()
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
+        sampler_names.append("boolq")
     for name in datasets:
         if name in PUBLIC_DATASETS:
             try:
@@ -257,6 +313,7 @@ def build_data(args):
             except ValueError as exc:
                 raise SystemExit(str(exc)) from None
             samplers.append(public.sample)
+            sampler_names.append(name)
             split_info.setdefault("public_decisions", {})[name] = public.summary()
     eval_sets.update(build_eval_sets(args, b77[1] if b77 else None, bva if "boolq" in datasets else None))
     if args.eval_limit:
@@ -266,13 +323,16 @@ def build_data(args):
             eval_sets[k] = EvalSet(exs[: args.eval_limit], es.batch_size, es.pos_class)
 
     random_codes = RandomCodes(args.random_codes)  # 一个 run 一个: 它记着每个码上过几次菜单
+    if weights is not None:
+        parts = dataset_parts(args.batch_size, sampler_names, weights)
+        split_info["dataset_batch"] = {name: sum(count for source, count in zip(sampler_names, parts)
+                                                 if source == name) for name in dict.fromkeys(sampler_names)}
 
     def sample_fn(n, rng):
-        """一批里各数据集平分 (第一个 sampler 拿零头), 再打乱. --consistency > 0 时每道题后面紧跟它的另一种排法,
+        """一批按 --dataset-weights 分配，默认各 sampler 平分，再打乱. --consistency > 0 时每道题后面紧跟它的另一种排法,
         一批 2n 条. --random-codes 只作用在这里, 两种排法各换各的码:
         评估集始终按位置编号 D0, D1, ..., 与部署时调用方写的菜单同形."""
-        parts = [n // len(samplers)] * len(samplers)
-        parts[0] += n - sum(parts)
+        parts = dataset_parts(n, sampler_names, weights)
         out = [ex for s, c in zip(samplers, parts) for ex in s(c, rng)]
         rng.shuffle(out)
         if args.consistency > 0:
@@ -288,10 +348,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.1 / massive 用 + 连接; "
-                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace; "
+                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / quality / reclor / logiqa2; "
                          "synth-v5 是 synth-v5.1 的兼容别名; both = banking77+boolq")
     ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
-                    help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")
+                     help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")
+    ap.add_argument("--dataset-weights", default=None,
+                    help="数据集相对抽题权重，须列出全部训练来源，如 synth-v5.1=3,sharc=1；"
+                         "按最大余数法分配整题，JS配对前生效；默认沿用各sampler等份")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
                     help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
@@ -494,6 +557,7 @@ def run_tag(args) -> str:
         + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.1"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
+        + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
         + (f"-{args.architecture}-decision{hashlib.sha1(json.dumps(resolve_architecture(args), sort_keys=True).encode()).hexdigest()[:6]}"
            if getattr(args, "architecture", None) in ("minimal", "structural", "candidate") else "")
