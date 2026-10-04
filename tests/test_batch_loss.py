@@ -8,7 +8,7 @@ import sys
 
 import torch
 
-from sors.core.batch import collate, fit, length_groups, pair_alignment, trim_left_padding
+from sors.core.batch import collate, fit, length_groups, pair_alignment, token_groups, trim_left_padding
 from sors.core.menu import MenuExample, reorder_menu
 from sors.core.prompt import encode_prompts, prompt_pieces, render_menu
 from sors.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
@@ -275,6 +275,37 @@ def test_length_groups_put_the_longest_rows_together_and_split_them_evenly():
 def test_length_groups_keep_the_batch_order_among_rows_of_equal_length():
     mask = torch.tensor([[0, 1, 1], [1, 1, 1], [0, 1, 1], [0, 0, 1]])
     assert [g.tolist() for g in length_groups(mask, 2)] == [[1, 0], [2, 3]]
+
+
+def test_token_groups_use_the_fewest_groups_then_the_least_padding():
+    """长度 8 / 2 / 2 / 6 / 1, 每组补齐后至多 12 个 token. 从长到短是 0, 3, 1, 2, 4.
+    0 自己一组 (2×8 超预算). 最少要三组; 贪心装满会得到 [3, 1] [2, 4], 补齐 8+12+4=24;
+    三组里补齐最少的是 [0] [3] [1, 2, 4], 8+6+6=20."""
+    assert token_groups([8, 2, 2, 6, 1], 12) == [[0], [3], [1, 2, 4]]
+
+
+def test_token_groups_keep_equal_lengths_in_batch_order():
+    """长度 2 / 3 / 2 / 2, 预算 6: 两组里 [1] [0, 2, 3] 补齐 3+6=9, 比 [1, 0] [2, 3] 的 10 少."""
+    assert token_groups([2, 3, 2, 2], 6) == [[1], [0, 2, 3]]
+
+
+def test_token_groups_let_a_row_longer_than_the_budget_run_alone():
+    assert token_groups([20, 1], 10) == [[0], [1]]
+
+
+def test_token_groups_keep_each_unit_of_adjacent_rows_together():
+    """unit=2: 行 (0,1) (2,3) (4,5) 各是一对, 一对按较长那条算. 对长 9 / 4 / 3;
+    第一对 2×9 超预算 16, 单独一组; 后两对 4 行 × 4 = 16 正好装下."""
+    assert token_groups([1, 9, 4, 4, 3, 3], 16, unit=2) == [[0, 1], [2, 3, 4, 5]]
+
+
+def test_token_groups_refuse_a_nonpositive_budget_and_incomplete_units():
+    for call in (lambda: token_groups([1, 2], 0), lambda: token_groups([1, 2, 3], 8, unit=2)):
+        try:
+            call()
+        except ValueError:
+            continue
+        raise AssertionError("invalid token grouping was accepted")
 
 
 def test_trim_left_padding_gives_the_rows_as_if_they_were_collated_alone():

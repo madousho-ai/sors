@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 
 from sors.core.menu import MenuExample, row_alignment
@@ -81,6 +83,36 @@ def length_groups(attention_mask: torch.Tensor, n: int) -> list[torch.Tensor]:
         return [torch.arange(B, device=attention_mask.device)]
     order = torch.sort(attention_mask.sum(dim=1), descending=True, stable=True).indices
     return list(torch.tensor_split(order, min(n, B)))
+
+
+def token_groups(lengths: Sequence[int], budget: int, unit: int = 1) -> list[list[int]]:
+    """按 token 预算把一批行分组, 每组前向时补齐到组里最长那条: 补齐后的 token 数 (行数 × 最长) 不超过 budget.
+    超过预算的单个单元自己一组. 相邻 unit 行 (JS 配对的两种排法) 是一个单元, 按其中最长那条算, 不拆开.
+
+    单元按长度从长到短排 (等长保持批里的顺序), 只在这个顺序上切段: 先取组数最少的切法, 再取其中补齐最少的.
+    组数决定每步前向的次数 (CPU 发射开销与同步次数), 补齐决定白算的 token; 显存峰值由 budget 封顶.
+    lengths 是 CPU 上的整数, 整个分组不读 GPU."""
+    if budget < 1 or unit < 1 or len(lengths) % unit:
+        raise ValueError("token_groups needs a positive budget and complete units of adjacent rows")
+    widths = [max(lengths[i:i + unit]) for i in range(0, len(lengths), unit)]
+    order = sorted(range(len(widths)), key=lambda u: -widths[u])
+    n = len(order)
+    best: list[tuple[int, int]] = [(0, 0)] * (n + 1)  # 从第 i 个单元起切到底: (组数, 补齐 token)
+    cut = [n] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        best[i] = (n + 1, 0)
+        for j in range(i + 1, n + 1):
+            padded = (j - i) * unit * widths[order[i]]
+            if padded > budget and j > i + 1:
+                break
+            groups, tokens = best[j]
+            if (groups + 1, tokens + padded) < best[i]:
+                best[i], cut[i] = (groups + 1, tokens + padded), j
+    out, i = [], 0
+    while i < n:
+        out.append([u * unit + r for u in order[i:cut[i]] for r in range(unit)])
+        i = cut[i]
+    return out
 
 
 def trim_left_padding(input_ids: torch.Tensor, attention_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
