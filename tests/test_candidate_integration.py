@@ -155,7 +155,7 @@ def test_candidate_actual_cli_exports_complete_state_and_loadable_service():
             base, out = Path(directory) / "base", Path(directory) / "run"
             tiny_backbone(tok).save_pretrained(base)
             tok.save_pretrained(base)
-            argv = ["train.py", "--model", str(base), "--out", str(out), "--dataset", "synth-v5.1",
+            argv = ["train.py", "--model", str(base), "--out", str(out), "--dataset", "synth-v5.2",
                     "--architecture", "candidate", "--decision-blocks", str(blocks), "--decision-dim", "16",
                     "--loss", "menu", "--steps", "1", "--batch-size", "2", "--consistency", "1",
                     "--save-training-state", "--grad-ckpt", "--temp-max", "999"]

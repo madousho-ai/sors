@@ -20,7 +20,7 @@ def test_cli_uses_selected_assets_for_training_and_evaluation():
         root = pathlib.Path(tmp)
         fixture = _data()
         try:
-            shutil.copytree(fixture, root / "synth-intents-v5.1")
+            shutil.copytree(fixture, root / "synth-intents-v5.2")
         finally:
             shutil.rmtree(fixture)
         (root / "synth-simple-eval").mkdir()
@@ -30,7 +30,7 @@ def test_cli_uses_selected_assets_for_training_and_evaluation():
         with patch.dict(os.environ, {"SORS_DATASETS_DIR": "/missing/environment-root"}):
             try:
                 args = _mod.build_parser().parse_args([
-                    "--dataset", "synth-v5.1", "--eval", "simple", "--datasets-dir", tmp])
+                    "--dataset", "synth-v5.2", "--eval", "simple", "--datasets-dir", tmp])
             except SystemExit:
                 raise AssertionError("the training CLI must accept --datasets-dir") from None
             sample, evaluation, info = _mod.build_data(args)

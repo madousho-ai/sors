@@ -1,6 +1,6 @@
-"""synth-intents v5.1 适配: 外部数据仓库的 synth-intents-v5.1/ 材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
+"""synth-intents v5.2 适配: 外部数据仓库的 synth-intents-v5.2/ 材料与绑定 -> 逐题的训练样本, 按训练目标的配比抽题. 只做训练.
 
-格式与检查见外部数据仓库的 synth-intents-v5.1/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
+格式与检查见外部数据仓库的 synth-intents-v5.2/schema.py: 每个领域一份题库、一份材料清单, 材料上挂绑定 {题, 答案}.
 这里一个绑定读成一个 V5Item, 数据目录里的 schema.py 先把每个领域检查一遍, 有问题就报 ValueError.
 
   选项   模型看到的样子与推理服务相同 (serve.menus.option_row): 键写法「键: 说明」, 说明为 null 只有键;
@@ -35,7 +35,7 @@ from sors.core.prompt import state_text
 from sors.serve.menus import option_row
 from sors.data.paths import DEFAULT_ROOT, asset_path
 
-DEFAULT_DIR = DEFAULT_ROOT / "synth-intents-v5.1"
+DEFAULT_DIR = DEFAULT_ROOT / "synth-intents-v5.2"
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
 def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
     """全部领域的全部绑定, 领域按名字排序、领域内按材料与绑定的顺序. 格式检查过不了的领域报 ValueError.
     other 版的绑定与同一份材料上原题的绑定互记下标 (pair)."""
-    data_dir = pathlib.Path(data_dir) if data_dir is not None else asset_path("synth-intents-v5.1", datasets_dir)
+    data_dir = pathlib.Path(data_dir) if data_dir is not None else asset_path("synth-intents-v5.2", datasets_dir)
     schema = _schema(data_dir)
     out = []
     for domain in schema.domains(data_dir):
