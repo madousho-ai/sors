@@ -16,10 +16,10 @@ Docker / Podman 的共享 base、按 SM 划分的离线推理镜像见 [docker/R
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --model Qwen/Qwen3-0.6B-Base --dataset synth-v5.1 --trainable full --grad-ckpt
+  --model Qwen/Qwen3-0.6B-Base --dataset synth-v5.2 --trainable full --grad-ckpt
 
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.1 --trainable full --grad-ckpt
+  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.2 --trainable full --grad-ckpt
 ```
 
 Qwen3.5 使用纯文本主干。新增的 256 个 D 标记、3 个类型标记和 2 个上下文标记
@@ -66,7 +66,7 @@ Blackwell 的本地 FA2 要求 `flash-attn>=2.8.3.post1`，并需要匹配该显
 优先使用本地 FlashAttention 包，也允许通过已安装的 `kernels` 下载匹配的预编译内核。
 
 ```bash
-HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth-v5.1 --grad-ckpt
+HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py --dataset synth-v5.2 --grad-ckpt
 ```
 
 预编译 Hub 内核下载默认启用；使用 `--no-allow-kernel-download` 可限制为本地包。
@@ -79,7 +79,7 @@ Python 包版本由 `uv.lock` 管理；Hub 预编译内核继续在运行时按�
 uv sync --group gpu
 
 HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --dataset synth-v5.1 --grad-ckpt \
+  --dataset synth-v5.2 --grad-ckpt \
   --attn-implementation auto --allow-kernel-download
 ```
 
@@ -88,7 +88,7 @@ HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py \
 
 ```bash
 HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --dataset synth-v5.1 --grad-ckpt \
+  --dataset synth-v5.2 --grad-ckpt \
   --attn-implementation flash_attention_2 --allow-kernel-download
 ```
 

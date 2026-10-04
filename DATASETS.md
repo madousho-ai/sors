@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.1/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.2/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,8 +12,13 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.1
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.2
 ```
+
+`synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
+added to every domain. `--dataset synth-v5.1` is rejected with a pointer to the new
+name; `synth-v5` remains an alias of the current data. Complete states saved on v5.1
+data fail the resume fingerprint check against v5.2.
 
 The order is an explicit `--datasets-dir` / API argument, then
 `SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling
@@ -52,8 +57,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.1+sharc+toolace \
-  --dataset-weights synth-v5.1=27,sharc=6,toolace=3 \
+  --dataset synth-v5.2+sharc+toolace \
+  --dataset-weights synth-v5.2=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 
