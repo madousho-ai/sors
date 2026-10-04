@@ -29,44 +29,70 @@ def _kept(ids, limit, bounds, truncate):
     return keep[-limit:]
 
 
-def _minimal(ex, tok, d_ids, layout, type_marker, context_marker, limit, truncate):
-    pieces = sum(prompt_pieces(ex, layout, type_marker, context_marker), [])
+def _minimal_plan(ex, tok, d_ids, layout, type_marker, context_marker, texts, specials):
+    """Template steps for one prompt; text segments are appended to texts for one batched encode.
+
+    A text segment that follows an option's code belongs to that option. Steps are
+    ("id", token, owner) or ("text", index into texts, owner).
+    """
     by_token = {d_ids[c]: j for j, c in enumerate(ex.slot_codes)}
-    ids, ends, starts = [], {}, {}
-    buf, owner = [], None
+    plan, buf, owner = [], [], None
 
     def flush():
-        if not buf:
-            return
-        text = "".join(buf)
-        enc = tok(text, add_special_tokens=False, split_special_tokens=True, return_offsets_mapping=True)
-        if owner is not None:
-            boundary = len(f". {ex.option_names[owner]}")
-            content = [i for i, (a, b) in enumerate(enc["offset_mapping"]) if b > 0 and a < boundary]
-            if not content:
-                raise ValueError("option has no encoded content")
-            ends[owner] = len(ids) + content[-1]
-        ids.extend(enc["input_ids"])
-        buf.clear()
+        if buf:
+            plan.append(("text", len(texts), owner))
+            texts.append("".join(buf))
+            buf.clear()
 
-    for piece in pieces:
+    for piece in sum(prompt_pieces(ex, layout, type_marker, context_marker), []):
         if isinstance(piece, Special):
             flush()
-            token = _special_id(tok, piece)
-            owner = by_token.get(token)
-            if owner is not None:
-                starts[owner] = len(ids)
-            ids.append(token)
+            if piece not in specials:
+                specials[piece] = _special_id(tok, piece)
+            owner = by_token.get(specials[piece])
+            plan.append(("id", specials[piece], owner))
         else:
             buf.append(piece)
     flush()
-    bounds = tuple(tok.convert_tokens_to_ids(x) for x in CONTEXT_TOKENS) if context_marker else None
+    return plan
+
+
+def _minimal_assemble(ex, plan, enc, limit, bounds, truncate):
+    ids, ends, starts = [], {}, {}
+    for kind, value, owner in plan:
+        if kind == "id":
+            if owner is not None:
+                starts[owner] = len(ids)
+            ids.append(value)
+            continue
+        if owner is not None:
+            boundary = len(f". {ex.option_names[owner]}")
+            content = [i for i, (a, b) in enumerate(enc["offset_mapping"][value]) if b > 0 and a < boundary]
+            if not content:
+                raise ValueError("option has no encoded content")
+            ends[owner] = len(ids) + content[-1]
+        ids.extend(enc["input_ids"][value])
     keep = _kept(ids, limit, bounds, truncate)
     remap = {old: new for new, old in enumerate(keep)}
     for j in range(len(ex.options)):
         if any(i not in remap for i in range(starts[j], ends[j] + 1)):
             raise ValueError("truncation would remove an option; increase max_length")
     return [ids[i] for i in keep], [remap[ends[j]] for j in range(len(ex.options))]
+
+
+def _minimal_batch(examples, tok, d_ids, layout, type_marker, context_marker, limit, truncate):
+    """Encode every text segment of the batch in one tokenizer call.
+
+    Segments are split at the same template tokens as before, so each segment's
+    ids and offsets equal a standalone encode of that segment.
+    """
+    texts, specials = [], {}
+    plans = [_minimal_plan(ex, tok, d_ids, layout, type_marker, context_marker, texts, specials)
+             for ex in examples]
+    enc = (tok(texts, add_special_tokens=False, split_special_tokens=True, return_offsets_mapping=True)
+           if texts else {"input_ids": [], "offset_mapping": []})
+    bounds = tuple(tok.convert_tokens_to_ids(x) for x in CONTEXT_TOKENS) if context_marker else None
+    return [_minimal_assemble(ex, plan, enc, limit, bounds, truncate) for ex, plan in zip(examples, plans)]
 
 
 def structural_pieces(ex, type_marker=False, context_marker=False):
@@ -120,8 +146,7 @@ def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, typ
     out = targets(examples, d_ids, k_max)
     pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
     if architecture == "minimal":
-        encoded = [_minimal(ex, tokenizer, d_ids, layout, type_marker, context_marker, max_length, truncate)
-                   for ex in examples]
+        encoded = _minimal_batch(examples, tokenizer, d_ids, layout, type_marker, context_marker, max_length, truncate)
         ids, mask = _pad([seq for seq, _ in encoded], pad)
         positions = torch.full(out["slot_ids"].shape, -1, dtype=torch.long)
         for i, (seq, ends) in enumerate(encoded):

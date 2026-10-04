@@ -259,6 +259,50 @@ def test_real_tokenizer_preserves_minimal_prompts_markers_and_truncated_context(
     assert bool((b["option_positions"][0, :3] >= 0).all())
 
 
+class _CountingTokenizer:
+    """Delegates to a real tokenizer and counts text-encoding calls."""
+
+    def __init__(self, tok):
+        self.tok, self.calls = tok, 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.tok(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.tok, name)
+
+
+def test_minimal_batch_encodes_all_text_in_one_call_and_matches_single_example_rows():
+    from dataclasses import replace
+    from test_batch_loss import _all_tokens
+    from sors.core.batch import collate
+    tok, d, _, _ = _all_tokens()
+    base = examples()
+    batch_examples = [
+        replace(base[0], query="a long context " * 100 + " <|D200|> 字符串",
+                option_names=["你好 🔴\nfirst", "literal <|D9|> option", "third option!"], codes=[200, 9, 78]),
+        base[1],
+        replace(base[0], option_names=[" spaced", "tabs\tand\nlines", "émoji 🎲 end"]),
+    ]
+    for layout in ("context-first", "menu-first"):
+        # menu-first puts the context last; only context-first can truncate it without losing options.
+        limit = 120 if layout == "context-first" else 4096
+        for cm in (False, True):
+            counting = _CountingTokenizer(tok)
+            got = collate(batch_examples, counting, d, 4, layout, limit, True, cm, architecture="minimal")
+            assert counting.calls == 1, f"{counting.calls} tokenizer calls for one batch"
+            width = got["input_ids"].shape[1]
+            for row, ex in enumerate(batch_examples):
+                one = collate([ex], tok, d, 4, layout, limit, True, cm, architecture="minimal")
+                n = one["input_ids"].shape[1]
+                torch.testing.assert_close(got["input_ids"][row, width - n:], one["input_ids"][0])
+                torch.testing.assert_close(got["attention_mask"][row, width - n:], one["attention_mask"][0])
+                pos = one["option_positions"][0]
+                expect = torch.where(pos >= 0, pos + width - n, pos)
+                torch.testing.assert_close(got["option_positions"][row], expect)
+
+
 def test_padding_grouping_and_option_chunking_preserve_both_architecture_outputs():
     from sors.core.model import decision_logits
     for kind in ("minimal", "structural"):
