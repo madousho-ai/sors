@@ -39,8 +39,9 @@ def test_train_cli_controls_real_preparation_and_records_it_in_checkpoints():
     """Missing flag-to-TrainConfig wiring changes the observed collate thread."""
     from safetensors import safe_open
 
-    for flags, workers, capacity in (([], 2, 2), (["--data-workers", "0", "--data-prefetch", "1"], 0, 1),
-                                      (["--data-workers", "1", "--data-prefetch", "3"], 1, 3)):
+    for flags, workers, capacity in ((["--data-backend", "thread"], 2, 2),
+                                      (["--data-workers", "0", "--data-prefetch", "1"], 0, 1),
+                                      (["--data-backend", "thread", "--data-workers", "1", "--data-prefetch", "3"], 1, 3)):
         cli = _cli("train")
         _parse(cli, flags)
         tok, _, _ = tokenizer()
@@ -70,6 +71,36 @@ def test_train_cli_controls_real_preparation_and_records_it_in_checkpoints():
         assert len(calls) == 2
         assert all((t is threading.current_thread()) == (workers == 0) for t in calls)
         assert all(t is threading.current_thread() or not t.is_alive() for t in calls)
+
+
+def test_train_cli_defaults_to_process_workers_and_records_gpu_prefetch():
+    cli = _cli("train")
+    args = _parse(cli, [])
+    assert (args.data_backend, args.device_prefetch) == ("process", 1)
+    args = _parse(cli, ["--data-backend", "thread", "--device-prefetch", "3"])
+    assert (args.data_backend, args.device_prefetch) == ("thread", 3)
+    for flags in (["--data-backend", "fibers"],):
+        try:
+            cli.build_parser().parse_args(flags)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{flags} accepted")
+
+
+def test_resume_overrides_backend_and_gpu_prefetch_as_execution_settings():
+    cli = _cli("resume")
+    saved = {"steps": 20, "batch_size": 36, "micro_batches": 8, "data_backend": "thread", "device_prefetch": 0}
+    cfg = cli.resume_config(saved, _parse(cli, ["--run", "runs/example"]))
+    assert (cfg.data_backend, cfg.device_prefetch) == ("thread", 0)
+    cfg = cli.resume_config(saved, _parse(cli, ["--run", "runs/example", "--data-backend", "process",
+                                                "--device-prefetch", "2"]))
+    assert (cfg.data_backend, cfg.device_prefetch) == ("process", 2)
+    try:
+        cli.resume_config(saved, _parse(cli, ["--run", "runs/example", "--device-prefetch", "-1"]))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("negative device prefetch accepted")
 
 
 def test_training_cli_rejects_invalid_limits_before_data_or_model_loading():

@@ -13,7 +13,8 @@
 后续完整恢复：
   PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<原run>
 latest.trainstate.safetensors 原子替换，仅保留最新完整状态；推理权重仍按原 save_every 单独存档。
---data-workers / --data-prefetch 可覆盖后台准备线程数与预取上限；默认继承存档，旧档默认 2/2。
+--data-workers / --data-prefetch / --data-backend / --device-prefetch 可覆盖后台准备方式与预取上限；
+默认继承存档，旧档默认 2/2、子进程、显存预取 1。
 预取批次按原抽样顺序消费；完整状态里的采样 RNG 对应已完成训练的批次。
 """
 
@@ -98,6 +99,8 @@ def build_parser():
     ap.add_argument("--micro-batches", type=int)
     ap.add_argument("--data-workers", type=int, help="覆盖后台 CPU 分词/组批线程数；0 = 同步准备")
     ap.add_argument("--data-prefetch", type=int, help="覆盖提前准备的批数上限 (>= 1)")
+    ap.add_argument("--data-backend", choices=["process", "thread"], help="覆盖后台准备方式：子进程或线程")
+    ap.add_argument("--device-prefetch", type=int, help="覆盖 CUDA 上提前拷进显存的批数 (>= 0)")
     return ap
 
 
@@ -105,13 +108,15 @@ def resume_config(config, opts):
     """Restore training semantics while allowing execution-only overrides."""
     cfg = TrainConfig(**config)
     cfg.accumulate_gradients = True
-    for key in ("micro_batches", "data_workers", "data_prefetch"):
+    for key in ("micro_batches", "data_workers", "data_prefetch", "data_backend", "device_prefetch"):
         value = getattr(opts, key)
         if value is not None:
             setattr(cfg, key, value)
     if cfg.micro_batches < 1:
         raise ValueError("micro_batches must be positive")
-    validate_data_preparation(cfg.data_workers, cfg.data_prefetch)
+    validate_data_preparation(cfg.data_workers, cfg.data_prefetch, cfg.data_backend)
+    if cfg.device_prefetch < 0:
+        raise ValueError("device_prefetch must be nonnegative")
     return cfg
 
 
@@ -180,6 +185,7 @@ def main():
     args.out = str(out)
     args.micro_batches = cfg.micro_batches
     args.data_workers, args.data_prefetch = cfg.data_workers, cfg.data_prefetch
+    args.data_backend, args.device_prefetch = cfg.data_backend, cfg.device_prefetch
     spec = importlib.util.spec_from_file_location("original_train_cli", ROOT / "scripts/train.py")
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
@@ -211,6 +217,7 @@ def main():
               "target_step": cfg.steps, "optimizer_reset": not full, "accumulate_gradients": True,
               "micro_batches": cfg.micro_batches, "sampling_fingerprint": fingerprint,
               "data_workers": cfg.data_workers, "data_prefetch": cfg.data_prefetch,
+              "data_backend": cfg.data_backend, "device_prefetch": cfg.device_prefetch,
               "previous_attention": previous_attention, "attention": args.attention}
     with (out / "resume.jsonl").open("a") as f:
         f.write(json.dumps(record) + "\n")

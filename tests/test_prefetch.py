@@ -27,7 +27,7 @@ def _cfg(workers=2, capacity=2, **changes):
     return cfg
 
 
-def test_training_prepares_batches_off_the_training_thread_by_default():
+def test_thread_backend_prepares_batches_off_the_training_thread():
     """A synchronous collate in the training loop must fail this test."""
     tok, ids, model = _tiny()
     calls, original = [], loop.collate
@@ -37,7 +37,7 @@ def test_training_prepares_batches_off_the_training_thread_by_default():
         return original(*args, **kwargs)
 
     with patch.object(loop, "collate", observed):
-        loop.train(model, tok, ids, _Sampler(), {}, _training_config())
+        loop.train(model, tok, ids, _Sampler(), {}, _cfg(data_backend="thread"))
     assert calls and all(t is not threading.current_thread() for t in calls), "collate still runs on the training thread"
     assert all(not t.is_alive() for t in calls), "data workers survived training"
 
@@ -261,6 +261,149 @@ def test_prefetched_checkpoint_records_consumed_rng_and_resumes_exactly():
     for key, values in ref_states[-1]["optimizer"]["state"].items():
         for name, value in values.items():
             torch.testing.assert_close(value, final[-1]["optimizer"]["state"][key][name], rtol=0, atol=0)
+
+
+def _pid_prepare(item, tok):
+    """Module-level so process workers can unpickle it."""
+    import os
+    if item == "boom":
+        raise ValueError("bad item")
+    return item, os.getpid(), tok["name"]
+
+
+def _gone(pid, timeout=5.0):
+    import os
+    import time
+    deadline = time.monotonic() + timeout
+    while os.path.exists(f"/proc/{pid}") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not os.path.exists(f"/proc/{pid}")
+
+
+def test_process_workers_prepare_outside_the_training_process_in_source_order():
+    """A thread pool, or completion-order delivery, fails this."""
+    import os
+    prefetch = _prefetch()
+    sampled_on = []
+
+    def source():
+        for i in range(6):
+            sampled_on.append(threading.current_thread())
+            yield i
+
+    with prefetch(source(), _pid_prepare, {"name": "tok"}, workers=2, capacity=3, backend="process") as batches:
+        got = list(batches)
+    assert [g[0] for g in got] == list(range(6))
+    assert all(pid != os.getpid() for _, pid, _ in got), "prepared inside the training process"
+    assert all(name == "tok" for *_, name in got), "worker did not receive the tokenizer"
+    assert all(t is threading.current_thread() for t in sampled_on), "sampling left the training thread"
+    assert all(_gone(pid) for pid in {pid for _, pid, _ in got}), "worker processes survived"
+
+
+def test_process_worker_errors_arrive_at_their_batch_position_and_early_exit_stops_sampling():
+    prefetch = _prefetch()
+    sampled = []
+
+    def source():
+        for item in (0, "boom", 2, 3, 4, 5, 6, 7):
+            sampled.append(item)
+            yield item
+
+    try:
+        with prefetch(source(), _pid_prepare, {"name": "tok"}, workers=2, capacity=2, backend="process") as batches:
+            first, pid, _ = next(batches)
+            assert first == 0, "a later failure hid an earlier batch"
+            next(batches)
+    except ValueError as caught:
+        assert "bad item" in str(caught)
+    else:
+        raise AssertionError("worker failure was swallowed")
+    assert len(sampled) <= 4, "sampling ran past the bounded look-ahead"
+    assert _gone(pid), "worker process survived the failure"
+
+
+def test_unknown_backend_fails_before_sampling():
+    prefetch = _prefetch()
+    sampled = []
+
+    def source():
+        sampled.append(True)
+        yield 0
+
+    try:
+        with prefetch(source(), _pid_prepare, {}, workers=1, capacity=1, backend="fibers") as batches:
+            list(batches)
+    except ValueError:
+        assert sampled == []
+    else:
+        raise AssertionError("unknown backend accepted")
+
+
+def test_training_defaults_to_process_workers_and_matches_synchronous_training_bitwise():
+    """Thread default, or any change to batches, parameters or RNG, fails this."""
+    assert loop.TrainConfig().data_backend == "process"
+    results = []
+    for workers in (0, 2):
+        tok, ids, model = _tiny()
+        sampler, states = _Sampler(), []
+        loop.train(model, tok, ids, sampler, {}, _cfg(workers=workers, capacity=3, steps=4),
+                   on_state=lambda s: states.append(copy.deepcopy(s)))
+        results.append((sampler.seen, [p.detach().clone() for p in model.parameters()], states[-1]))
+    (seen_a, params_a, state_a), (seen_b, params_b, state_b) = results
+    assert seen_a == seen_b
+    for a, b in zip(params_a, params_b):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    assert state_a["rng"] == state_b["rng"] and state_a["running"] == state_b["running"]
+
+
+def _device_prefetch():
+    from sors.training.prefetch import device_prefetch
+    return device_prefetch
+
+
+def test_device_prefetch_on_cpu_moves_lazily_and_keeps_extras():
+    feed = _device_prefetch()
+    pulled = []
+
+    def source():
+        for i in range(3):
+            pulled.append(i)
+            yield {"x": torch.full((2, 3), i)}, f"extra{i}"
+
+    out = feed(source(), torch.device("cpu"), depth=2)
+    batch, extra = next(out)
+    assert pulled == [0], "CPU training read ahead with nothing to overlap"
+    assert extra == "extra0" and torch.equal(batch["x"], torch.zeros(2, 3, dtype=torch.long))
+    assert [e for _, e in out] == ["extra1", "extra2"]
+
+
+def test_device_prefetch_copies_ahead_onto_the_gpu_with_identical_values():
+    if not torch.cuda.is_available():
+        print("  (skipped: no CUDA)")
+        return
+    feed = _device_prefetch()
+    pulled = []
+    expected = [torch.randint(0, 1000, (64, 2048)) for _ in range(5)]
+
+    def source():
+        for i, x in enumerate(expected):
+            pulled.append(i)
+            yield {"input_ids": x, "mask": x > 500}, i
+
+    dev = torch.device("cuda")
+    for depth in (0, 1, 3):
+        pulled.clear()
+        seen = []
+        for batch, i in feed(source(), dev, depth=depth):
+            assert len(pulled) == min(5, i + 1 + depth), f"depth {depth}: read {len(pulled)} at batch {i}"
+            assert batch["input_ids"].device.type == "cuda"
+            # Overwrite on the consumer stream: a stream-unsafe feeder would corrupt the next batches.
+            ref = batch["input_ids"].sum().item()
+            batch["input_ids"].zero_()
+            assert ref == expected[i].sum().item()
+            assert torch.equal(batch["mask"].cpu(), expected[i] > 500)
+            seen.append(i)
+        assert seen == list(range(5))
 
 
 if __name__ == "__main__":

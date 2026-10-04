@@ -7,6 +7,7 @@ train() 不认识数据集: 拿一个 sample_fn (给 n 和 rng, 还 n 条 MenuEx
 
 from __future__ import annotations
 
+import functools
 import json
 import random
 import time
@@ -22,7 +23,7 @@ from sors.core.decision import architecture_config
 from sors.core.prompt import DEFAULT_LAYOUT
 from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate
 from sors.training.loss import consistency_js, menu_hit_counts, smooth_target, training_loss
-from sors.training.prefetch import prefetch_batches, validate_data_preparation
+from sors.training.prefetch import device_prefetch, prefetch_batches, validate_data_preparation
 from sors.training.schedule import lr_scale
 
 SampleFn = Callable[[int, random.Random], list[MenuExample]]
@@ -56,6 +57,11 @@ class TrainConfig:
     candidate_prefix_cache: str = "off"  # CLI defaults new candidates to auto; old configs retain full forwards.
     data_workers: int = 2  # 后台 CPU 分词/组批线程；0 = 同步准备
     data_prefetch: int = 2  # 最多提前准备的批数，独立于有效 batch 与 micro_batches
+    data_backend: str = "process"  # process: 子进程准备, 不与训练线程抢 GIL; thread: 训练进程内的线程
+    device_prefetch: int = 1  # CUDA 上提前几批锁页并在副 stream 上拷进显存; 0 = 用到时才拷
+
+EXECUTION_ONLY = ("micro_batches", "accumulate_gradients", "data_workers", "data_prefetch", "data_backend",
+                  "device_prefetch")  # 只影响执行方式, 续跑时可以改
 
 
 class Fp32Master:
@@ -209,6 +215,15 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     return ce_sum, js_sum if paired else None, hits_sum, n_sum
 
 
+def _prepare_batch(spec: tuple, sample, tokenizer):
+    """后台准备一批. 模块级函数配 functools.partial, 子进程才拿得到."""
+    d_ids, k_max, layout, max_length, type_marker, context_marker, architecture = spec
+    examples, after_sampling = sample
+    batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
+                    architecture=architecture)
+    return batch, examples, after_sampling
+
+
 def train(
     m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
     cfg: TrainConfig, log_path=None, writer=None, guard=None, on_checkpoint: Callable[[int], None] | None = None,
@@ -243,7 +258,9 @@ def train(
     (step 0 还没训练, 是 None / 0).
     """
     # sample_fn 必须是新建的原版本管线。重建全部采样调用，包含 queue、码计数、问法与配对的随机流。
-    validate_data_preparation(cfg.data_workers, cfg.data_prefetch)
+    validate_data_preparation(cfg.data_workers, cfg.data_prefetch, cfg.data_backend)
+    if cfg.device_prefetch < 0:
+        raise ValueError("device_prefetch must be nonnegative")
     architecture = architecture_config(m)
     if architecture["kind"] == "candidate":
         m.set_candidate_prefix_cache(cfg.candidate_prefix_cache)
@@ -256,7 +273,7 @@ def train(
         raise ValueError("invalid completed step or stop_after")
     if resume and "config" in resume:
         changed = {k for k, v in resume["config"].items()
-                   if k not in ("micro_batches", "accumulate_gradients", "data_workers", "data_prefetch")
+                   if k not in EXECUTION_ONLY
                    and asdict(cfg).get(k) != v}
         if changed:
             raise ValueError(f"resume config changed: {sorted(changed)}")
@@ -364,11 +381,8 @@ def train(
             examples = sample_fn(cfg.batch_size, rng)
             yield examples, rng.getstate()
 
-    def prepare(sample, tokenizer):
-        examples, after_sampling = sample
-        batch = collate(examples, tokenizer, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker,
-                        cfg.context_marker, architecture=architecture["kind"])
-        return examples, batch, after_sampling
+    prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
+                                                 cfg.type_marker, cfg.context_marker, architecture["kind"]))
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。
@@ -382,13 +396,17 @@ def train(
                 "elapsed": time.time() - t0, "resume_info": resume_info}
 
     dev = next(m.parameters()).device
+    data_wait = 0.0  # 训练线程等下一批的秒数, 每 log_every 步清零; 接近 0 说明数据准备不在关键路径上
     try:
-        with prefetch_batches(samples(), prepare, tok, workers=cfg.data_workers, capacity=cfg.data_prefetch) as batches:
+        with prefetch_batches(samples(), prepare, tok, workers=cfg.data_workers, capacity=cfg.data_prefetch,
+                              backend=cfg.data_backend) as prepared:
+            batches = device_prefetch(prepared, dev, cfg.device_prefetch)
             for step in range(start + 1, end + 1):
                 if guard:
                     waits += guard.wait()
-                exs, b, consumed_rng = next(batches)
-                b = {k: v.to(dev) for k, v in b.items()}
+                waited = time.perf_counter()
+                b, exs, consumed_rng = next(batches)
+                data_wait += time.perf_counter() - waited
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
                     ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids)
@@ -423,6 +441,7 @@ def train(
                           + (f"  acc {acc:.3f}" if acc is not None else "")
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
+                        writer.add_scalar("sys/data_wait_ms", 1e3 * data_wait / cfg.log_every, step)
                         writer.add_scalar("train/loss", avg, step)
                         if acc is not None:
                             writer.add_scalar("train/accuracy", acc, step)
@@ -433,6 +452,7 @@ def train(
                         if t is not None:
                             writer.add_scalar("sys/tctl_c", t, step)
                     running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
+                    data_wait = 0.0
                 if step % cfg.eval_every == 0 or step == cfg.steps:
                     do_eval(step, ce_value, final=step == cfg.steps)
                 if on_checkpoint and cfg.save_every > 0 and step % cfg.save_every == 0 and step < cfg.steps:
