@@ -261,7 +261,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
     """v5.2 的六个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/6。
     intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 68059, info
+    assert info["synth_v5_items"] == 70219, info
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "edge_case": 1.0,
                                          "long_context": 1.0, "long_menu": 1.0})]
     full_menus = {}
@@ -402,10 +402,10 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """v5.2 有68059个绑定、742对菜单版本，一轮67317次抽取；
-    complex / edge_case / long_context 共4163个绑定各多出两遍。"""
+    """v5.2 有70219个绑定、742对菜单版本，一轮69477次抽取；
+    complex / edge_case / long_context 共6323个绑定各多出两遍。"""
     _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
-    assert info["synth_v5_round"] == 67317 + 2 * 4163, info
+    assert info["synth_v5_round"] == 69477 + 2 * 6323, info
     assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "edge_case": 3,
                                        "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info
