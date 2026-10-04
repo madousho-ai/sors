@@ -408,6 +408,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="每步的 prompt 按长度分几组各自前向, 每组只补齐到组里最长的那条 (>= 1). "
                          "每行的 logits 与整批一次前向相同, loss 照旧对整批算、反传一次; 省下的是填充的计算. "
                          "1 = 整批一次 (旧行为)")
+    ap.add_argument("--micro-tokens", type=int, default=0,
+                    help="> 0 时改按 token 预算分组: 每组行数 × 组里最长不超过它, 先求组数最少再求补齐最少 "
+                         "(JS 配对不拆开), --micro-batches 不再起作用. 每行 logits 不变, 只改每步前向几次; 0 = 按组数")
+    ap.add_argument("--accumulate-gradients", action="store_true",
+                    help="每组前向完立即反传, 只留一组的激活; 一步仍只更新一次. loss 按组内 prompt 数加权, "
+                         "与整批一次反传相同 (求和顺序不同, 浮点误差内)")
     ap.add_argument("--max-length", type=int, default=8192,
                     help="超长提示从左截. 实测最长: synth 256 项菜单 2880, synth-v5 256 行「键: 说明」约 4150, "
                          "JevBench hard 3838, BoolQ 1277")
@@ -576,6 +582,8 @@ def main() -> None:
             raise ValueError("data_/device_prefetch must be nonnegative")
     except ValueError as error:
         raise SystemExit(str(error)) from None
+    if args.micro_tokens < 0:
+        raise SystemExit(f"--micro-tokens is a padded-token budget per group, >= 0; got {args.micro_tokens}")
     args.datasets_dir = str(datasets_root(args.datasets_dir))
     architecture = resolve_architecture(args)
     args.architecture = architecture["kind"]
@@ -624,6 +632,7 @@ def main() -> None:
     k_pad = max([args.k_max, args.k_eval] + [len(e.options) for es in eval_sets.values() for e in es.examples])
     cfg = TrainConfig(
         steps=args.steps, batch_size=args.batch_size, micro_batches=args.micro_batches, k_max=k_pad,
+        micro_tokens=args.micro_tokens, accumulate_gradients=args.accumulate_gradients,
         data_workers=args.data_workers, data_prefetch=args.data_prefetch,
         data_backend=args.data_backend, device_prefetch=args.device_prefetch,
         max_length=args.max_length,

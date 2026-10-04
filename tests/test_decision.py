@@ -319,6 +319,28 @@ def test_padding_grouping_and_option_chunking_preserve_both_architecture_outputs
         torch.testing.assert_close(together, chunked, atol=2e-6, rtol=2e-5)
 
 
+def test_planned_groups_match_the_whole_batch_without_reading_lengths_from_the_device():
+    """调用方给出 (行, 宽度) 的分组时, 取子批直接按宽度截掉左侧填充, 不再读设备上的长度."""
+    from sors.core.model import decision_logits
+    from test_sync_reduction import Operations
+    for kind in ("minimal", "structural"):
+        m, tok, d, _ = tiny_model(kind, True)
+        m.eval()
+        data = batch(m, tok, d)
+        lengths = data["attention_mask"].sum(1).tolist()
+        order = sorted(range(len(lengths)), key=lambda r: -lengths[r])
+        plan = [(torch.tensor(rows), max(lengths[r] for r in rows)) for rows in (order[:1], order[1:])]
+        with torch.no_grad():
+            for layer in m.blocks:
+                layer.write_out.weight.normal_(std=0.02)
+            together = decision_logits(m, data)
+            with Operations() as operations:
+                grouped = decision_logits(m, data, plan)
+        torch.testing.assert_close(together, grouped, atol=2e-6, rtol=2e-5)
+        reads = {c: n for c, n in operations.scalar_callers.items() if c[1] in ("select_batch", "trim_left_padding")}
+        assert not reads, reads
+
+
 def test_feedback_changes_later_backbone_activations_and_decision_probabilities():
     m, tok, d, _ = tiny_model("structural", True)
     m.eval()

@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from sors.core.batch import collate, pair_alignment, trim_left_padding
+from sors.core.batch import collate, pair_alignment, token_groups, trim_left_padding
 from sors.core.menu import MenuExample, arrangements
 from sors.core.model import decision_logits, grouped_last_logits, last_logits, select_batch, trainable_param_groups
 from sors.core.decision import architecture_config
@@ -51,6 +51,7 @@ class TrainConfig:
     probe_size: int = 200  # 训练中的评估点每个评估集抽几道题, 见 probe_passes
     probe_passes: int = 5  # 每道题排成几种随机的样子 (行打乱、码随机), 训练中与最后一步都用这个数
     micro_batches: int = 1  # 每步的 prompt 按长度分几组各自前向 (model.grouped_last_logits); 1 = 整批一次, 旧行为
+    micro_tokens: int = 0  # > 0 时改按补齐后的 token 预算分组 (batch.token_groups), micro_batches 不再起作用
     log_every: int = 20
     seed: int = 0
     accumulate_gradients: bool = False  # 每组立即反传，保持一个逻辑 batch 一次更新
@@ -60,8 +61,8 @@ class TrainConfig:
     data_backend: str = "process"  # process: 子进程准备, 不与训练线程抢 GIL; thread: 训练进程内的线程
     device_prefetch: int = 1  # CUDA 上提前几批锁页并在副 stream 上拷进显存; 0 = 用到时才拷
 
-EXECUTION_ONLY = ("micro_batches", "accumulate_gradients", "data_workers", "data_prefetch", "data_backend",
-                  "device_prefetch")  # 只影响执行方式, 续跑时可以改
+EXECUTION_ONLY = ("micro_batches", "micro_tokens", "accumulate_gradients", "data_workers", "data_prefetch",
+                  "data_backend", "device_prefetch")  # 只影响执行方式, 续跑时可以改
 
 
 class Fp32Master:
@@ -171,11 +172,25 @@ def _metric_tensor(ce, js, logits, slots, target):
     return torch.stack([value.detach().to(torch.float64) for value in values])
 
 
-def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids: list[int]):
+def planned_groups(cfg: TrainConfig, lengths: list[int] | None, b: dict, unit: int = 1):
+    """cfg.micro_tokens > 0 时的分组 [(行, 宽度), ...], 行是设备上的下标; 否则 None, 沿用按组数均分.
+    lengths 是 CPU 上每行的真实长度 (后台准备时算好); 没给就从设备读一次."""
+    if cfg.micro_tokens <= 0:
+        return None
+    if lengths is None:
+        lengths = b["attention_mask"].sum(1).tolist()
+    device = b["input_ids"].device
+    return [(torch.tensor(rows, device=device), int(max(lengths[r] for r in rows)))
+            for rows in token_groups(lengths, cfg.micro_tokens, unit)]
+
+
+def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids: list[int],
+                    lengths: list[int] | None = None):
     """完整 JS 配对一起分组，每组立即反传；调用方整步只清一次梯度、更新一次。
 
     CE 按 prompt、JS 按 pair 取平均，完整配对使二者均可乘本组 prompt 数 / 整批 prompt 数。
     返回整步的 detached CE、JS、hits、n，各组的计算图在循环内释放。
+    cfg.micro_tokens > 0 时按 token 预算分组 (见 planned_groups), 配对不拆开。
     """
     size = len(exs)
     paired = cfg.consistency > 0
@@ -184,16 +199,22 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         raise ValueError("empty batch, incomplete consistency pairs, or invalid micro_batches")
     alignment = pair_alignment(exs, b["slot_ids"].shape[1]).to(b["input_ids"].device) if paired else None
     target = step_target(exs, b, cfg.label_smoothing)
-    lengths = b["attention_mask"].sum(1).reshape(-1, width).max(1).values
-    order = torch.argsort(lengths, descending=True, stable=True)
+    plan = planned_groups(cfg, lengths, b, width)
+    if plan is None:
+        lengths_t = b["attention_mask"].sum(1).reshape(-1, width).max(1).values
+        order = torch.argsort(lengths_t, descending=True, stable=True)
+        plan = [((units[:, None] * width + torch.arange(width, device=units.device)).flatten(), None)
+                for units in torch.tensor_split(order, min(cfg.micro_batches, len(order)))]
     reports, weights = [], []
-    for units in torch.tensor_split(order, min(cfg.micro_batches, len(order))):
-        rows = (units[:, None] * width + torch.arange(width, device=units.device)).flatten()
+    for rows, text_width in plan:
+        units = rows[::width].div(width, rounding_mode="floor")
         if getattr(m, "decision_config", None) is not None:
-            logits = decision_logits(m, select_batch(b, rows))
-        else:
+            logits = decision_logits(m, select_batch(b, rows, text_width))
+        elif text_width is None:
             input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
             logits = last_logits(m, input_ids, mask)
+        else:
+            logits = last_logits(m, b["input_ids"][rows][:, -text_width:], b["attention_mask"][rows][:, -text_width:])
         slots, gold, targets = b["slot_ids"][rows], b["gold"][rows], b["target"][rows]
         ce = training_loss(cfg.loss, logits, slots, gold, d_ids,
                            target=None if target is None else target[rows])
@@ -221,7 +242,8 @@ def _prepare_batch(spec: tuple, sample, tokenizer):
     examples, after_sampling = sample
     batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
                     architecture=architecture)
-    return batch, examples, after_sampling
+    # 每行真实长度在这里算成 CPU 整数, 训练线程按 token 预算分组时不必读设备
+    return batch, examples, after_sampling, batch["attention_mask"].sum(1).tolist()
 
 
 def train(
@@ -261,6 +283,8 @@ def train(
     validate_data_preparation(cfg.data_workers, cfg.data_prefetch, cfg.data_backend)
     if cfg.device_prefetch < 0:
         raise ValueError("device_prefetch must be nonnegative")
+    if cfg.micro_tokens < 0:
+        raise ValueError("micro_tokens must be nonnegative")
     architecture = architecture_config(m)
     if architecture["kind"] == "candidate":
         m.set_candidate_prefix_cache(cfg.candidate_prefix_cache)
@@ -405,14 +429,15 @@ def train(
                 if guard:
                     waits += guard.wait()
                 waited = time.perf_counter()
-                b, exs, consumed_rng = next(batches)
+                b, exs, consumed_rng, lengths = next(batches)
                 data_wait += time.perf_counter() - waited
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
-                    ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids)
+                    ce_value, js_value, hits, n = backward_groups(m, cfg, exs, b, d_ids, lengths)
                 else:
-                    logits = (decision_logits(m, b, cfg.micro_batches) if architecture["kind"] != "slots" else
-                              grouped_last_logits(m, b["input_ids"], b["attention_mask"], cfg.micro_batches))
+                    groups = planned_groups(cfg, lengths, b) or cfg.micro_batches
+                    logits = (decision_logits(m, b, groups) if architecture["kind"] != "slots" else
+                              grouped_last_logits(m, b["input_ids"], b["attention_mask"], groups))
                     loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
                     metrics = _metric_tensor(ce, js, logits, b["slot_ids"], b["target"])
                     loss.backward()

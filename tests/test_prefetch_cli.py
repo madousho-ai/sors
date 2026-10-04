@@ -87,6 +87,54 @@ def test_train_cli_defaults_to_process_workers_and_records_gpu_prefetch():
         raise AssertionError(f"{flags} accepted")
 
 
+def test_train_cli_records_token_budget_grouping_and_per_group_backward():
+    """Missing flag-to-TrainConfig wiring leaves the saved config at its defaults."""
+    from safetensors import safe_open
+
+    cli = _cli("train")
+    args = _parse(cli, [])
+    assert (args.micro_tokens, args.accumulate_gradients) == (0, False)
+    tok, _, _ = tokenizer()
+    lm = tiny_backbone(tok)
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory) / "run"
+        argv = ["train.py", "--dataset", "synth-v5.1", "--datasets-dir", directory,
+                "--out", str(out), "--steps", "2", "--batch-size", "2", "--k-max", "3", "--k-eval", "3",
+                "--max-length", "128", "--consistency", "0.7", "--eval-every", "2", "--temp-max", "200",
+                "--data-workers", "0", "--micro-tokens", "300", "--accumulate-gradients"]
+        with patch.object(sys, "argv", argv), \
+             patch.object(cli, "build_data", return_value=(_Sampler(), {}, {})), \
+             patch.object(cli.AutoTokenizer, "from_pretrained", return_value=tok), \
+             patch.object(cli, "load_causal_lm", return_value=(lm, _CPUAttention())):
+            cli.main()
+        with safe_open(out / "trained.safetensors", framework="pt") as checkpoint:
+            saved = json.loads(checkpoint.metadata()["config"])
+    assert (saved.get("micro_tokens"), saved.get("accumulate_gradients")) == (300, True), saved
+    for flags in (["--micro-tokens", "-1"],):
+        with patch.object(sys, "argv", ["train.py", *flags]), \
+             patch.object(cli, "build_data", side_effect=AssertionError("invalid budget reached data loading")):
+            try:
+                cli.main()
+            except SystemExit as error:
+                assert "micro-tokens" in str(error), str(error)
+            else:
+                raise AssertionError("negative token budget accepted")
+
+
+def test_resume_overrides_the_token_budget_as_an_execution_setting():
+    cli = _cli("resume")
+    saved = {"steps": 20, "batch_size": 36, "micro_batches": 8}
+    assert cli.resume_config(saved, _parse(cli, ["--run", "runs/example"])).micro_tokens == 0
+    cfg = cli.resume_config(saved, _parse(cli, ["--run", "runs/example", "--micro-tokens", "16384"]))
+    assert cfg.micro_tokens == 16384
+    try:
+        cli.resume_config(saved, _parse(cli, ["--run", "runs/example", "--micro-tokens", "-1"]))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("negative token budget accepted")
+
+
 def test_resume_overrides_backend_and_gpu_prefetch_as_execution_settings():
     cli = _cli("resume")
     saved = {"steps": 20, "batch_size": 36, "micro_batches": 8, "data_backend": "thread", "device_prefetch": 0}

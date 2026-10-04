@@ -50,6 +50,40 @@ def test_accumulation_matches_whole_batch_gradients_with_unequal_groups_and_soft
             torch.testing.assert_close(p.grad, expected[k], rtol=2e-4, atol=2e-5)
 
 
+def test_token_budget_groups_keep_pairs_together_and_match_whole_batch_gradients():
+    """抓住按 token 预算分组时拆散 JS 对或漏掉某行的实现。"""
+    from sors.core.batch import token_groups
+    from sors.training.loop import backward_groups
+
+    tok, ids, m = _tiny()
+    exs = _examples()
+    b = collate(exs, tok, ids, 3)
+    lengths = b["attention_mask"].sum(1).tolist()
+    budget = 4 * max(lengths)
+    cfg = TrainConfig(k_max=3, loss="vocab", consistency=0.8, micro_tokens=budget, label_smoothing=0.1)
+    m.zero_grad(set_to_none=True)
+    logits = last_logits(m, b["input_ids"], b["attention_mask"])
+    loss, ce, js = step_loss(cfg, exs, b, logits, ids)
+    loss.backward()
+    expected = {k: p.grad.clone() for k, p in m.named_parameters() if p.grad is not None}
+    expected_ce, expected_js = ce.item(), js.item()
+    del logits, loss, ce, js
+    groups = token_groups(lengths, budget, unit=2)
+    assert 1 < len(groups) < len(exs) // 2, groups
+    seen = []
+    h = m.register_forward_pre_hook(lambda mod, args, kwargs: seen.append(kwargs["input_ids"].shape[0]),
+                                    with_kwargs=True)
+    m.zero_grad(set_to_none=True)
+    got_ce, got_js, _, _ = backward_groups(m, cfg, exs, b, ids, lengths)
+    h.remove()
+    assert seen == [len(g) for g in groups], (seen, groups)
+    assert abs(got_ce - expected_ce) < 2e-5
+    assert abs(got_js - expected_js) < 2e-6
+    for k, p in m.named_parameters():
+        if k in expected:
+            torch.testing.assert_close(p.grad, expected[k], rtol=2e-4, atol=2e-5)
+
+
 def test_each_group_finishes_backward_before_the_next_forward():
     """抓住重新退回整批保留图的实现。"""
     from sors.training.loop import backward_groups

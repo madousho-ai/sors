@@ -179,11 +179,14 @@ def last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> tor
     return out.logits[:, -1, :].float()
 
 
-def grouped_last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor, n: int) -> torch.Tensor:
+def grouped_last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor, n) -> torch.Tensor:
     """与 last_logits 相同的 (B, V), 但把批按真实长度分成 n 组 (batch.length_groups) 各自前向,
     每组只补齐到组里最长的那条, 再按原来的行序拼回. 左填充下答案位置总是最后一列, RoPE 只看相对位置,
     所以每一行的结果与整批一次前向相同 (浮点误差内). 各组的计算图都留着, 调用方照旧对整批的 loss 反传一次.
-    n == 1 就是 last_logits 本身."""
+    n == 1 就是 last_logits 本身. n 也可以是调用方排好的 [(行, 宽度), ...] (见 decision_logits)."""
+    if not isinstance(n, int):
+        parts = [last_logits(m, input_ids[g][:, -w:], attention_mask[g][:, -w:]) for g, w in n]
+        return torch.cat(parts)[torch.argsort(torch.cat([g for g, _ in n]))]
     groups = length_groups(attention_mask, n)
     if len(groups) == 1:
         return last_logits(m, input_ids, attention_mask)
@@ -194,10 +197,17 @@ def grouped_last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor
     return torch.cat(parts)[back]
 
 
-def select_batch(batch: dict, rows) -> dict:
-    """Select examples and trim text padding while preserving option coordinates."""
+def select_batch(batch: dict, rows, width: int | None = None) -> dict:
+    """Select examples and trim text padding while preserving option coordinates.
+
+    width: the longest selected text, when the caller already knows it on the
+    CPU; trimming then reads nothing back from the device.
+    """
     out = {k: v[rows] for k, v in batch.items()}
-    ids, mask = trim_left_padding(out["input_ids"], out["attention_mask"])
+    if width is None:
+        ids, mask = trim_left_padding(out["input_ids"], out["attention_mask"])
+    else:
+        ids, mask = out["input_ids"][:, -width:], out["attention_mask"][:, -width:]
     removed = out["input_ids"].shape[1] - ids.shape[1]
     out.update(input_ids=ids, attention_mask=mask)
     if "option_positions" in out:
@@ -206,8 +216,15 @@ def select_batch(batch: dict, rows) -> dict:
     return out
 
 
-def decision_logits(m, batch: dict, groups: int = 1) -> torch.Tensor:
-    """Group complete architecture-aware batches; return logits in caller order."""
+def decision_logits(m, batch: dict, groups=1) -> torch.Tensor:
+    """Group complete architecture-aware batches; return logits in caller order.
+
+    groups: a count for batch.length_groups, or a planned [(rows, width), ...]
+    such as batch.token_groups produces, with each group's longest text known.
+    """
+    if not isinstance(groups, int):
+        parts = [m.forward_batch(select_batch(batch, rows, width)) for rows, width in groups]
+        return torch.cat(parts)[torch.argsort(torch.cat([rows for rows, _ in groups]))]
     rows = length_groups(batch["attention_mask"], groups)
     if len(rows) == 1:
         return m.forward_batch(batch)

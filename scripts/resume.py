@@ -97,6 +97,7 @@ def build_parser():
     ap.add_argument("--expected-code-commit", help="code revision paired with --expected-data-commit for split repositories")
     ap.add_argument("--stop-after", type=int)
     ap.add_argument("--micro-batches", type=int)
+    ap.add_argument("--micro-tokens", type=int, help="覆盖每组补齐后的 token 预算 (>= 0)；0 = 按 --micro-batches 组数")
     ap.add_argument("--data-workers", type=int, help="覆盖后台 CPU 分词/组批线程数；0 = 同步准备")
     ap.add_argument("--data-prefetch", type=int, help="覆盖提前准备的批数上限 (>= 1)")
     ap.add_argument("--data-backend", choices=["process", "thread"], help="覆盖后台准备方式：子进程或线程")
@@ -108,12 +109,14 @@ def resume_config(config, opts):
     """Restore training semantics while allowing execution-only overrides."""
     cfg = TrainConfig(**config)
     cfg.accumulate_gradients = True
-    for key in ("micro_batches", "data_workers", "data_prefetch", "data_backend", "device_prefetch"):
+    for key in ("micro_batches", "micro_tokens", "data_workers", "data_prefetch", "data_backend", "device_prefetch"):
         value = getattr(opts, key)
         if value is not None:
             setattr(cfg, key, value)
     if cfg.micro_batches < 1:
         raise ValueError("micro_batches must be positive")
+    if cfg.micro_tokens < 0:
+        raise ValueError("micro_tokens must be nonnegative")
     validate_data_preparation(cfg.data_workers, cfg.data_prefetch, cfg.data_backend)
     if cfg.device_prefetch < 0:
         raise ValueError("device_prefetch must be nonnegative")
@@ -183,7 +186,7 @@ def main():
     start = state["step"]
     validate_resume_step(start, cfg.steps, full=full)
     args.out = str(out)
-    args.micro_batches = cfg.micro_batches
+    args.micro_batches, args.micro_tokens = cfg.micro_batches, cfg.micro_tokens
     args.data_workers, args.data_prefetch = cfg.data_workers, cfg.data_prefetch
     args.data_backend, args.device_prefetch = cfg.data_backend, cfg.device_prefetch
     spec = importlib.util.spec_from_file_location("original_train_cli", ROOT / "scripts/train.py")
@@ -215,7 +218,7 @@ def main():
                  "model_revision": model_revision}
     record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "checkpoint": str(path), "completed_step": start,
               "target_step": cfg.steps, "optimizer_reset": not full, "accumulate_gradients": True,
-              "micro_batches": cfg.micro_batches, "sampling_fingerprint": fingerprint,
+              "micro_batches": cfg.micro_batches, "micro_tokens": cfg.micro_tokens, "sampling_fingerprint": fingerprint,
               "data_workers": cfg.data_workers, "data_prefetch": cfg.data_prefetch,
               "data_backend": cfg.data_backend, "device_prefetch": cfg.device_prefetch,
               "previous_attention": previous_attention, "attention": args.attention}

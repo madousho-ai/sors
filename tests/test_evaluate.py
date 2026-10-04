@@ -280,5 +280,32 @@ def test_train_runs_each_length_group_through_the_model_on_its_own_width():
     assert abs(losses[1] - losses[2]) < 1e-5, losses
 
 
+def test_train_groups_rows_by_padded_token_budget():
+    """micro_tokens > 0 时按 batch.token_groups 分组, 不看 micro_batches: 每组的形状是 (行数, 组里最长),
+    行数 × 最长不超过预算. 整步一次反传与逐组反传两条路的 loss 都与整批一次前向相同."""
+    from sors.core.batch import token_groups
+
+    exs = _uneven_questions()
+    lengths = collate(exs, *_tiny()[:2], k_max=3)["attention_mask"].sum(1).tolist()
+    budget = 2 * sorted(lengths, reverse=True)[1]
+    expected = [(len(g), max(lengths[r] for r in g)) for g in token_groups(lengths, budget)]
+    assert 1 < len(expected) < len(exs), expected
+    losses = {}
+    for name, extra in (("whole", {"micro_batches": 1}),
+                        ("tokens", {"micro_batches": 1, "micro_tokens": budget}),
+                        ("tokens-accumulate", {"micro_batches": 1, "micro_tokens": budget,
+                                               "accumulate_gradients": True})):
+        tok, d_ids, m = _tiny()
+        shapes = []
+        m.get_input_embeddings().register_forward_pre_hook(lambda mod, args: shapes.append(tuple(args[0].shape)))
+        hist = train(m, tok, d_ids, lambda n_, rng: list(exs), {},
+                     TrainConfig(steps=1, batch_size=4, k_max=3, loss="vocab", eval_every=1, log_every=1, **extra))
+        losses[name] = hist[-1]["train_loss"]
+        if name != "whole":
+            assert shapes == expected, (name, shapes, expected)
+    assert abs(losses["whole"] - losses["tokens"]) < 1e-5, losses
+    assert abs(losses["whole"] - losses["tokens-accumulate"]) < 1e-5, losses
+
+
 if __name__ == "__main__":
     run(globals())
