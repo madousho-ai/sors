@@ -130,7 +130,9 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 较短的选项块在反向整块重算一次；当 `token数 × hidden_size × 主干层数` 超过 128 Mi 个元素时，保留内部逐层检查点控制重算显存。
 该策略按调用上下文和模型归属隔离，公共长文本继续逐层检查点。所有选项块的裁剪宽度一次性读回，保持原有行序和分块边界。
 此时主干状态仅由文本输入决定，决策块依次读取相同的层输出，后置计算保持同一打分函数和梯度连接。
-开启回写的 minimal/structural 以及可训练 candidate 编码器继续使用整条耦合前向重算；冻结 candidate 编码器时只重算决策头。
+开启回写的 minimal 同样逐层重算：接入决策块的主干层将文本状态与候选状态一起作为检查点的输入和输出。
+候选状态在每次前向的独立上下文中传递；反向重算使用该层保存的显式输入，保持回写和跨层梯度连接。
+开启回写的 structural 以及可训练 candidate 编码器继续使用整条耦合前向重算；冻结 candidate 编码器时只重算决策头。
 原 slots 路径继续使用原有的逐层 checkpointing。检查点划分保持模型参数、架构元数据和打分公式兼容。
 
 ### 训练路径的同步
@@ -181,6 +183,8 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_decision.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_minimal_checkpoint.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
+  .venv/bin/python tests/test_feedback_checkpoint.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
   .venv/bin/python tests/test_structural_checkpoint.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \

@@ -13,6 +13,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 _OPTION_CHUNK_OWNER = ContextVar('sors_option_chunk_owner', default=None)
+_FEEDBACK_CONTEXT = ContextVar('sors_feedback_context', default=None)
 # Bound the activation scale of a whole option-chunk replay. Larger chunks keep
 # native layer checkpoints; the long common text always keeps them.
 _OPTION_CHECKPOINT_ELEMENTS = 128 * 1024 * 1024
@@ -22,6 +23,20 @@ def _checkpoint_layer(owner, function, *args, **kwargs):
     if _OPTION_CHUNK_OWNER.get() is owner:
         return function(*args, **kwargs)
     return checkpoint(function, *args, use_reentrant=False, **kwargs)
+
+
+def _checkpoint_feedback_layer(owner, index, function, *args):
+    # The persistent decoder callback carries an opaque owner, keeping the
+    # decision model's lock and parameters out of backbone copies/serialization.
+    state = _FEEDBACK_CONTEXT.get()
+    if state is None or state['owner'] is not owner:
+        return checkpoint(function, *args, use_reentrant=False)
+    # The native decoder expects just h; each checkpoint owns its exact input u.
+    h, u = checkpoint(state['model']._feedback_layer, function, index, state['u'],
+                      state['positions'], state['valid'], state['mask'],
+                      *args, use_reentrant=False)
+    state['u'] = u
+    return h
 
 
 @dataclass(frozen=True)
@@ -142,7 +157,8 @@ class DecisionModel(nn.Module):
     Each invocation owns its side-stream state and removes temporary taps in
     finally. Read-only decisions run after the text backbone, allowing
     native layer-local checkpoints and independent decision-block checkpoints.
-    Coupled paths rebuild their whole graph under a lock during recomputation.
+    Minimal feedback checkpoints each text layer with its candidate-state inputs
+    and outputs. Other coupled paths rebuild their whole graph under a lock.
     """
 
     def __init__(self, base, config: DecisionConfig, adapter: dict, grad_ckpt: bool = False):
@@ -157,13 +173,18 @@ class DecisionModel(nn.Module):
         self.checkpoint_forward = grad_ckpt
         self.candidate_prefix_cache = "auto" if config.kind == "candidate" else "off"
         self._read_only = config.kind in ("minimal", "structural") and not config.feedback
+        self._layerwise_feedback = config.kind == "minimal" and config.feedback and grad_ckpt
         self._checkpoint_owner = object()
-        if self._read_only and grad_ckpt:
+        if (self._read_only and grad_ckpt) or self._layerwise_feedback:
             base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             base.enable_input_require_grads()
             if config.kind == "structural":
                 for layer in raw.model.layers:
                     layer._gradient_checkpointing_func = partial(_checkpoint_layer, self._checkpoint_owner)
+            if self._layerwise_feedback:
+                for j, i in enumerate(self.decision_config.layers):
+                    raw.model.layers[i]._gradient_checkpointing_func = partial(
+                        _checkpoint_feedback_layer, self._checkpoint_owner, j)
         else:
             base.gradient_checkpointing_disable()
         hidden = self.config.hidden_size
@@ -352,6 +373,38 @@ class DecisionModel(nn.Module):
             scores = (self.option_norm(u) * self.query(h[:, -1].to(dtype))[:, None]).sum(-1) / math.sqrt(u.shape[-1])
             return self._output_logits(scores, slots, valid, option_rows)
 
+    def _feedback_layer(self, function, index, u, positions, valid, mask, *args):
+        """Replay one text layer and its feedback using only explicit tensor state."""
+        h = function(*args)
+        if not isinstance(h, torch.Tensor):
+            raise TypeError("decision taps require a tensor-returning text decoder layer")
+        dtype = self.option_proj.weight.dtype
+        if u is None:
+            chosen = h.gather(1, positions[..., None].expand(-1, -1, h.shape[-1]))
+            u = self.option_proj(chosen.to(dtype))
+        u, updated = self.blocks[index](u, h.to(dtype), valid, mask)
+        return updated.to(h.dtype), u
+
+    def _forward_feedback(self, batch):
+        with self._forward_lock:
+            slots = batch['slot_ids']
+            valid = slots >= 0
+            mask = batch['attention_mask'].bool()
+            if not bool(valid.any(1).all() & mask.any(1).all()):
+                raise ValueError("decision batches need at least one option and one text token per example")
+            state = {'owner': self._checkpoint_owner, 'model': self, 'u': None,
+                     'positions': batch['option_positions'].clamp_min(0),
+                     'valid': valid, 'mask': mask}
+            token = _FEEDBACK_CONTEXT.set(state)
+            try:
+                h = self._encode(batch['input_ids'], batch['attention_mask'])
+                u = state['u']
+            finally:
+                _FEEDBACK_CONTEXT.reset(token)
+            dtype = self.option_proj.weight.dtype
+            scores = (self.option_norm(u) * self.query(h[:, -1].to(dtype))[:, None]).sum(-1) / math.sqrt(u.shape[-1])
+            return self._output_logits(scores, slots, valid)
+
     def _forward_batch(self, batch, option_batch_size=None):
         with self._forward_lock:
             slots = batch["slot_ids"]
@@ -370,9 +423,15 @@ class DecisionModel(nn.Module):
                 u = encoded.new_zeros((*slots.shape, encoded.shape[-1]))
                 u.flatten(0, 1).index_copy_(0, option_rows, encoded)
 
+            owner = threading.get_ident()
+
             def tap(index):
                 def update(_layer, _args, h):
                     nonlocal u
+                    # A layer-local backward can overlap a no-grad forward on
+                    # another thread, whose temporary taps must stay local.
+                    if threading.get_ident() != owner:
+                        return
                     if not isinstance(h, torch.Tensor):
                         raise TypeError("decision taps require a tensor-returning text decoder layer")
                     if u is None:
@@ -399,6 +458,8 @@ class DecisionModel(nn.Module):
     def forward_batch(self, batch, *, option_batch_size=None):
         if self._read_only:
             return self._forward_read_only(batch, option_batch_size)
+        if self._layerwise_feedback and self.training and torch.is_grad_enabled():
+            return self._forward_feedback(batch)
         if self.decision_config.kind == "candidate":
             shared = self.uses_shared_prefix(batch)
             if self._encoder_frozen_for_batch(batch):
