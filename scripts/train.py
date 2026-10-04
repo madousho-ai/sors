@@ -66,7 +66,7 @@ from sors.core.attention import add_attention_arguments, load_causal_lm
 from sors.core.checkpoint import checkpoint_adapter, checkpoint_architecture, load_trained, save_trained
 from sors.core.decision import DecisionConfig, architecture_config, decision_config
 from sors.core.menu import RandomCodes, class_split, menu_k_range, with_partners
-from sors.core.model import TRAINABLE, prepare_model
+from sors.core.model import TRAINABLE, keep_layer_activations, prepare_model
 from sors.core.prompt import DEFAULT_LAYOUT, LAYOUTS
 from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from sors.data.public_decisions import DEFAULT_MANIFEST, PUBLIC_DATASETS, load_public_decisions
@@ -418,6 +418,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="超长提示从左截. 实测最长: synth 256 项菜单 2880, synth-v5 256 行「键: 说明」约 4150, "
                          "JevBench hard 3838, BoolQ 1277")
     ap.add_argument("--grad-ckpt", action="store_true", help="梯度 checkpointing: 激活 5 GiB -> 0.6 GiB, 时间 +30%%")
+    ap.add_argument("--grad-ckpt-keep", type=int, default=0,
+                    help="开 --grad-ckpt 时让前 N 层文本层保留激活、反传不重算 (数学不变, 显存换时间). "
+                         "只支持 slots 与 minimal; minimal feedback 时不能盖到第一个决策层")
     ap.add_argument("--k-min", type=int, default=None,
                     help="不给 = 全量菜单: 池子里的选项全放进去, 最多 --k-max 项. 给了才在 k-min..k-max 随机抽长度 (旧行为)")
     ap.add_argument("--k-max", type=int, default=256, help="菜单最多几项 (D 槽只有 256 个)")
@@ -622,6 +625,11 @@ def main() -> None:
         torch.manual_seed(args.seed)  # Includes the new head and token-row initialization.
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
                        trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture))
+    if args.grad_ckpt_keep:
+        try:
+            keep_layer_activations(m, args.grad_ckpt_keep)
+        except ValueError as error:
+            raise SystemExit(f"--grad-ckpt-keep: {error}") from None
     if args.architecture != "slots":
         args.decision_layers = architecture_config(m)["layers"]
     init_cfg = load_trained(m, train_ids, args.init) if args.init else None

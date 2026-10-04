@@ -173,6 +173,33 @@ def trainable_param_groups(m, lr_lora: float, lr_embed: float) -> list[dict]:
     return [{"params": body, "lr": lr_lora}, {"params": embed, "lr": lr_embed}]
 
 
+def text_layers(m):
+    """文本主干的 decoder 层列表; 决策模型、peft 包装与裸 LM 都认."""
+    if getattr(m, "decision_config", None) is not None:
+        return m.decoder.layers
+    raw = m.get_base_model() if hasattr(m, "get_base_model") else m
+    return raw.model.layers
+
+
+def keep_layer_activations(m, count: int) -> None:
+    """梯度 checkpointing 下, 让前 count 层文本层保留激活, 反传时不再重算前向. 数学不变, 只拿显存换时间.
+
+    只用于每层各自 checkpoint 的路径: 裸 LM 与 minimal (含 feedback). minimal feedback 的决策层
+    靠重算函数推进候选状态, count 不能盖到第一个决策层. structural / candidate 另有分块重算, 拒绝."""
+    config = getattr(m, "decision_config", None)
+    layers = text_layers(m)
+    if config is not None and config.kind != "minimal":
+        raise ValueError("keeping layer activations supports the plain and minimal architectures only")
+    if not 0 <= count <= len(layers):
+        raise ValueError(f"cannot keep activations of {count} layers out of {len(layers)}")
+    if config is not None and config.feedback and count > min(config.layers):
+        raise ValueError(f"feedback layers {list(config.layers)} must keep their checkpoints; keep at most {min(config.layers)}")
+    if count and not all(getattr(layer, "gradient_checkpointing", False) for layer in layers):
+        raise ValueError("keeping layer activations needs gradient checkpointing (--grad-ckpt)")
+    for layer in layers[:count]:
+        layer.gradient_checkpointing = False
+
+
 def last_logits(m, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """只算最后一个位置的 logits, (B, V). logits_to_keep=1 绕开 (B, L, V) 的大张量."""
     out = m(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=1)

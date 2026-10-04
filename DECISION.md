@@ -161,6 +161,9 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 `--accumulate-gradients` 每组前向完立即反传，一步仍只更新一次；loss 按组内 prompt 数加权，
 与整批一次反传相同，求和顺序不同带来浮点级差异。
 
+`--grad-ckpt-keep K` 让前 K 层文本层保留激活，反传时不再重算这几层的前向，数学不变，拿显存换时间。
+只支持 slots 与 minimal；minimal 回写时决策层的重算函数推进候选状态，K 不能盖到第一个决策层。
+
 ## 长度、批处理与推理
 
 - minimal 保留原提示编码。截断可以缩短上下文；涉及候选项的截断会直接报错。

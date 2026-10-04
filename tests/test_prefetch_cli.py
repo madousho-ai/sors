@@ -93,23 +93,33 @@ def test_train_cli_records_token_budget_grouping_and_per_group_backward():
 
     cli = _cli("train")
     args = _parse(cli, [])
-    assert (args.micro_tokens, args.accumulate_gradients) == (0, False)
+    assert (args.micro_tokens, args.accumulate_gradients, args.grad_ckpt_keep) == (0, False, 0)
     tok, _, _ = tokenizer()
     lm = tiny_backbone(tok)
+    kept = []
+    original_keep = cli.keep_layer_activations
+
+    def keep(m, count):
+        original_keep(m, count)
+        kept.append((count, [layer.gradient_checkpointing for layer in m.decoder.layers]))
+
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "run"
         argv = ["train.py", "--dataset", "synth-v5.1", "--datasets-dir", directory,
                 "--out", str(out), "--steps", "2", "--batch-size", "2", "--k-max", "3", "--k-eval", "3",
                 "--max-length", "128", "--consistency", "0.7", "--eval-every", "2", "--temp-max", "200",
-                "--data-workers", "0", "--micro-tokens", "300", "--accumulate-gradients"]
+                "--data-workers", "0", "--micro-tokens", "300", "--accumulate-gradients",
+                "--architecture", "minimal", "--loss", "menu", "--trainable", "full", "--grad-ckpt", "--grad-ckpt-keep", "1"]
         with patch.object(sys, "argv", argv), \
              patch.object(cli, "build_data", return_value=(_Sampler(), {}, {})), \
              patch.object(cli.AutoTokenizer, "from_pretrained", return_value=tok), \
-             patch.object(cli, "load_causal_lm", return_value=(lm, _CPUAttention())):
+             patch.object(cli, "load_causal_lm", return_value=(lm, _CPUAttention())), \
+             patch.object(cli, "keep_layer_activations", keep):
             cli.main()
         with safe_open(out / "trained.safetensors", framework="pt") as checkpoint:
             saved = json.loads(checkpoint.metadata()["config"])
     assert (saved.get("micro_tokens"), saved.get("accumulate_gradients")) == (300, True), saved
+    assert kept == [(1, [False, True, True, True])], kept
     for flags in (["--micro-tokens", "-1"],):
         with patch.object(sys, "argv", ["train.py", *flags]), \
              patch.object(cli, "build_data", side_effect=AssertionError("invalid budget reached data loading")):
