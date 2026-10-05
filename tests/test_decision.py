@@ -138,6 +138,37 @@ def batch(m, tok, d, exs=None, **kwargs):
     return collate(exs or examples(), tok, d, 4, architecture=m.decision_config.kind, **kwargs)
 
 
+def test_decision_learning_rate_puts_new_layers_in_their_own_optimizer_group():
+    """--lr-decision 不给时仍是旧的两组; 给了就把新增决策层单独成第三组, 主干与 token 行不受影响."""
+    from sors.core.model import trainable_param_groups
+
+    m, *_ = tiny_model("minimal", True, trainable="full")
+    old = trainable_param_groups(m, lr_lora=1e-5, lr_embed=1e-3)
+    assert [g["lr"] for g in old] == [1e-5, 1e-3]
+    groups = trainable_param_groups(m, lr_lora=1e-5, lr_embed=1e-3, lr_decision=1e-4)
+    assert [g["lr"] for g in groups] == [1e-5, 1e-3, 1e-4]
+    names = {id(p): n for n, p in m.named_parameters()}
+    body, rows, head = ({names[id(p)] for p in g["params"]} for g in groups)
+    assert body and all(n.startswith("base.") for n in body), body
+    assert rows == {n for n in names.values() if n.endswith(".rows")}
+    assert head == {n for n, p in m.named_parameters() if p.requires_grad and not n.startswith("base.")}
+    assert "blocks.0.write_out.weight" in head and old[0]["params"] and body | head == {
+        names[id(p)] for p in old[0]["params"]}
+
+
+def test_decision_learning_rate_is_rejected_without_decision_layers():
+    from sors.core.model import prepare_model, trainable_param_groups
+
+    tok, d, ids = tokenizer()
+    m = prepare_model(tiny_backbone(tok), ids, 4, 8, 0.0, trainable="attn")
+    try:
+        trainable_param_groups(m, lr_lora=1e-4, lr_embed=1e-3, lr_decision=1e-4)
+    except ValueError as e:
+        assert "decision" in str(e)
+    else:
+        raise AssertionError("a decision learning rate was accepted by a model without decision layers")
+
+
 def test_minimal_batch_preserves_original_prompt_and_tracks_description_ends():
     from sors.core.batch import collate
     m, tok, d, _ = tiny_model("minimal")

@@ -163,14 +163,24 @@ def adapter_config(m) -> dict:
     return {"trainable": name, "lora_r": peft_cfg.r, "lora_alpha": peft_cfg.lora_alpha}
 
 
-def trainable_param_groups(m, lr_lora: float, lr_embed: float) -> list[dict]:
-    """两组: 主干 (LoRA 权重; full 时是主干全部权重) 用 lr_lora, rows 用 lr_embed."""
-    body, embed = [], []
+def trainable_param_groups(m, lr_lora: float, lr_embed: float, lr_decision: float | None = None) -> list[dict]:
+    """主干 (LoRA 权重; full 时是主干全部权重) 用 lr_lora, rows 用 lr_embed.
+    lr_decision 给了就把决策模型新增的层 (主干 base 之外的参数) 拆成第三组; 不给时它们照旧跟主干同组."""
+    split = lr_decision is not None
+    if split and getattr(m, "decision_config", None) is None:
+        raise ValueError("lr_decision needs a model with decision layers")
+    body, embed, head = [], [], []
     for n, p in m.named_parameters():
         if not p.requires_grad:
             continue
-        (embed if n.endswith(".rows") else body).append(p)
-    return [{"params": body, "lr": lr_lora}, {"params": embed, "lr": lr_embed}]
+        if n.endswith(".rows"):
+            embed.append(p)
+        elif split and not n.startswith("base."):
+            head.append(p)
+        else:
+            body.append(p)
+    groups = [{"params": body, "lr": lr_lora}, {"params": embed, "lr": lr_embed}]
+    return groups + [{"params": head, "lr": lr_decision}] if split else groups
 
 
 def text_layers(m):
