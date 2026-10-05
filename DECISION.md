@@ -101,7 +101,9 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
   --grad-ckpt --save-training-state --steps 2000
 ```
 
-`decision-only` 冻结原始主干权重，训练新增决策参数与新增 token 行。`--lr-lora` 控制决策参数学习率，
+`decision-only` 冻结原始主干权重，训练新增决策参数与新增 token 行。决策参数默认使用 `--lr-lora`，
+`--lr-decision` 为它们单独设置学习率，与主干、token 行各成一组，三组共用同一条 warmup/cosine 日程；
+该开关只接受 minimal / structural / candidate，并写进训练状态和运行目录名（`-lrd<值>`）。
 `--lr-embed` 控制 token 行；结构版输入使用的类型/context 标记同样属于新增行。
 `full` 继续采用现有的主干全参范围；原始词表矩阵冻结。原有 `d-only` / `attn` / `attn-mlp` 范围也保留，
 新增决策参数在这些模式下始终可训。LoRA 的投影名称沿用现有配置。
