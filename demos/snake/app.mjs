@@ -82,12 +82,13 @@ function draw() {
 
 function showBars(answer) {
   $("bars").replaceChildren(...DIRECTIONS.flatMap((d) => {
-    const p = answer ? answer.probabilities[d] : 0;
+    const offered = answer && d in answer.probabilities; // 勾了「不提供掉头的方向」时少一个
+    const p = offered ? answer.probabilities[d] : 0;
     const picked = answer && answer.choice === d ? "picked" : "";
     const name = Object.assign(document.createElement("div"), { className: `name ${picked}`, textContent: ARROW[d] });
     const bar = Object.assign(document.createElement("div"), { className: `bar-wrap ${picked}` });
     bar.innerHTML = `<div class="bar"><i style="width:${(p * 100).toFixed(1)}%"></i></div>`;
-    const num = Object.assign(document.createElement("div"), { className: `pct ${picked}`, textContent: answer ? pct(p) : "–" });
+    const num = Object.assign(document.createElement("div"), { className: `pct ${picked}`, textContent: offered ? pct(p) : "–" });
     return [name, bar, num];
   }));
 }
@@ -106,7 +107,8 @@ function addHistory(n, answer, o, ms) {
   const tr = document.createElement("tr");
   const probs = DIRECTIONS.map((d) => {
     const cls = d === answer.choice ? ' class="picked"' : "";
-    return `<span${cls}>${ARROW[d][0]} ${(answer.probabilities[d] * 100).toFixed(0)}</span>`;
+    const p = d in answer.probabilities ? (answer.probabilities[d] * 100).toFixed(0) : "–";
+    return `<span${cls}>${ARROW[d][0]} ${p}</span>`;
   }).join("");
   const res = o.ignored ? `掉头被忽略 · ${RESULT[o.result]}` : RESULT[o.result];
   tr.innerHTML = `<td>${n}</td><td>${ARROW[answer.choice]}</td><td class="probs">${probs}</td>`
@@ -147,7 +149,7 @@ async function tick() {
   if (!model) { stop(); return; }
   busy = true;
   try {
-    const body = request(game, $("style").value, model);
+    const body = request(game, $("style").value, model, { dropReverse: $("drop-reverse").checked });
     const t0 = performance.now();
     const prompt = fetchPrompt(body); // 与决策并行, 只渲染文本, 不占模型
     const r = await fetch("/v1/systemone", { method: "POST", headers: headers(), body: JSON.stringify(body) });

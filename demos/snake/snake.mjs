@@ -5,7 +5,8 @@
 // 行 0 在最上面, 列 0 在最左边. last 是上一步的 outcome (新局面为 null).
 //
 // 规则:
-//   - 四个方向都能给. 与当前朝向相反的那个 (掉头咬到脖子) 不生效, 蛇照原方向走
+//   - 四个方向都能给. 与当前朝向相反的那个 (掉头咬到脖子) 不生效, 蛇照原方向走;
+//     页面可以勾选不把这个方向放进选项 (request 的 dropReverse)
 //   - 走出棋盘或撞到自己的身子就死; 尾巴这一步会让开, 头可以跟进尾巴原来的格子
 //   - 吃到食物长一节, 新食物落在随机一个空格; 棋盘填满算赢
 //   - 连续 行 × 列 × 2 步没吃到东西算饿死, 免得模型原地兜圈子永远不停
@@ -98,7 +99,7 @@ export function step(g, dir, rng = Math.random) {
 }
 
 // ---- 发给推理服务的请求 ----------------------------------------------------------
-// 一道 choice, 选项永远是四个方向, 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
+// 一道 choice, 选项默认是四个方向 (dropReverse 时去掉掉头的那个), 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
 // state 用词写棋盘: grid 是整张棋盘, 每行一个字段, 每格一个词 (empty / head / body / food), 不用符号,
 // 每行左右两端各加一个 wall;
 // 另有几句话说蛇多长、头在哪、身子从脖子到尾巴依次在哪、食物在哪.
@@ -167,9 +168,11 @@ function describe(g, dir) {
   return o.ignored ? `Reverses into the snake's neck, so it is ignored and the snake keeps moving ${o.move}. ${what}` : what;
 }
 
-export function request(g, style, model) {
+// dropReverse: 选项里去掉掉头的那个方向 (反正会被忽略), 只剩三个; 一节长的蛇没有脖子, 四个照给
+export function request(g, style, model, { dropReverse = false } = {}) {
   if (!STYLES.includes(style)) throw new Error(`unknown style ${style}; expected one of ${STYLES.join(", ")}`);
-  const criteria = Object.fromEntries(DIRECTIONS.map((d) => [d, style === "board" ? WAY[d] : describe(g, d)]));
+  const dirs = DIRECTIONS.filter((d) => !(dropReverse && outcome(g, d).ignored));
+  const criteria = Object.fromEntries(dirs.map((d) => [d, style === "board" ? WAY[d] : describe(g, d)]));
   const state = `${LABEL}: ${JSON.stringify(boardState(g), null, 2)}`;
   return { state, model, questions: { move: { type: "choice", instructions: QUESTION, criteria } } };
 }

@@ -118,7 +118,7 @@ test("outcome counts the free cells the head can still reach after the move", ()
 });
 
 // --------------------------------------------------------------------------
-// 发给推理服务的请求: 一道 choice, 选项永远是四个方向
+// 发给推理服务的请求: 一道 choice, 选项默认是四个方向
 // --------------------------------------------------------------------------
 
 test("a request asks one choice question over the four directions of the model it names", () => {
@@ -226,4 +226,19 @@ test("in the consequences style each option says what the move leads to", () => 
 
 test("an unknown style is refused", () => {
   assert.throws(() => request(game(), "ascii", "m"), /style/);
+});
+
+test("dropReverse leaves out the direction that reverses into the neck, in both styles", () => {
+  for (const style of ["board", "consequences"]) {
+    const right = request(game(), style, "m", { dropReverse: true }).questions.move.criteria;
+    assert.deepEqual(Object.keys(right), ["up", "down", "right"]);
+    const up = request(game({ snake: [[2, 3], [3, 3], [4, 3]], heading: "up" }), style, "m", { dropReverse: true });
+    assert.deepEqual(Object.keys(up.questions.move.criteria), ["up", "left", "right"]);
+  }
+});
+
+test("dropReverse keeps all four directions for a one-cell snake, which has no neck", () => {
+  const g = game({ snake: [[2, 3]] });
+  assert.deepEqual(Object.keys(request(g, "board", "m", { dropReverse: true }).questions.move.criteria),
+    ["up", "down", "left", "right"]);
 });
