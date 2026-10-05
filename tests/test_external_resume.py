@@ -24,7 +24,7 @@ def _fixture(base):
         path = code / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# source fixture\n")
-    data = assets / "synth-intents-v5.2"
+    data = assets / "synth-intents-v5.3"
     data.mkdir(parents=True)
     (data / "schema.py").write_text("# schema fixture\n")
     (data / "toy.contexts.json").write_text('{"contexts":[]}')
@@ -47,7 +47,7 @@ def test_sampling_fingerprint_survives_relocation_and_detects_data_and_code_chan
         relocated = base / "moved"
         shutil.copytree(assets, relocated)
         assert resume.sampling_fingerprint(code, relocated) == before
-        data = relocated / "synth-intents-v5.2/toy.contexts.json"
+        data = relocated / "synth-intents-v5.3/toy.contexts.json"
         data.write_text('{"contexts":[{"id":"changed"}]}')
         assert resume.sampling_fingerprint(code, relocated) != before
         (code / "src/sors/data/paths.py").write_text("# changed resolver\n")
@@ -67,7 +67,7 @@ def test_legacy_fingerprint_is_accepted_only_for_the_exact_audited_migration():
         _refused(lambda: resume.verify_sampling_fingerprint(code, assets, "unknown"))
         resume.verify_sampling_commits(code, assets, "a" * 7)
         _refused(lambda: resume.verify_sampling_commits(code, assets, "b" * 7))
-        (assets / "synth-intents-v5.2/schema.py").write_text("# modified validation\n")
+        (assets / "synth-intents-v5.3/schema.py").write_text("# modified validation\n")
         _refused(lambda: resume.verify_sampling_fingerprint(code, assets, old))
         _refused(lambda: resume.verify_sampling_commits(code, assets, "a" * 7))
 
@@ -87,16 +87,16 @@ def test_split_commit_verification_checks_both_repositories_and_untracked_data()
     with tempfile.TemporaryDirectory() as tmp:
         code, assets = _fixture(pathlib.Path(tmp))
         revisions = []
-        for repo, paths in ((code, ["scripts", "src"]), (assets, ["synth-intents-v5.2"])):
+        for repo, paths in ((code, ["scripts", "src"]), (assets, ["synth-intents-v5.3"])):
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(["git", "-C", str(repo), "add", "--", *paths], check=True)
             subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                             "commit", "-qm", "fixture"], check=True)
             revisions.append(subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"]).decode().strip())
         resume.verify_sampling_commits(code, assets, revisions[1], code_commit=revisions[0])
-        (assets / "synth-intents-v5.2/untracked.contexts.json").write_text("{}")
+        (assets / "synth-intents-v5.3/untracked.contexts.json").write_text("{}")
         _refused(lambda: resume.verify_sampling_commits(code, assets, revisions[1], code_commit=revisions[0]))
-        (assets / "synth-intents-v5.2/untracked.contexts.json").unlink()
+        (assets / "synth-intents-v5.3/untracked.contexts.json").unlink()
         (code / "scripts/train.py").write_text("# changed training\n")
         _refused(lambda: resume.verify_sampling_commits(code, assets, revisions[1], code_commit=revisions[0]))
 

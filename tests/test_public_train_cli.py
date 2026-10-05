@@ -86,7 +86,7 @@ def test_old_dataset_defaults_and_sampling_are_unchanged():
     with tempfile.TemporaryDirectory() as d:
         manifest = _all_sources(pathlib.Path(d))
         # An unused manifest must not be opened by a legacy-only run.
-        args = _args(str(manifest) + ".missing", "synth-v5.2")
+        args = _args(str(manifest) + ".missing", "synth-v5.3")
         assert _mod.build_parser().parse_args([]).dataset == "synth"
         sample, _, info = _mod.build_data(args)
         assert "public_decisions" not in info
@@ -115,7 +115,7 @@ def test_weighted_draws_keep_exact_half_synth_with_seven_public_sources():
     assert hasattr(_mod, "dataset_parts"), "dataset-level batch allocation is missing"
     names = ["synth-v5", "sharc", "toolace", "contractnli", "maud", "quality", "reclor", "logiqa2"]
     weights = _mod.parse_dataset_weights(
-        "synth-v5.2=18,sharc=3,toolace=2,contractnli=4,maud=2,quality=3,reclor=2,logiqa2=2", names)
+        "synth-v5.3=18,sharc=3,toolace=2,contractnli=4,maud=2,quality=3,reclor=2,logiqa2=2", names)
     assert _mod.dataset_parts(36, names, weights) == [18, 3, 2, 4, 2, 3, 2, 2]
 
 
@@ -138,7 +138,7 @@ def test_dataset_weights_reject_missing_repeated_unknown_or_nonpositive_values()
             continue
         raise AssertionError(f"invalid weights accepted: {spec}")
     try:
-        _mod.parse_dataset_weights("synth-v5=1,synth-v5.2=1", ["synth-v5"])
+        _mod.parse_dataset_weights("synth-v5=1,synth-v5.3=1", ["synth-v5"])
     except ValueError:
         return
     raise AssertionError("duplicate alias weights accepted")

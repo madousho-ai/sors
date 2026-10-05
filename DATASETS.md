@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.2/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.3/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,13 +12,16 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.2
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.3
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
-added to every domain. `--dataset synth-v5.1` is rejected with a pointer to the new
-name; `synth-v5` remains an alias of the current data. Complete states saved on v5.1
-data fail the resume fingerprint check against v5.2.
+added to every domain, and `synth-intents-v5.2` became `synth-intents-v5.3` when the
+`contrast` goal (confusable-intent menus and minimal-edit counterfactuals) was added.
+`--dataset synth-v5.1` and `--dataset synth-v5.3` are rejected with a pointer to the
+new name; `synth-v5` remains an alias of the current data. Complete states saved on
+older data fail the resume fingerprint check against v5.3. A `--mix` written for v5.2
+must add a `contrast=` share, since every goal in the data keeps a positive share.
 
 The order is an explicit `--datasets-dir` / API argument, then
 `SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling
@@ -57,8 +60,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.2+sharc+toolace \
-  --dataset-weights synth-v5.2=27,sharc=6,toolace=3 \
+  --dataset synth-v5.3+sharc+toolace \
+  --dataset-weights synth-v5.3=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 

@@ -42,32 +42,33 @@ def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
 
     item = _marked()
     with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
-        current, _, info = _mod.build_data(_args("synth-v5.2", eval="simple", fallback_rate=1.0))
+        current, _, info = _mod.build_data(_args("synth-v5.3", eval="simple", fallback_rate=1.0))
         legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
     assert current(8, random.Random(0)) == legacy(8, random.Random(0))
     assert info == old_info
-    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.2", "--fallback-rate", "1"])
+    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.3", "--fallback-rate", "1"])
     assert "-fallback1" in _mod.run_tag(args)
 
 
 def test_v51_and_its_legacy_alias_cannot_duplicate_the_dataset():
     try:
-        _mod.parse_datasets("synth-v5+synth-v5.2")
+        _mod.parse_datasets("synth-v5+synth-v5.3")
     except SystemExit:
         return
     raise AssertionError("the same dataset was accepted twice through aliases")
 
 
-def test_the_retired_v51_name_points_to_v52():
-    """v5.1 的数据已经改名为 v5.2 并加了题; 旧名字不能悄悄读到新数据."""
-    for parse in (lambda: _mod.parse_datasets("synth-v5.1"),
-                  lambda: _mod.parse_dataset_weights("synth-v5.1=1", ["synth-v5"])):
-        try:
-            parse()
-        except (SystemExit, ValueError) as exc:
-            assert "synth-v5.2" in str(exc), exc
-            continue
-        raise AssertionError("synth-v5.1 was accepted")
+def test_the_retired_v51_and_v52_names_point_to_v53():
+    """v5.1 改名 v5.2 加了难题, v5.2 又改名 v5.3 加了 contrast; 旧名字不能悄悄读到新数据."""
+    for old in ("synth-v5.1", "synth-v5.2"):
+        for parse in (lambda: _mod.parse_datasets(old),
+                      lambda: _mod.parse_dataset_weights(f"{old}=1", ["synth-v5"])):
+            try:
+                parse()
+            except (SystemExit, ValueError) as exc:
+                assert "synth-v5.3" in str(exc), exc
+                continue
+            raise AssertionError(f"{old} was accepted")
 
 
 def test_dataset_defaults_to_synth():
@@ -258,14 +259,14 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """v5.2 的六个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/6。
+    """v5.3 的七个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/7。
     intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 70258, info
-    assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "edge_case": 1.0,
-                                         "long_context": 1.0, "long_menu": 1.0})]
+    assert info["synth_v5_items"] == 85056, info
+    assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "contrast": 1.0,
+                                         "edge_case": 1.0, "long_context": 1.0, "long_menu": 1.0})]
     full_menus = {}
-    for path in asset_path("synth-intents-v5.2").glob("*.questions.json"):
+    for path in asset_path("synth-intents-v5.3").glob("*.questions.json"):
         for question in json.loads(path.read_text())["questions"]:
             if len(question["options"]) == 256:
                 rows = frozenset(f"{key}: {description}" for key, description in question["options"].items())
@@ -285,7 +286,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
 def test_synth_v5_mix_sets_the_goal_shares():
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive",
                                                mix="long_menu=14,breadth=2,complex=2,edge_case=1,long_context=0.9,"
-                                                   "ambiguous=0.1"))
+                                                   "ambiguous=0.1,contrast=0.1"))
     rng = random.Random(0)
     n = long = 0
     # 10k 次抽取: 占比的标准差约 0.0046, ±0.05 的范围有 10 倍余量. 只抽 1000 次时标准差 0.0145,
@@ -318,7 +319,7 @@ def test_mask_descriptions_must_be_a_share_and_needs_synth_v5():
 def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
     """--mask-descriptions 1 --consistency 1: intent 题 (maskable) 的两份都只剩键, 按描述对齐照样成立."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", mask_descriptions=1.0, consistency=1.0,
-                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=1"))
+                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=1,contrast=1"))
     rng = random.Random(0)
     pairs = 0
     for _ in range(10):
@@ -335,7 +336,7 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
     """v4 的材料带两种说法: --consistency 下配对的两份读的是不同说法, 问句与选项集合相同."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", consistency=1.0,
                                             mix="long_menu=1,breadth=1,complex=33,edge_case=33,long_context=31,"
-                                                "ambiguous=1"))
+                                                "ambiguous=1,contrast=1"))
     rng = random.Random(0)
     reworded = 0
     for _ in range(20):
@@ -349,7 +350,7 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
 
 def test_synth_v5_random_other_view_keeps_one_example_per_draw():
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="simple",
-                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=95"))
+                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=95,contrast=1"))
     rng = random.Random(0)
     assert all(len(sample_fn(8, rng)) == 8 for _ in range(40))
 
@@ -402,11 +403,11 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """v5.2 有70258个绑定、742对菜单版本，一轮69516次抽取；
+    """v5.3 有85056个绑定、742对菜单版本，一轮84314次抽取；
     complex / edge_case / long_context 共6362个绑定各多出两遍。"""
     _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
-    assert info["synth_v5_round"] == 69516 + 2 * 6362, info
-    assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "edge_case": 3,
+    assert info["synth_v5_round"] == 84314 + 2 * 6362, info
+    assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "contrast": 1, "edge_case": 3,
                                        "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info
 

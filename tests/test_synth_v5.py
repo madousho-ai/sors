@@ -62,7 +62,7 @@ HOTEL_C = [{"id": f"hotel_{k}#{i}", "label": "Customer message", "goal": "long_m
 
 def _data(**over):
     d = pathlib.Path(tempfile.mkdtemp())
-    shutil.copy(asset_path("synth-intents-v5.2/schema.py"), d)
+    shutil.copy(asset_path("synth-intents-v5.3/schema.py"), d)
     files = {"telecom": (TELECOM_Q, TELECOM_C), "hotel": (HOTEL_Q, HOTEL_C), **over}
     for dom, (qs, cs) in files.items():
         (d / f"{dom}.questions.json").write_text(json.dumps({"domain": dom, "questions": qs}))

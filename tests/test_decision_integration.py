@@ -225,7 +225,7 @@ def test_real_train_cli_exports_reloadable_decision_and_complete_state():
             base, out = Path(directory) / "base", Path(directory) / "run"
             tiny_backbone(tok).save_pretrained(base)
             tok.save_pretrained(base)
-            argv = ["train.py", "--model", str(base), "--out", str(out), "--dataset", "synth-v5.2", "--architecture", kind,
+            argv = ["train.py", "--model", str(base), "--out", str(out), "--dataset", "synth-v5.3", "--architecture", kind,
                     "--decision-feedback", "--decision-dim", "16", "--decision-heads", "4",
                     "--loss", "menu", "--steps", "1", "--batch-size", "2", "--micro-batches", "2",
                     "--save-training-state", "--consistency", "1", "--grad-ckpt", "--temp-max", "999",
@@ -280,7 +280,7 @@ def test_resume_cli_reconstructs_the_saved_architecture_before_restoring_optimiz
 
 def test_complete_state_save_rejects_datasets_outside_the_resume_contract_before_side_effects():
     cli = train_cli()
-    for dataset in ("synth", "banking77", "synth-v5.2+massive"):
+    for dataset in ("synth", "banking77", "synth-v5.3+massive"):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "run"
             argv = ["train.py", "--dataset", dataset, "--save-training-state", "--out", str(out)]

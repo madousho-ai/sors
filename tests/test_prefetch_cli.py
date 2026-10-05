@@ -54,7 +54,7 @@ def test_train_cli_controls_real_preparation_and_records_it_in_checkpoints():
 
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "run"
-            argv = ["train.py", "--dataset", "synth-v5.2", "--datasets-dir", directory,
+            argv = ["train.py", "--dataset", "synth-v5.3", "--datasets-dir", directory,
                     "--out", str(out), "--steps", "2", "--batch-size", "2", "--k-max", "3", "--k-eval", "3",
                     "--max-length", "128", "--consistency", "0.7", "--eval-every", "2", "--temp-max", "200", *flags]
             with patch.object(sys, "argv", argv), \
@@ -105,7 +105,7 @@ def test_train_cli_records_token_budget_grouping_and_per_group_backward():
 
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "run"
-        argv = ["train.py", "--dataset", "synth-v5.2", "--datasets-dir", directory,
+        argv = ["train.py", "--dataset", "synth-v5.3", "--datasets-dir", directory,
                 "--out", str(out), "--steps", "2", "--batch-size", "2", "--k-max", "3", "--k-eval", "3",
                 "--max-length", "128", "--consistency", "0.7", "--eval-every", "2", "--temp-max", "200",
                 "--data-workers", "0", "--micro-tokens", "300", "--accumulate-gradients",

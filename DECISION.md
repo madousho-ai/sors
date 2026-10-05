@@ -81,21 +81,21 @@ minimal/structural 使用 `--decision-feedback` 开启、`--no-decision-feedback
 ```bash
 # 最小改动，回写关闭
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.2 \
+  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.3 \
   --architecture minimal --no-decision-feedback \
   --loss menu --consistency 1 --trainable decision-only \
   --grad-ckpt --save-training-state --steps 2000
 
 # 结构版，回写开启
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.2 \
+  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.3 \
   --architecture structural --decision-feedback \
   --loss menu --consistency 1 --trainable decision-only \
   --grad-ckpt --save-training-state --steps 2000
 
 # Candidate 联合编码，先测纯标量读出；把 0 改成 1 或 2 可对照集合交互
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.2 \
+  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.3 \
   --architecture candidate --decision-blocks 0 --candidate-prefix-cache auto \
   --loss menu --consistency 1 --trainable decision-only \
   --grad-ckpt --save-training-state --steps 2000
@@ -184,7 +184,7 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 ```bash
 # 从存档继承架构和回写配置
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.2 \
+  --model Qwen/Qwen3.5-0.8B-Base --dataset synth-v5.3 \
   --init runs/<run>/trained.safetensors --loss menu --steps 0
 
 # --save-training-state 保存的完整状态可由原续跑入口恢复
@@ -193,7 +193,7 @@ PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<run>
 
 `--save-training-state` 是显式开关，保持原训练命令的存档行为。它在保存边界和最后一步原子替换
 `checkpoints/latest.trainstate.safetensors`，保存参数、master、优化器、调度器、RNG、采样位置和架构元数据。
-完整状态保存开关和 resume CLI 的数据版本核验范围为 synth-v5.2 及兼容别名 synth-v5；
+完整状态保存开关和 resume CLI 的数据版本核验范围为 synth-v5.3 及兼容别名 synth-v5；
 其余数据集使用权重存档。原有源码/数据指纹保护继续生效。
 `--init` 用于载入权重开始新一次运行；完整训练状态通过 resume 入口续接。
 
