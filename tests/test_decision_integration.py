@@ -45,6 +45,40 @@ def test_training_evaluation_and_gradient_accumulation_use_the_decision_head():
         assert states[-1]["architecture"] == architecture_config(a)
 
 
+def test_decision_learning_rate_drives_only_the_decision_layers_during_training():
+    """lr_decision 只管新增决策层: 主干学习率为 0 时只有决策层在动, 反过来决策层不动;
+    第三组的学习率走同一条 warmup/cosine 日程, 完整状态续跑时照样恢复三组."""
+    from sors.training.resume import read_state, save_state
+
+    def moved(lr_lora, lr_decision):
+        m, tok, d, _ = tiny_model("minimal", True, trainable="full")
+        before = {n: p.detach().clone() for n, p in m.named_parameters() if p.requires_grad}
+        cfg = config(lr_decision=lr_decision, lr_schedule="cosine", warmup_steps=1)
+        cfg.lr_lora, cfg.lr_embed = lr_lora, 0.0
+        train(m, tok, d, sampler, {}, cfg)
+        return {n for n, p in m.named_parameters() if p.requires_grad and not torch.equal(p, before[n])}
+
+    head_only = moved(0.0, 1e-3)
+    assert head_only and all(not n.startswith("base.") for n in head_only), head_only
+    body_only = moved(1e-3, 0.0)
+    assert body_only and all(n.startswith("base.") for n in body_only), body_only
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "state.safetensors"
+        cfg = config(lr_decision=1e-2, lr_schedule="cosine", warmup_steps=1)
+        reference, tok, d, _ = tiny_model("minimal", True, trainable="full")
+        train(reference, tok, d, sampler, {}, cfg)
+        first, _, _, _ = tiny_model("minimal", True, trainable="full")
+        train(first, tok, d, sampler, {}, cfg, stop_after=1, on_state=lambda s: save_state(s, path))
+        state = read_state(path)
+        assert state["config"]["lr_decision"] == 1e-2
+        assert len(state["optimizer"]["param_groups"]) == 3
+        resumed, _, _, _ = tiny_model("minimal", True, trainable="full")
+        train(resumed, tok, d, sampler, {}, cfg, resume=state)
+        for (name, p), (_, q) in zip(reference.named_parameters(), resumed.named_parameters()):
+            torch.testing.assert_close(q, p, atol=1e-6, rtol=1e-5, msg=name)
+
+
 def test_saved_architecture_rebuilds_weights_and_feedback_under_a_new_seed():
     for family in ("qwen3", "qwen35"):
         for kind in ("minimal", "structural"):

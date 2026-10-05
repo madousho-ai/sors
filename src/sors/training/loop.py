@@ -37,6 +37,7 @@ class TrainConfig:
     max_length: int = 512
     lr_lora: float = 1e-4
     lr_embed: float = 1e-3
+    lr_decision: float | None = None  # 新增决策层单独的学习率; None = 跟主干共用 lr_lora (旧行为)
     weight_decay: float = 0.0
     lr_schedule: str = "constant"  # constant | cosine
     warmup_steps: int = 0
@@ -365,9 +366,13 @@ def train(
                 if p.shape != resume["model"][name].shape or p.dtype != resume["model"][name].dtype:
                     raise ValueError(f"resume parameter shape or dtype mismatch: {name}")
                 p.copy_(resume["model"][name])
-    groups = trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed)
-    master = Fp32Master(groups[0]["params"])  # 主干那一组 (LoRA 或 full 的主干); rows 那一组照旧
-    groups[0]["params"] = master.params
+    groups = trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed, cfg.lr_decision)
+    # 主干那一组 (LoRA 或 full 的主干) 与单独成组的决策层共用一份主权重; rows 那一组照旧
+    n_body = len(groups[0]["params"])
+    master = Fp32Master(groups[0]["params"] + (groups[2]["params"] if len(groups) > 2 else []))
+    groups[0]["params"] = master.params[:n_body]
+    if len(groups) > 2:
+        groups[2]["params"] = master.params[n_body:]
     opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
