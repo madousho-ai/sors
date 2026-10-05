@@ -3,8 +3,10 @@
 // 请求按回合走, 上一个回答回来之前不发下一个.
 // 同一个请求体并行发给 POST /demo/prompts (服务 --demo 时才有), 拿回模型读到的提示原文显示出来;
 // 取不到 (比如老版本的服务) 只是不显示提示, 游戏照走.
+// 拆分模式: 一步发一个请求, 里面是每个不掉头方向的五道小题 (splitRequest); 代码把答案组合成方向 (combine),
+// 同时按规则算标准答案 (splitTruth) 逐题判对错, 累计成本局各类小题的正确率.
 
-import { DIRECTIONS, newGame, request, step } from "./snake.mjs";
+import { DIRECTIONS, KINDS, combine, grade, newGame, request, splitRequest, splitTruth, step } from "./snake.mjs";
 
 const $ = (id) => document.getElementById(id);
 const ARROW = { up: "↑ 上", down: "↓ 下", left: "← 左", right: "→ 右" };
@@ -16,6 +18,11 @@ const END = {
 };
 
 let game, model = null, running = false, busy = false;
+let tally = {}; // 小题类型 -> [答对, 总数], 本局累计
+
+const KIND_NAME = { outside: "棋盘外?（查表）", body: "蛇身里?（查表）", dead: "会死?（给坐标）",
+  cell: "那格是（不给坐标）", closer: "更近?（给坐标）" };
+const CELL = { empty: "空", body: "身子", food: "食物", outside: "界外" };
 
 const pct = (p) => `${(p * 100).toFixed(1)}%`;
 const headers = () => {
@@ -112,7 +119,7 @@ function addHistory(n, answer, o, ms) {
   }).join("");
   const res = o.ignored ? `掉头被忽略 · ${RESULT[o.result]}` : RESULT[o.result];
   tr.innerHTML = `<td>${n}</td><td>${ARROW[answer.choice]}</td><td class="probs">${probs}</td>`
-    + `<td>${answer.confidence.toFixed(2)}</td><td>${res}</td><td>${ms.toFixed(0)} ms</td>`;
+    + `<td>${answer.confidence === null ? "–" : answer.confidence.toFixed(2)}</td><td>${res}</td><td>${ms.toFixed(0)} ms</td>`;
   $("history").prepend(tr);
 }
 
@@ -121,13 +128,14 @@ function addHistory(n, answer, o, ms) {
 async function fetchPrompt(body) {
   try {
     const r = await fetch("/demo/prompts", { method: "POST", headers: headers(), body: JSON.stringify(body) });
-    return r.ok ? (await r.json()).prompts.move : null;
+    return r.ok ? (await r.json()).prompts : null;
   } catch {
     return null;
   }
 }
 
 function showPrompt(p, choice) {
+  if (p && !p.state) return showSplitPrompt(p); // 拆分模式: 好几道题共用一段 state
   if (!p) {
     $("prompt-state").textContent = "取不到提示原文 (服务要开 --demo 才有 /demo/prompts)。";
     $("prompt-question").replaceChildren();
@@ -141,6 +149,44 @@ function showPrompt(p, choice) {
   $("prompt-chars").textContent = `${p.state.length + p.question.length} 字符`;
 }
 
+function showSplitPrompt(prompts) {
+  const all = Object.entries(prompts);
+  $("prompt-state").textContent = all[0][1].state;
+  $("prompt-question").replaceChildren(...all.flatMap(([q, p]) => [
+    Object.assign(document.createElement("span"), { className: "line picked", textContent: `── ${q} ──` }),
+    ...p.question.split("\n").map((line) => Object.assign(document.createElement("span"), { className: "line", textContent: line || " " })),
+  ]));
+  $("prompt-chars").textContent = `${all.length} 道题，state ${all[0][1].state.length} 字符`;
+}
+
+// ---- 拆分模式的小题面板 ----------------------------------------------------------
+
+function showSplit(answers, truth, marks, c) {
+  const fmt = (q) => {
+    if (!(q in answers)) return "<td>–</td>";
+    const a = answers[q];
+    const said = a.type === "noul" ? a.noul.toFixed(2) : CELL[a.choice];
+    const want = a.type === "noul" ? (truth[q] ? "是" : "否") : CELL[truth[q]];
+    return `<td class="${marks[q] ? "ok" : "bad"}" title="标准答案：${want}">${marks[q] ? "✓" : "✗"} ${said}</td>`;
+  };
+  $("split-rows").replaceChildren(...Object.keys(c.scores).map((d) => {
+    const tr = document.createElement("tr");
+    if (d === c.choice) tr.className = "picked";
+    tr.innerHTML = `<td>${ARROW[d]}</td>${KINDS.map((k) => fmt(`${k}_${d}`)).join("")}`
+      + `<td>${c.safe[d].toFixed(2)}</td><td>${c.scores[d].toFixed(2)}</td>`;
+    return tr;
+  }));
+}
+
+function showTally() {
+  $("tally").replaceChildren(...KINDS.map((k) => {
+    const [ok, n] = tally[k] ?? [0, 0];
+    const el = document.createElement("div");
+    el.innerHTML = `<span>${KIND_NAME[k]}</span> <b>${n ? pct(ok / n) : "–"}</b> <span>${ok}/${n}</span>`;
+    return el;
+  }));
+}
+
 // ---- 一步 ----------------------------------------------------------------------
 
 async function tick() {
@@ -149,30 +195,72 @@ async function tick() {
   if (!model) { stop(); return; }
   busy = true;
   try {
-    const body = request(game, $("style").value, model, { dropReverse: $("drop-reverse").checked });
-    const t0 = performance.now();
-    const prompt = fetchPrompt(body); // 与决策并行, 只渲染文本, 不占模型
-    const r = await fetch("/v1/systemone", { method: "POST", headers: headers(), body: JSON.stringify(body) });
-    const json = await r.json();
-    const ms = performance.now() - t0;
-    if (!r.ok) throw new Error(`服务返回 ${r.status}：${JSON.stringify(json.detail)}`);
-    const answer = json.answers.move;
-    game = step(game, answer.choice);
-    showDecision(answer, game.last, ms, body.questions.move.criteria);
-    showPrompt(await prompt, answer.choice);
-    addHistory(game.steps, answer, game.last, ms);
-    $("raw").textContent = JSON.stringify({ request: body, response: json }, null, 2);
-    draw();
-    if (game.status !== "playing") {
-      stop();
-      setStatus(END[game.status](game), "end");
-    }
+    if ($("mode").value === "split") await splitTick();
+    else await singleTick();
   } catch (e) {
     stop();
     setStatus(e.message, "error");
   } finally {
     busy = false;
   }
+}
+
+async function post(body) {
+  const t0 = performance.now();
+  const prompt = fetchPrompt(body); // 与决策并行, 只渲染文本, 不占模型
+  const r = await fetch("/v1/systemone", { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  const json = await r.json();
+  const ms = performance.now() - t0;
+  if (!r.ok) throw new Error(`服务返回 ${r.status}：${JSON.stringify(json.detail)}`);
+  return { json, ms, prompt };
+}
+
+function finishStep(body, json) {
+  $("raw").textContent = JSON.stringify({ request: body, response: json }, null, 2);
+  draw();
+  if (game.status !== "playing") {
+    stop();
+    setStatus(END[game.status](game), "end");
+  }
+}
+
+async function splitTick() {
+  const body = splitRequest(game, model);
+  const { json, ms, prompt } = await post(body);
+  const answers = json.answers;
+  const truth = splitTruth(game); // 走之前的局面
+  const marks = grade(answers, truth);
+  for (const [q, ok] of Object.entries(marks)) {
+    const k = q.split("_")[0];
+    const t = (tally[k] ??= [0, 0]);
+    t[0] += ok ? 1 : 0; t[1] += 1;
+  }
+  const c = combine(game, answers, $("safety").value);
+  game = step(game, c.choice);
+  const o = game.last;
+  showBars({ choice: c.choice, probabilities: c.scores });
+  const right = Object.values(marks).filter(Boolean).length;
+  $("decision").innerHTML = `代码组合选 <b>${ARROW[c.choice]}</b>，综合分 <b>${c.scores[c.choice].toFixed(2)}</b>，`
+    + `这一步小题答对 <b>${right}/${Object.keys(marks).length}</b> → ${RESULT[o.result]}`;
+  $("why").hidden = false;
+  $("why").textContent = `条形是各方向的综合分（安全 × (1 + P(更近)) / 2），三个分数不相加为 100%。`;
+  $("latency").textContent = `${ms.toFixed(0)} ms`;
+  showSplit(answers, truth, marks, c);
+  showTally();
+  showPrompt(await prompt);
+  addHistory(game.steps, { choice: c.choice, probabilities: c.scores, confidence: null }, o, ms);
+  finishStep(body, json);
+}
+
+async function singleTick() {
+  const body = request(game, $("style").value, model, { dropReverse: $("drop-reverse").checked });
+  const { json, ms, prompt } = await post(body);
+  const answer = json.answers.move;
+  game = step(game, answer.choice);
+  showDecision(answer, game.last, ms, body.questions.move.criteria);
+  showPrompt((await prompt)?.move, answer.choice);
+  addHistory(game.steps, answer, game.last, ms);
+  finishStep(body, json);
 }
 
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -203,6 +291,10 @@ function reset() {
   const n = Number($("size").value);
   game = newGame({ rows: n, cols: n });
   $("history").replaceChildren();
+  tally = {};
+  $("split-rows").replaceChildren();
+  showTally();
+  $("split-panel").hidden = $("mode").value !== "split";
   $("decision").textContent = "还没有决策。";
   $("why").hidden = true;
   $("latency").textContent = "–";
@@ -218,6 +310,7 @@ $("run").onclick = () => (running ? stop() : start());
 $("step").onclick = () => { stop(); if (game.status !== "playing") reset(); tick(); };
 $("reset").onclick = reset;
 $("size").onchange = reset;
+$("mode").onchange = reset;
 $("delay").oninput = () => { $("delay-ms").textContent = `${$("delay").value} ms`; };
 $("key").onchange = loadModel;
 

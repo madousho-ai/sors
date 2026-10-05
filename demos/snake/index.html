@@ -59,6 +59,13 @@
   .prompt { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: none; font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; color: #c9d1d9; }
   .prompt .line { display: block; }
   .prompt .line.picked { background: #1d2b45; color: #fff; outline: 1px solid var(--pick); border-radius: 3px; }
+  .split-note { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  table.split td.ok { color: #3fb56b; }
+  table.split td.bad { color: var(--food); }
+  table.split tr.picked td:first-child { color: var(--pick); font-weight: 600; }
+  .tally { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; font-variant-numeric: tabular-nums; }
+  .tally span { color: var(--muted); }
+  .tally b { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -82,6 +89,19 @@
       <button id="reset">重开</button>
     </div>
     <div class="controls">
+      <label>决策方式
+        <select id="mode">
+          <option value="single">一道题直接选方向</option>
+          <option value="split">拆成小题，代码组合</option>
+        </select>
+      </label>
+      <label title="拆分模式下，用哪一档小题判断一步安不安全；三档每一步都会问，正确率都统计">安全看
+        <select id="safety">
+          <option value="lookup">查表题（在不在棋盘外 / 蛇身列表里）</option>
+          <option value="given">给坐标问会不会死</option>
+          <option value="infer">不给坐标问那格是什么</option>
+        </select>
+      </label>
       <label>局面写法
         <select id="style">
           <option value="consequences">写明每个方向的后果</option>
@@ -108,6 +128,20 @@
       <div class="bars" id="bars"></div>
       <div class="decision" id="decision">还没有决策。</div>
       <div class="why" id="why" hidden></div>
+    </section>
+    <section id="split-panel" hidden>
+      <h2>这一步的小题（拆分模式）</h2>
+      <div class="split-note">每个不掉头的方向问五道。✓ / ✗ 是模型的回答对不对得上按规则算的标准答案；是非题显示 P(yes)。
+        综合分 = 安全概率 × (1 + P(更近)) / 2。</div>
+      <table class="split"><thead><tr><th>方向</th>
+        <th title="查表：给出行列范围和坐标，问在不在棋盘外">棋盘外?</th>
+        <th title="查表：给出坐标，问在不在 snake 字段列出的格子里">蛇身里?</th>
+        <th title="给坐标：问走过去会不会结束">会死?</th>
+        <th title="不给坐标：问那一格里是什么">那格是</th>
+        <th title="给坐标：问是不是离食物更近">更近?</th>
+        <th>安全</th><th>综合分</th></tr></thead><tbody id="split-rows"></tbody></table>
+      <h2 style="margin-top:14px">本局各类小题的正确率</h2>
+      <div class="tally" id="tally"></div>
     </section>
     <section>
       <div class="prompt-head"><h2>这一步的提示词</h2><span id="prompt-chars"></span></div>
