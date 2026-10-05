@@ -5,7 +5,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { QUESTION, boardState, newGame, outcome, request, step } from "../demos/snake/snake.mjs";
+import {
+  QUESTION, boardState, candidates, combine, grade, newGame, outcome, request, splitQuestions, splitRequest, splitTruth, step,
+} from "../demos/snake/snake.mjs";
 
 // 给一个固定的随机数序列, 用完就从头再来. 食物落在空格里的第 floor(r * 空格数) 个
 const seq = (...xs) => {
@@ -241,4 +243,103 @@ test("dropReverse keeps all four directions for a one-cell snake, which has no n
   const g = game({ snake: [[2, 3]] });
   assert.deepEqual(Object.keys(request(g, "board", "m", { dropReverse: true }).questions.move.criteria),
     ["up", "down", "left", "right"]);
+});
+
+// --------------------------------------------------------------------------
+// 拆分模式: 每个能走的方向问几道小题, 代码算标准答案, 再把模型的答案组合成一个方向
+// --------------------------------------------------------------------------
+
+test("split mode only considers the directions that do not reverse into the neck", () => {
+  assert.deepEqual(candidates(game()), ["up", "down", "right"]);
+  assert.deepEqual(candidates(game({ snake: [[2, 3]] })), ["up", "down", "left", "right"]);
+});
+
+test("each candidate direction gets five small questions, the coordinates written in where the kind allows", () => {
+  const qs = splitQuestions(game());
+  assert.deepEqual(Object.keys(qs), ["up", "down", "right"].flatMap((d) =>
+    ["outside", "body", "dead", "cell", "closer"].map((k) => `${k}_${d}`)));
+  assert.equal(qs.outside_up.type, "noul");
+  assert.match(qs.outside_up.instructions, /rows 0 to 4 and columns 0 to 5.*row 1, column 3/);
+  assert.match(qs.body_up.instructions, /"row 1, column 3"/);
+  assert.match(qs.dead_up.instructions, /row 1, column 3/);
+  assert.equal(qs.cell_up.type, "choice");
+  assert.deepEqual(Object.keys(qs.cell_up.criteria), ["empty", "body", "food", "outside"]);
+  assert.doesNotMatch(qs.cell_up.instructions, /row \d|column \d/, "the cell question leaves the model to find the cell");
+  assert.match(qs.closer_up.instructions, /row 1, column 3/);
+});
+
+test("a split request carries the same state as the single question and all the small questions", () => {
+  const g = game();
+  const body = splitRequest(g, "m");
+  assert.equal(body.model, "m");
+  assert.equal(body.state, request(g, "board", "m").state);
+  assert.deepEqual(body.questions, splitQuestions(g));
+});
+
+test("there is no closer question when the board has no food", () => {
+  assert.equal(splitQuestions({ ...game(), food: null }).closer_up, undefined); // newGame 会补一个食物, 这里直接拿掉
+});
+
+test("the truth comes from the rules: open cells, a wall above, a body cell to the right", () => {
+  const t = splitTruth(game());
+  assert.deepEqual([t.outside_up, t.body_up, t.dead_up, t.cell_up, t.closer_up], [false, false, false, "empty", true]);
+  assert.equal(t.closer_down, false);
+  const wall = splitTruth(game({ snake: [[0, 3], [1, 3], [2, 3]], heading: "up" }));
+  assert.deepEqual([wall.outside_up, wall.dead_up, wall.cell_up], [true, true, "outside"]);
+  assert.equal(wall.closer_left, true);
+  // 头 (2,2) 朝上, 右边 (2,3) 是身子中段
+  const coiled = splitTruth(game({ snake: [[2, 2], [3, 2], [3, 3], [2, 3], [1, 3]], heading: "up" }));
+  assert.deepEqual([coiled.body_right, coiled.dead_right, coiled.cell_right], [true, true, "body"]);
+  assert.equal(splitTruth(game({ food: [1, 3] })).cell_up, "food");
+});
+
+test("the cell the tail is leaving counts as body for the lookup but not as death", () => {
+  // 头 (2,2) 朝上, 尾巴在右边 (2,3), 这一步让开
+  const t = splitTruth(game({ snake: [[2, 2], [3, 2], [3, 3], [2, 3]], heading: "up" }));
+  assert.deepEqual([t.body_right, t.dead_right, t.cell_right], [true, false, "body"]);
+});
+
+const noul = (p) => ({ type: "noul", noul: p });
+const choice = (probabilities) => ({ type: "choice", probabilities,
+  choice: Object.keys(probabilities).reduce((a, b) => (probabilities[b] > probabilities[a] ? b : a)) });
+
+test("grading counts a yes/no answer right when it lands on the true side of one half", () => {
+  const truth = { dead_up: true, dead_down: false, cell_up: "empty" };
+  const answers = { dead_up: noul(0.7), dead_down: noul(0.5), cell_up: choice({ empty: 0.2, body: 0.5, food: 0.2, outside: 0.1 }) };
+  assert.deepEqual(grade(answers, truth), { dead_up: true, dead_down: true, cell_up: false }); // 正好 0.5 算 no
+});
+
+// 三个方向都安全, 只有 right 被说成会死; up 离食物近
+const answersFor = (over = {}) => {
+  const a = {};
+  for (const d of ["up", "down", "right"]) {
+    a[`outside_${d}`] = noul(0.1);
+    a[`body_${d}`] = noul(0.1);
+    a[`dead_${d}`] = noul(0.1);
+    a[`cell_${d}`] = choice({ empty: 0.9, body: 0.05, food: 0, outside: 0.05 });
+    a[`closer_${d}`] = noul(0.2);
+  }
+  return { ...a, ...over };
+};
+
+test("each safety source turns its questions into the chance a move is safe", () => {
+  const a = answersFor({ outside_up: noul(0.5), body_up: noul(0.2), dead_up: noul(0.3),
+    cell_up: choice({ empty: 0.3, body: 0.3, food: 0.2, outside: 0.2 }) });
+  const near = (x, y) => assert.ok(Math.abs(x - y) < 1e-9, `${x} != ${y}`);
+  near(combine(game(), a, "lookup").safe.up, 0.5 * 0.8);
+  near(combine(game(), a, "given").safe.up, 0.7);
+  near(combine(game(), a, "infer").safe.up, 0.5);
+});
+
+test("the combined score favours a safe move and, among safe moves, the one closer to the food", () => {
+  const a = answersFor({ closer_up: noul(0.9) });
+  const c = combine(game(), a, "given");
+  assert.equal(c.choice, "up");
+  assert.deepEqual(Object.keys(c.scores), ["up", "down", "right"]);
+  // up 被说成会死, 哪怕更近也让给安全的方向
+  assert.equal(combine(game(), { ...a, dead_up: noul(0.8) }, "given").choice, "down");
+});
+
+test("an unknown safety source is refused", () => {
+  assert.throws(() => combine(game(), answersFor(), "guess"), /unknown safety/);
 });
