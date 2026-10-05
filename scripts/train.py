@@ -398,6 +398,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--lr-lora", type=float, default=1e-4,
                     help="主干那一组的学习率: LoRA 权重, --trainable full 时是主干全部权重. 离开 1e-4 时写进目录名")
     ap.add_argument("--lr-embed", type=float, default=1e-3)
+    ap.add_argument("--lr-decision", type=float, default=None,
+                    help="新增决策层单独的学习率 (minimal / structural / candidate); 不给 = 跟主干共用 --lr-lora. "
+                         "给了写进目录名")
     ap.add_argument("--lr-schedule", default="cosine", choices=["constant", "cosine"])
     ap.add_argument("--warmup", type=int, default=100, help="线性 warmup 步数")
     ap.add_argument("--weight-decay", type=float, default=0.0)
@@ -547,6 +550,17 @@ def resolve_candidate_prefix_cache(args, saved_config) -> str:
     return mode
 
 
+def resolve_lr_decision(args) -> float | None:
+    """决策层单独的学习率. 不给就是 None, 决策层照旧跟主干同组; 只有带决策层的架构能给, 且须 >= 0."""
+    if args.lr_decision is None:
+        return None
+    if args.architecture in (None, "slots"):
+        raise SystemExit("--lr-decision requires --architecture minimal, structural or candidate")
+    if args.lr_decision < 0:
+        raise SystemExit(f"--lr-decision is a learning rate, >= 0; got {args.lr_decision}")
+    return args.lr_decision
+
+
 def resolve_save_every(args) -> int:
     """途中每隔几步存一次档. 不给 --save-every 就跟 --eval-every 走, 每个评估点一份; 0 = 途中不存."""
     if args.save_every is None:
@@ -569,6 +583,7 @@ def run_tag(args) -> str:
         + (f"-r{args.lora_r}" if args.lora_r not in (None, 8) else "") \
         + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
         + (f"-lr{args.lr_lora:g}" if args.lr_lora != 1e-4 else "") \
+        + (f"-lrd{args.lr_decision:g}" if getattr(args, "lr_decision", None) is not None else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
@@ -606,6 +621,7 @@ def main() -> None:
     vars(args).update(resolve_adapter(args))  # 之后目录名、prepare_model、result.json 读的都是同一个形状
     if args.trainable == "decision-only" and args.architecture == "slots":
         raise SystemExit("--trainable decision-only requires --architecture minimal, structural or candidate")
+    args.lr_decision = resolve_lr_decision(args)
     args.save_every = resolve_save_every(args)
     datasets = parse_datasets(args.dataset)
     if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.2"):
@@ -651,7 +667,7 @@ def main() -> None:
         data_workers=args.data_workers, data_prefetch=args.data_prefetch,
         data_backend=args.data_backend, device_prefetch=args.device_prefetch,
         max_length=args.max_length,
-        lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
+        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, weight_decay=args.weight_decay,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,

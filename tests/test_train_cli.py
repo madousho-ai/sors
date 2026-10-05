@@ -612,6 +612,25 @@ def test_trainable_full_has_no_rank_and_names_its_learning_rate():
     assert _mod.run_tag(p.parse_args(["--lr-lora", "1e-4"])) == "-kfull256-vocab"
 
 
+def test_decision_learning_rate_flag_needs_decision_layers_and_names_the_run():
+    """--lr-decision 默认不给, 决策层跟主干共用 --lr-lora, 目录名不变; 给了写进目录名,
+    slots 架构没有决策层, 直接拒绝, 负数同样拒绝."""
+    p = _mod.build_parser()
+    assert p.parse_args([]).lr_decision is None
+    assert _mod.resolve_lr_decision(p.parse_args(["--architecture", "minimal"])) is None
+    args = p.parse_args(["--architecture", "minimal", "--lr-decision", "1e-4"])
+    assert _mod.resolve_lr_decision(args) == 1e-4
+    assert "-lrd0.0001-" in _mod.run_tag(args)
+    assert "-lrd" not in _mod.run_tag(p.parse_args(["--architecture", "minimal"]))
+    for bad in (["--lr-decision", "1e-4"], ["--architecture", "minimal", "--lr-decision", "-1"]):
+        try:
+            _mod.resolve_lr_decision(p.parse_args(bad))
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"accepted {bad}")
+
+
 def test_save_every_defaults_to_every_eval_point():
     """不给 --save-every 时每个评估点存一次, 与 --eval-every 同步; 给了就照给的步数, 0 = 途中不存."""
     p = _mod.build_parser()

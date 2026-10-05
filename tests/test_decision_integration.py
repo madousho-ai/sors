@@ -228,7 +228,8 @@ def test_real_train_cli_exports_reloadable_decision_and_complete_state():
             argv = ["train.py", "--model", str(base), "--out", str(out), "--dataset", "synth-v5.2", "--architecture", kind,
                     "--decision-feedback", "--decision-dim", "16", "--decision-heads", "4",
                     "--loss", "menu", "--steps", "1", "--batch-size", "2", "--micro-batches", "2",
-                    "--save-training-state", "--consistency", "1", "--grad-ckpt", "--temp-max", "999"]
+                    "--save-training-state", "--consistency", "1", "--grad-ckpt", "--temp-max", "999",
+                    "--lr-decision", "2e-3"]
             def load(path, **kw):
                 return load_causal_lm(path, device="cpu", dtype=torch.float32, **kw)
             with patch("sys.argv", argv), patch.object(cli, "load_causal_lm", side_effect=load), \
@@ -237,6 +238,7 @@ def test_real_train_cli_exports_reloadable_decision_and_complete_state():
             ck = read_checkpoint(out / "trained.safetensors")
             state = read_state(out / "checkpoints/latest.trainstate.safetensors")
             assert state["step"] == 1 and "optimizer" in state
+            assert state["config"]["lr_decision"] == 2e-3 and len(state["optimizer"]["param_groups"]) == 3
             assert state["metadata"]["architecture"] == ck["architecture"] == state["architecture"]
             from sors.data.paths import datasets_root
             from sors.training.resume import verify_sampling_fingerprint
