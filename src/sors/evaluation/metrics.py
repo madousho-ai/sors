@@ -91,6 +91,66 @@ def by_gold_slot(q: list[list[float]], y: list[int], width: int = 10) -> dict[st
     return out
 
 
+def _top(row: list[float], k: int) -> int:
+    """菜单前 k 行里概率最大的那一行 (菜单之外补的 0 不参与)."""
+    return max(range(k), key=row.__getitem__)
+
+
+def decoy_summary(q: list[list[float]], examples) -> dict:
+    """诱饵读数, 只看带诱饵 (ex.decoy) 的题; 一道都没有就返回空 dict.
+      n_decoy          带诱饵的题数
+      decoy_rate       首选正是诱饵的比例
+      decoy_of_errors  答错的题里选中诱饵的比例. 高 = 错在跟着表面走; 接近 decoy_chance = 错得分散
+      decoy_chance     同一批错题若在错答案里随便挑, 挑中诱饵的期望比例 (逐题 1/(k-1) 平均)
+    带诱饵的题全答对时后两个没有分母, 给 None."""
+    rows = [(row, ex) for row, ex in zip(q, examples) if ex.decoy is not None]
+    if not rows:
+        return {}
+    picks = [(ex.options[_top(row, len(ex.options))], ex) for row, ex in rows]
+    on_decoy = sum(p == ex.decoy for p, ex in picks)
+    wrong = [ex for p, ex in picks if p != ex.label]
+    return {
+        "n_decoy": len(rows),
+        "decoy_rate": on_decoy / len(rows),
+        "decoy_of_errors": on_decoy / len(wrong) if wrong else None,
+        "decoy_chance": sum(1 / (len(ex.options) - 1) for ex in wrong) / len(wrong) if wrong else None,
+    }
+
+
+def by_family(q: list[list[float]], examples) -> dict[str, dict]:
+    """按题目类别 (ex.family) 分开报 n / accuracy / nll / conf_mean, 带诱饵的类别再加 decoy_summary.
+    没有 family 的题不进任何一档; 档按 family 首次出现的顺序排."""
+    groups: dict[str, list[int]] = {}
+    for i, ex in enumerate(examples):
+        if ex.family is not None:
+            groups.setdefault(ex.family, []).append(i)
+    out = {}
+    for fam, idx in groups.items():
+        qs, exs = [q[i] for i in idx], [examples[i] for i in idx]
+        ys = [ex.gold_idx for ex in exs]
+        out[fam] = {
+            "n": len(idx),
+            "accuracy": sum(_top(row, len(ex.options)) == ex.gold_idx for row, ex in zip(qs, exs)) / len(idx),
+            "nll": nll_multiclass(qs, ys),
+            "conf_mean": sum(max(row) for row in qs) / len(idx),
+            **decoy_summary(qs, exs),
+        }
+    return out
+
+
+def pass_by_family(qs: list[list[list[float]]], passes: list[list]) -> dict[str, dict]:
+    """同一批题的几种排法 (menu.arrangements) 各算一次 by_family, 逐项取平均. 首选按描述 (类 id) 认,
+    与它落在哪一行无关. n / n_decoy 每份相同, 照抄; 某份某项是 None (没有分母) 的, 只在有值的那几份上平均."""
+    per = [by_family(q, exs) for q, exs in zip(qs, passes)]
+    out = {}
+    for fam, first in per[0].items():
+        out[fam] = {}
+        for key in first:
+            vals = [p[fam][key] for p in per if p[fam][key] is not None]
+            out[fam][key] = (first[key] if key in ("n", "n_decoy") else sum(vals) / len(vals)) if vals else None
+    return out
+
+
 def first_two_slots(q: list[list[float]], y: list[int]) -> dict[str, float]:
     """前两格 (D0 / D1) 吸走了多少: 选在前两格的比例 / 正确答案在前两格的比例 / 前两格的平均概率.
     no / yes 题的答案永远在 D0 / D1; 训练里掺了它们, 菜单题的预测若被拉向前两格, pred 会高出 gold."""

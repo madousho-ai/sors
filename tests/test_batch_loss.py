@@ -13,8 +13,9 @@ from sors.core.menu import MenuExample, reorder_menu
 from sors.core.prompt import encode_prompts, prompt_pieces, render_menu
 from sors.core.tokens import (CONTEXT_TOKENS, D_TOKENS, TYPE_TOKENS, install_context_tokens, install_d_tokens,
                                       install_type_tokens)
-from sors.evaluation.metrics import (answer_mass_summary, brier_multiclass, by_gold_slot, consistency, ece_multiclass,
-                                             first_two_slots, menu_size_summary, nll_multiclass, pass_consistency, topk_accuracy)
+from sors.evaluation.metrics import (answer_mass_summary, brier_multiclass, by_family, by_gold_slot, consistency,
+                                             decoy_summary, ece_multiclass, first_two_slots, menu_size_summary,
+                                             nll_multiclass, pass_by_family, pass_consistency, topk_accuracy)
 from sors.training.loop import scalar_items
 from sors.training.loss import (LOSSES, all_slot_cross_entropy, answer_mass, consistency_js, menu_hits,
                                         slot_cross_entropy, smooth_target, training_loss, vocab_cross_entropy)
@@ -758,6 +759,49 @@ def test_pass_consistency_refuses_passes_that_are_not_the_same_questions():
     except ValueError:
         return
     raise AssertionError("two different questions were compared")
+
+
+def _fex(options, label, family=None, decoy=None):
+    return MenuExample(query="q", options=list(options), gold_idx=list(options).index(label), label=label,
+                       option_names=[str(c) for c in options], family=family, decoy=decoy)
+
+
+def test_by_family_reports_each_family_on_its_own_and_how_often_the_decoy_is_picked():
+    """四道题, 概率按位置给、菜单之外补 0.
+    a 族: 题 1 [10 11 12] 正确 10 诱饵 11, 选 10 (对); 题 2 [20 21 22 23] 正确 21 诱饵 23, 选 23 (错, 中了诱饵).
+    b 族: 题 3 [30 31] 正确 31 诱饵 30, 选 30 (错, 中了诱饵); 题 4 [40 41 42] 正确 40 没写诱饵, 选 42 (错).
+    a: n 2 acc .5, 带诱饵 2 道 decoy_rate 1/2; 错题 1 道且中诱饵, decoy_of_errors 1, 乱猜中诱饵的机会 1/(4-1).
+    b: n 2 acc 0, 带诱饵 1 道 decoy_rate 1; decoy_of_errors 1 (没写诱饵的题 4 不进这几个分母), 机会 1/(2-1).
+    nll: a = (-ln .7 - ln .2) / 2."""
+    exs = [_fex([10, 11, 12], 10, "a", 11), _fex([20, 21, 22, 23], 21, "a", 23),
+           _fex([30, 31], 31, "b", 30), _fex([40, 41, 42], 40, "b")]
+    q = [[0.7, 0.2, 0.1, 0.0], [0.1, 0.2, 0.1, 0.6], [0.8, 0.2, 0.0, 0.0], [0.1, 0.2, 0.7, 0.0]]
+    got = by_family(q, exs)
+    assert list(got) == ["a", "b"], got
+    a, b = got["a"], got["b"]
+    assert (a["n"], a["accuracy"], a["n_decoy"], a["decoy_rate"], a["decoy_of_errors"]) == (2, 0.5, 2, 0.5, 1.0), a
+    assert abs(a["decoy_chance"] - 1 / 3) < 1e-12 and abs(a["nll"] - (-math.log(0.7) - math.log(0.2)) / 2) < 1e-12, a
+    assert (b["n"], b["accuracy"], b["n_decoy"], b["decoy_rate"], b["decoy_of_errors"], b["decoy_chance"]) == \
+           (2, 0.0, 1, 1.0, 1.0, 1.0), b
+
+
+def test_decoy_summary_over_the_whole_set_and_none_where_there_is_nothing_to_divide():
+    """整个评估集的诱饵读数与 by_family 同一个算法. 没有带诱饵的题时整组不报 (空 dict);
+    带诱饵的题全答对时 decoy_of_errors / decoy_chance 没有分母, 给 None."""
+    exs = [_fex([10, 11, 12], 10, "a", 11), _fex([20, 21], 21, "b", 20)]
+    q = [[0.1, 0.8, 0.1], [0.3, 0.7, 0.0]]
+    assert decoy_summary(q, exs) == {"n_decoy": 2, "decoy_rate": 0.5, "decoy_of_errors": 1.0, "decoy_chance": 0.5}
+    assert decoy_summary([[0.9, 0.1, 0.0]], [_fex([10, 11, 12], 10, "a", 11)]) == \
+           {"n_decoy": 1, "decoy_rate": 0.0, "decoy_of_errors": None, "decoy_chance": None}
+    assert decoy_summary([[0.9, 0.1]], [_fex([10, 11], 10)]) == {}
+
+
+def test_by_family_averages_over_arrangements_by_description():
+    """几种排法下各打一次分: 首选按描述认, 读数是各份的平均. 一道 a 族题 [10 11 12] 正确 10 诱饵 12,
+    第一份选 10 (对), 第二份排成 [12 10 11] 选第 0 行 = 12 (中诱饵). accuracy .5, decoy_rate .5."""
+    p0, p1 = [_fex([10, 11, 12], 10, "a", 12)], [_fex([12, 10, 11], 10, "a", 12)]
+    got = pass_by_family([[[0.6, 0.3, 0.1]], [[0.6, 0.3, 0.1]]], [p0, p1])
+    assert got["a"]["n"] == 1 and got["a"]["accuracy"] == 0.5 and got["a"]["decoy_rate"] == 0.5, got
 
 
 def test_scalar_items_flattens_nested_dicts_and_skips_none():
