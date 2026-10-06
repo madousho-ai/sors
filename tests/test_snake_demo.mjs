@@ -257,13 +257,15 @@ test("split mode only considers the directions that do not reverse into the neck
 test("each candidate direction gets five small questions, the coordinates written in where the kind allows", () => {
   const qs = splitQuestions(game());
   assert.deepEqual(Object.keys(qs), ["up", "down", "right"].flatMap((d) =>
-    ["outside", "body", "dead", "cell", "closer"].map((k) => `${k}_${d}`)));
-  assert.equal(qs.outside_up.type, "noul");
-  assert.match(qs.outside_up.instructions, /rows 0 to 4 and columns 0 to 5.*row 1, column 3/);
+    ["wall", "body", "dead", "cell", "closer"].map((k) => `${k}_${d}`)));
+  assert.equal(qs.wall_up.type, "noul");
+  assert.match(qs.wall_up.instructions, /rows 0 to 4 and columns 0 to 5.*Is row 1, column 3 a wall\?/);
+  // 局面的 grid 把棋盘外写成 wall, 小题跟它用同一个词
+  assert.doesNotMatch(JSON.stringify(qs), /outside|off the board/);
   assert.match(qs.body_up.instructions, /"row 1, column 3"/);
   assert.match(qs.dead_up.instructions, /row 1, column 3/);
   assert.equal(qs.cell_up.type, "choice");
-  assert.deepEqual(Object.keys(qs.cell_up.criteria), ["empty", "body", "food", "outside"]);
+  assert.deepEqual(Object.keys(qs.cell_up.criteria), ["empty", "body", "food", "wall"]);
   assert.doesNotMatch(qs.cell_up.instructions, /row \d|column \d/, "the cell question leaves the model to find the cell");
   assert.match(qs.closer_up.instructions, /row 1, column 3/);
 });
@@ -282,10 +284,10 @@ test("there is no closer question when the board has no food", () => {
 
 test("the truth comes from the rules: open cells, a wall above, a body cell to the right", () => {
   const t = splitTruth(game());
-  assert.deepEqual([t.outside_up, t.body_up, t.dead_up, t.cell_up, t.closer_up], [false, false, false, "empty", true]);
+  assert.deepEqual([t.wall_up, t.body_up, t.dead_up, t.cell_up, t.closer_up], [false, false, false, "empty", true]);
   assert.equal(t.closer_down, false);
   const wall = splitTruth(game({ snake: [[0, 3], [1, 3], [2, 3]], heading: "up" }));
-  assert.deepEqual([wall.outside_up, wall.dead_up, wall.cell_up], [true, true, "outside"]);
+  assert.deepEqual([wall.wall_up, wall.dead_up, wall.cell_up], [true, true, "wall"]);
   assert.equal(wall.closer_left, true);
   // 头 (2,2) 朝上, 右边 (2,3) 是身子中段
   const coiled = splitTruth(game({ snake: [[2, 2], [3, 2], [3, 3], [2, 3], [1, 3]], heading: "up" }));
@@ -305,7 +307,7 @@ const choice = (probabilities) => ({ type: "choice", probabilities,
 
 test("grading counts a yes/no answer right when it lands on the true side of one half", () => {
   const truth = { dead_up: true, dead_down: false, cell_up: "empty" };
-  const answers = { dead_up: noul(0.7), dead_down: noul(0.5), cell_up: choice({ empty: 0.2, body: 0.5, food: 0.2, outside: 0.1 }) };
+  const answers = { dead_up: noul(0.7), dead_down: noul(0.5), cell_up: choice({ empty: 0.2, body: 0.5, food: 0.2, wall: 0.1 }) };
   assert.deepEqual(grade(answers, truth), { dead_up: true, dead_down: true, cell_up: false }); // 正好 0.5 算 no
 });
 
@@ -313,18 +315,18 @@ test("grading counts a yes/no answer right when it lands on the true side of one
 const answersFor = (over = {}) => {
   const a = {};
   for (const d of ["up", "down", "right"]) {
-    a[`outside_${d}`] = noul(0.1);
+    a[`wall_${d}`] = noul(0.1);
     a[`body_${d}`] = noul(0.1);
     a[`dead_${d}`] = noul(0.1);
-    a[`cell_${d}`] = choice({ empty: 0.9, body: 0.05, food: 0, outside: 0.05 });
+    a[`cell_${d}`] = choice({ empty: 0.9, body: 0.05, food: 0, wall: 0.05 });
     a[`closer_${d}`] = noul(0.2);
   }
   return { ...a, ...over };
 };
 
 test("each safety source turns its questions into the chance a move is safe", () => {
-  const a = answersFor({ outside_up: noul(0.5), body_up: noul(0.2), dead_up: noul(0.3),
-    cell_up: choice({ empty: 0.3, body: 0.3, food: 0.2, outside: 0.2 }) });
+  const a = answersFor({ wall_up: noul(0.5), body_up: noul(0.2), dead_up: noul(0.3),
+    cell_up: choice({ empty: 0.3, body: 0.3, food: 0.2, wall: 0.2 }) });
   const near = (x, y) => assert.ok(Math.abs(x - y) < 1e-9, `${x} != ${y}`);
   near(combine(game(), a, "lookup").safe.up, 0.5 * 0.8);
   near(combine(game(), a, "given").safe.up, 0.7);

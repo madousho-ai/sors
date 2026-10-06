@@ -97,7 +97,7 @@
       </label>
       <label title="拆分模式下，用哪一档小题判断一步安不安全；三档每一步都会问，正确率都统计">安全看
         <select id="safety">
-          <option value="lookup">查表题（在不在棋盘外 / 蛇身列表里）</option>
+          <option value="lookup">查表题（是不是墙 / 在不在蛇身列表里）</option>
           <option value="given">给坐标问会不会死</option>
           <option value="infer">不给坐标问那格是什么</option>
         </select>
@@ -134,7 +134,7 @@
       <div class="split-note">每个不掉头的方向问五道。✓ / ✗ 是模型的回答对不对得上按规则算的标准答案；是非题显示 P(yes)。
         综合分 = 安全概率 × (1 + P(更近)) / 2。</div>
       <table class="split"><thead><tr><th>方向</th>
-        <th title="查表：给出行列范围和坐标，问在不在棋盘外">棋盘外?</th>
+        <th title="查表：给出行列范围和坐标，问那格是不是墙">是墙?</th>
         <th title="查表：给出坐标，问在不在 snake 字段列出的格子里">蛇身里?</th>
         <th title="给坐标：问走过去会不会结束">会死?</th>
         <th title="不给坐标：问那一格里是什么">那格是</th>
