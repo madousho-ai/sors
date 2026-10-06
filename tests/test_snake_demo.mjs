@@ -162,20 +162,22 @@ test("both request styles tell the model to maximize food and length while stayi
   }
 });
 
-test("the state draws the whole board row by row, one word per cell between two walls, and says where the snake and the food are", () => {
+test("the state draws the whole board row by row, one word per cell, says the edges do not wrap, and says where the snake and the food are", () => {
   const s = boardState(game({ food: [0, 5] }));
   assert.deepEqual(Object.keys(s), ["goal", "board", "grid", "snake", "food"]);
   assert.equal(s.board, "5 rows by 6 columns; row 0 is the top edge, column 0 is the left edge. "
-    + "The grid lists every row: a wall, then each cell as one word (empty, head, body or food) "
-    + "from column 0 to column 5, then a wall.");
-  // 每行左右两端各一个 wall, 棋盘本身的格子仍从第 0 列数起
+    + "The board does not wrap around: there are no cells beyond its edges, so the snake never comes out "
+    + "on the opposite side. "
+    + "The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column 5.");
+  // 不写 wall: grid 里 wall 出现得太多, 小题问「是不是墙」时模型几乎都答是
   assert.deepEqual(s.grid, {
-    "row 0": "wall, empty, empty, empty, empty, empty, food, wall",
-    "row 1": "wall, empty, empty, empty, empty, empty, empty, wall",
-    "row 2": "wall, empty, body, body, head, empty, empty, wall",
-    "row 3": "wall, empty, empty, empty, empty, empty, empty, wall",
-    "row 4": "wall, empty, empty, empty, empty, empty, empty, wall",
+    "row 0": "empty, empty, empty, empty, empty, food",
+    "row 1": "empty, empty, empty, empty, empty, empty",
+    "row 2": "empty, body, body, head, empty, empty",
+    "row 3": "empty, empty, empty, empty, empty, empty",
+    "row 4": "empty, empty, empty, empty, empty, empty",
   });
+  assert.doesNotMatch(JSON.stringify(s), /wall/);
   assert.equal(s.snake, "The snake is 3 cells long. Its head is at row 2, column 3. "
     + "Its body, from the neck to the tail, is at row 2, column 2; row 2, column 1.");
   assert.equal(s.food, "The food is at row 0, column 5.");
@@ -257,15 +259,15 @@ test("split mode only considers the directions that do not reverse into the neck
 test("each candidate direction gets five small questions, the coordinates written in where the kind allows", () => {
   const qs = splitQuestions(game());
   assert.deepEqual(Object.keys(qs), ["up", "down", "right"].flatMap((d) =>
-    ["wall", "body", "dead", "cell", "closer"].map((k) => `${k}_${d}`)));
-  assert.equal(qs.wall_up.type, "noul");
-  assert.match(qs.wall_up.instructions, /rows 0 to 4 and columns 0 to 5.*Is row 1, column 3 a wall\?/);
-  // 局面的 grid 把棋盘外写成 wall, 小题跟它用同一个词
-  assert.doesNotMatch(JSON.stringify(qs), /outside|off the board/);
+    ["edge", "body", "dead", "cell", "closer"].map((k) => `${k}_${d}`)));
+  assert.equal(qs.edge_up.type, "noul");
+  assert.match(qs.edge_up.instructions, /rows 0 to 4 and columns 0 to 5.*Is row 1, column 3 beyond the edge of the board\?/);
+  // 与局面 board 那句用同一个说法 (beyond its edges), 局面里没有 wall 这个词, 小题也不用
+  assert.doesNotMatch(JSON.stringify(qs), /wall|outside|off the board/);
   assert.match(qs.body_up.instructions, /"row 1, column 3"/);
   assert.match(qs.dead_up.instructions, /row 1, column 3/);
   assert.equal(qs.cell_up.type, "choice");
-  assert.deepEqual(Object.keys(qs.cell_up.criteria), ["empty", "body", "food", "wall"]);
+  assert.deepEqual(Object.keys(qs.cell_up.criteria), ["empty", "body", "food", "edge"]);
   assert.doesNotMatch(qs.cell_up.instructions, /row \d|column \d/, "the cell question leaves the model to find the cell");
   assert.match(qs.closer_up.instructions, /row 1, column 3/);
 });
@@ -284,10 +286,10 @@ test("there is no closer question when the board has no food", () => {
 
 test("the truth comes from the rules: open cells, a wall above, a body cell to the right", () => {
   const t = splitTruth(game());
-  assert.deepEqual([t.wall_up, t.body_up, t.dead_up, t.cell_up, t.closer_up], [false, false, false, "empty", true]);
+  assert.deepEqual([t.edge_up, t.body_up, t.dead_up, t.cell_up, t.closer_up], [false, false, false, "empty", true]);
   assert.equal(t.closer_down, false);
   const wall = splitTruth(game({ snake: [[0, 3], [1, 3], [2, 3]], heading: "up" }));
-  assert.deepEqual([wall.wall_up, wall.dead_up, wall.cell_up], [true, true, "wall"]);
+  assert.deepEqual([wall.edge_up, wall.dead_up, wall.cell_up], [true, true, "edge"]);
   assert.equal(wall.closer_left, true);
   // 头 (2,2) 朝上, 右边 (2,3) 是身子中段
   const coiled = splitTruth(game({ snake: [[2, 2], [3, 2], [3, 3], [2, 3], [1, 3]], heading: "up" }));
@@ -307,7 +309,7 @@ const choice = (probabilities) => ({ type: "choice", probabilities,
 
 test("grading counts a yes/no answer right when it lands on the true side of one half", () => {
   const truth = { dead_up: true, dead_down: false, cell_up: "empty" };
-  const answers = { dead_up: noul(0.7), dead_down: noul(0.5), cell_up: choice({ empty: 0.2, body: 0.5, food: 0.2, wall: 0.1 }) };
+  const answers = { dead_up: noul(0.7), dead_down: noul(0.5), cell_up: choice({ empty: 0.2, body: 0.5, food: 0.2, edge: 0.1 }) };
   assert.deepEqual(grade(answers, truth), { dead_up: true, dead_down: true, cell_up: false }); // 正好 0.5 算 no
 });
 
@@ -315,18 +317,18 @@ test("grading counts a yes/no answer right when it lands on the true side of one
 const answersFor = (over = {}) => {
   const a = {};
   for (const d of ["up", "down", "right"]) {
-    a[`wall_${d}`] = noul(0.1);
+    a[`edge_${d}`] = noul(0.1);
     a[`body_${d}`] = noul(0.1);
     a[`dead_${d}`] = noul(0.1);
-    a[`cell_${d}`] = choice({ empty: 0.9, body: 0.05, food: 0, wall: 0.05 });
+    a[`cell_${d}`] = choice({ empty: 0.9, body: 0.05, food: 0, edge: 0.05 });
     a[`closer_${d}`] = noul(0.2);
   }
   return { ...a, ...over };
 };
 
 test("each safety source turns its questions into the chance a move is safe", () => {
-  const a = answersFor({ wall_up: noul(0.5), body_up: noul(0.2), dead_up: noul(0.3),
-    cell_up: choice({ empty: 0.3, body: 0.3, food: 0.2, wall: 0.2 }) });
+  const a = answersFor({ edge_up: noul(0.5), body_up: noul(0.2), dead_up: noul(0.3),
+    cell_up: choice({ empty: 0.3, body: 0.3, food: 0.2, edge: 0.2 }) });
   const near = (x, y) => assert.ok(Math.abs(x - y) < 1e-9, `${x} != ${y}`);
   near(combine(game(), a, "lookup").safe.up, 0.5 * 0.8);
   near(combine(game(), a, "given").safe.up, 0.7);

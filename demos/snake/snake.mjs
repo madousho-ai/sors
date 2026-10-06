@@ -101,7 +101,7 @@ export function step(g, dir, rng = Math.random) {
 // ---- 发给推理服务的请求 ----------------------------------------------------------
 // 一道 choice, 选项默认是四个方向 (dropReverse 时去掉掉头的那个), 顺序固定. state 两种写法共用 (boardState); 两种写法只差选项的说明:
 // state 用词写棋盘: grid 是整张棋盘, 每行一个字段, 每格一个词 (empty / head / body / food), 不用符号,
-// 每行左右两端各加一个 wall;
+// 不写 wall (wall 满屏都是, 小题问「是不是墙」时模型几乎都答是); board 那句写明棋盘边缘不会穿到对面;
 // 另有几句话说蛇多长、头在哪、身子从脖子到尾巴依次在哪、食物在哪.
 // 服务默认不给 state 加标签, 原样放进提示; 训练时游戏局面的提示以「Game state: 」开头, 所以请求里的 state 是
 // 一段字符串: 这个标签接上 boardState 的缩进 JSON (与服务展开对象 state 的写法相同).
@@ -142,9 +142,10 @@ export function boardState(g) {
   return {
     goal: GOAL,
     board: `${g.rows} rows by ${g.cols} columns; row 0 is the top edge, column 0 is the left edge. `
-      + `The grid lists every row: a wall, then each cell as one word (empty, head, body or food) `
-      + `from column 0 to column ${g.cols - 1}, then a wall.`,
-    grid: Object.fromEntries(cells.map((row, r) => [`row ${r}`, ["wall", ...row, "wall"].join(", ")])),
+      + `The board does not wrap around: there are no cells beyond its edges, so the snake never comes out `
+      + `on the opposite side. `
+      + `The grid lists every row, each cell as one word (empty, head, body or food) from column 0 to column ${g.cols - 1}.`,
+    grid: Object.fromEntries(cells.map((row, r) => [`row ${r}`, row.join(", ")])),
     snake: `The snake is ${g.snake.length} cells long. Its head is at ${cellName(head)}. ${bodyText}`,
     food: g.food ? `The food is at ${cellName(g.food)}.` : "There is no food on the board.",
   };
@@ -179,20 +180,20 @@ export function request(g, style, model, { dropReverse = false } = {}) {
 
 // ---- 拆分模式: 一步拆成小题, 代码把答案组合成方向 -------------------------------------
 // 只考虑不掉头的方向 (掉头会被忽略, 问它没有意义). 每个方向问五道, 按模型要自己推多少分三档:
-//   查表   wall     noul    给出棋盘行列范围和目标格坐标, 问这格是不是墙 (局面的 grid 把棋盘外写成 wall, 题里用同一个词)
+//   查表   edge     noul    给出棋盘行列范围和目标格坐标, 问这格是不是在棋盘边缘之外 (与局面 board 那句同一个说法)
 //          body     noul    给出目标格坐标, 问它在不在 snake 字段列出的头和身子里 (尾巴这一步会让开, 也算在内)
 //   给坐标 dead     noul    给出目标格坐标, 问头走过去游戏会不会结束
 //          closer   noul    给出目标格坐标, 问走过去是不是离食物更近 (没有食物时不问)
-//   不给坐标 cell    choice  只说「头的上方那一格」, 问里面是什么: empty / body / food / wall
+//   不给坐标 cell    choice  只说「头的上方那一格」, 问里面是什么: empty / body / food / edge
 // 标准答案 splitTruth 按规则算, 页面拿 grade 逐题判对错.
 // 组合 (仿 SayCan 把「能不能做」与「有没有用」两个概率相乘): 安全概率按选定的那一档算,
-//   lookup  (1 − P(wall)) × (1 − P(body))
+//   lookup  (1 − P(edge)) × (1 − P(body))
 //   given   1 − P(dead)
 //   infer   P(cell = empty) + P(cell = food)
 // 综合分 = 安全 × (1 + P(closer)) / 2. 括号里落在 0.5..1, 安全占主导: 一个安全但更远的方向
 // (0.95 × 0.55) 胜过一个多半会死但更近的方向 (0.3 × 0.95).
 
-export const KINDS = ["wall", "body", "dead", "cell", "closer"];
+export const KINDS = ["edge", "body", "dead", "cell", "closer"];
 export const SAFETY = ["lookup", "given", "infer"];
 
 const WORD = { up: "one row up", down: "one row down", left: "one column left", right: "one column right" };
@@ -208,15 +209,15 @@ export function splitQuestions(g) {
   for (const d of candidates(g)) {
     const at = cellName(target(g, d));
     const move = `If the snake's head moves ${WORD[d]}, to ${at}`;
-    qs[`wall_${d}`] = { type: "noul",
-      instructions: `The board has rows 0 to ${g.rows - 1} and columns 0 to ${g.cols - 1}; past them is the wall. Is ${at} a wall?` };
+    qs[`edge_${d}`] = { type: "noul",
+      instructions: `The board has rows 0 to ${g.rows - 1} and columns 0 to ${g.cols - 1}. Is ${at} beyond the edge of the board?` };
     qs[`body_${d}`] = { type: "noul",
       instructions: `Is "${at}" one of the cells listed for the snake's head or body?` };
     qs[`dead_${d}`] = { type: "noul", instructions: `${move}, does the game end?`,
-      criteria: { true: "That cell is a wall or taken by the snake's body", false: "That cell is empty or holds the food" } };
+      criteria: { true: "That cell is beyond the edge of the board or taken by the snake's body", false: "That cell is empty or holds the food" } };
     qs[`cell_${d}`] = { type: "choice", instructions: `What is in the cell ${WORD[d]} from the snake's head?`,
       criteria: { empty: "An empty cell", body: "A cell taken by the snake's body", food: "The cell with the food",
-        wall: "A wall" } };
+        edge: "No cell: it is beyond the edge of the board" } };
     if (g.food) qs[`closer_${d}`] = { type: "noul", instructions: `${move}, is it closer to the food than it is now?` };
   }
   return qs;
@@ -230,13 +231,13 @@ export function splitTruth(g) {
   const t = {};
   for (const d of candidates(g)) {
     const [r, c] = target(g, d);
-    const wall = r < 0 || r >= g.rows || c < 0 || c >= g.cols;
+    const edge = r < 0 || r >= g.rows || c < 0 || c >= g.cols;
     const body = g.snake.some((p) => same(p, [r, c]));
     const o = outcome(g, d);
-    t[`wall_${d}`] = wall;
+    t[`edge_${d}`] = edge;
     t[`body_${d}`] = body;
     t[`dead_${d}`] = o.result === "wall" || o.result === "self";
-    t[`cell_${d}`] = wall ? "wall" : body ? "body" : g.food && same(g.food, [r, c]) ? "food" : "empty";
+    t[`cell_${d}`] = edge ? "edge" : body ? "body" : g.food && same(g.food, [r, c]) ? "food" : "empty";
     if (g.food) t[`closer_${d}`] = dist([r, c], g.food) < dist(g.snake[0], g.food);
   }
   return t;
@@ -255,7 +256,7 @@ export function combine(g, answers, safety) {
   const yes = (q) => answers[q].noul;
   const safe = {}, closer = {}, scores = {};
   for (const d of candidates(g)) {
-    if (safety === "lookup") safe[d] = (1 - yes(`wall_${d}`)) * (1 - yes(`body_${d}`));
+    if (safety === "lookup") safe[d] = (1 - yes(`edge_${d}`)) * (1 - yes(`body_${d}`));
     else if (safety === "given") safe[d] = 1 - yes(`dead_${d}`);
     else safe[d] = answers[`cell_${d}`].probabilities.empty + answers[`cell_${d}`].probabilities.food;
     closer[d] = answers[`closer_${d}`] ? yes(`closer_${d}`) : 0.5;

@@ -20,9 +20,9 @@ const END = {
 let game, model = null, running = false, busy = false;
 let tally = {}; // 小题类型 -> [答对, 总数], 本局累计
 
-const KIND_NAME = { wall: "是墙?（查表）", body: "蛇身里?（查表）", dead: "会死?（给坐标）",
+const KIND_NAME = { edge: "出界?（查表）", body: "蛇身里?（查表）", dead: "会死?（给坐标）",
   cell: "那格是（不给坐标）", closer: "更近?（给坐标）" };
-const CELL = { empty: "空", body: "身子", food: "食物", wall: "墙" };
+const CELL = { empty: "空", body: "身子", food: "食物", edge: "界外" };
 
 const pct = (p) => `${(p * 100).toFixed(1)}%`;
 const headers = () => {
