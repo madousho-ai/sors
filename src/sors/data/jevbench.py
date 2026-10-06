@@ -13,6 +13,8 @@ JevBench (https://github.com/fstandhartinger/jevbench, MIT) 是给 Jev 类决策
 模型看到的提示逐字相同: choice 按 criteria 的键序 (JevBench 原样发出, 文件里是字母序) 写成「名字: 说明」,
 noul 是 no / yes 两行, score 是分级从低到高. 菜单连续编号 D0, D1, ...
 gold 是 expected 所在的那一行. labels 与菜单对不上时报 ValueError. hard 档 10 道题另有 gold_probs, 这里不用.
+每题带上 family (评估按它分开报); hard 档的 provenance.surface_answer 是出题人埋的诱饵 —— 只看表面会选的那个
+错答案, 111 道里 106 道写了 —— 记成 decoy, 评估报模型选中诱饵的比例.
 
 返回 {"jevbench_easy": [...], "jevbench_original": [...], "jevbench_hard": [...]}, 每项一个 list[MenuExample], 题序同文件.
 """
@@ -75,13 +77,28 @@ def _gold(r: dict) -> int:
     return gold
 
 
+def _decoy(r: dict, rows: list[int]) -> int | None:
+    """provenance.surface_answer (诱饵) 在菜单里的类 id. 菜单的类 id 就是行号. 没写, 或写的不是这道题的一个选项
+    (公开题里没有这种, 防着), 就是 None."""
+    surface, q = r.get("provenance", {}).get("surface_answer"), r["question"]
+    if surface is None:
+        return None
+    if q["type"] == "choice":
+        names = list(q["criteria"])
+    elif q["type"] == "noul":
+        names = list(YES_NO)
+    else:
+        names = [str(i) for i in range(len(q["criteria"]))]
+    return rows[names.index(str(surface))] if str(surface) in names else None
+
+
 def to_eval_example(r: dict) -> MenuExample:
-    """一条 JevBench 记录 -> 评估用的菜单样本 (推理服务的提示, 加上 gold)."""
+    """一条 JevBench 记录 -> 评估用的菜单样本 (推理服务的提示, 加上 gold、family 与诱饵)."""
     ex = to_example(_QUESTION.validate_python(r["question"]), r["state"], "")
     gold = _gold(r)
     return MenuExample(query=ex.query, options=ex.options, gold_idx=gold, label=ex.options[gold],
                        option_names=ex.option_names, context_label=ex.context_label, question=ex.question,
-                       qtype=ex.qtype)
+                       qtype=ex.qtype, decoy=_decoy(r, ex.options), family=r.get("family"))
 
 
 def load_jevbench(data_dir=DEFAULT_DIR) -> dict[str, list[MenuExample]]:

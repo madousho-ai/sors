@@ -96,6 +96,18 @@ def test_menu_example_target_is_a_distribution_over_its_own_menu():
         raise AssertionError(f"target {bad} accepted for a 3-option menu")
 
 
+def test_menu_example_decoy_is_a_wrong_option_on_its_own_menu():
+    """decoy 是诱饵那一行的类 id (只看表面会选的错答案), None = 没有. 不在菜单上、或就是正确答案, 都在造样本的当下报错."""
+    assert _ex(options=(3, 4, 5), gold_idx=1, decoy=5).decoy == 5
+    assert _ex(options=(0, 1)).decoy is None
+    for bad in (6, 4):
+        try:
+            _ex(options=(3, 4, 5), gold_idx=1, decoy=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"decoy {bad} accepted on menu [3 4 5] with gold 4")
+
+
 def test_pipeline_that_emits_a_menu_over_256_fails_while_sampling():
     """压缩菜单长度是数据管线的责任: 池子 300 类、k 要 300 时, 管线在抽样当下就报错, 到不了 collate."""
     s = _set(n=300, n_cls=300)
@@ -311,6 +323,13 @@ def test_reorder_menu_carries_the_target_with_its_rows_and_renormalises_a_subset
     s = reorder_menu(e, [1, 2])
     assert all(abs(a - b) < 1e-12 for a, b in zip(s.target, [1 / 3, 2 / 3])), s.target
     assert reorder_menu(_menu5(), [1, 2]).target is None
+
+
+def test_reorder_menu_keeps_the_decoy_while_its_row_stays_and_drops_it_with_the_row():
+    """decoy 记的是类 id, 换行时跟着描述走; 取子集把诱饵那一行删掉了, 这道题就不再有诱饵."""
+    e = replace(_menu5(), decoy=14)
+    assert reorder_menu(e, [4, 2, 0, 1, 3]).decoy == 14
+    assert reorder_menu(e, [1, 2]).decoy is None
 
 
 def test_reorder_menu_refuses_to_drop_the_gold_row_or_repeat_a_row():

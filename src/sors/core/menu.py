@@ -44,12 +44,16 @@ class MenuExample:
     codes: list[int] | None = None  # 与 options 平行, 第 i 项绑 <|D{codes[i]}|>; None = 按位置 D0, D1, ...
     target: list[float] | None = None  # 与 options 平行, 各行的目标概率 (软标签); None = 只认 gold_idx 那一行
     partner_query: str | None = None  # 同一份材料的另一种说法; 一致性配对的第二份读它 (partner), None = 两份读同一份
+    decoy: int | None = None  # 诱饵那一行的类 id: 只看表面会选的那个错答案 (JevBench hard 的 surface_answer); None = 没有
+    family: str | None = None  # 题目所属的类别 (JevBench 的 family), 评估时按它分开报; None = 不分
 
     def __post_init__(self):
         # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.
         if len(self.options) > N_SLOTS:
             raise ValueError(f"menu has {len(self.options)} options, only {N_SLOTS} D slots; "
                              "the dataset pipeline must cap it")
+        if self.decoy is not None and (self.decoy not in self.options or self.decoy == self.options[self.gold_idx]):
+            raise ValueError(f"decoy {self.decoy} must be a wrong option on the menu {self.options}")
         if self.codes is not None:
             c = self.codes
             if len(c) != len(self.options) or len(set(c)) != len(c) or not all(0 <= x < N_SLOTS for x in c):
@@ -141,8 +145,10 @@ def reorder_menu(ex: MenuExample, rows: list[int], codes: list[int] | None = Non
     if ex.target is not None:
         kept = [ex.target[r] for r in rows]
         target = [x / sum(kept) for x in kept]
-    return replace(ex, options=[ex.options[r] for r in rows], option_names=[ex.option_names[r] for r in rows],
-                   gold_idx=rows.index(ex.gold_idx), codes=codes, target=target)
+    options = [ex.options[r] for r in rows]
+    return replace(ex, options=options, option_names=[ex.option_names[r] for r in rows],
+                   gold_idx=rows.index(ex.gold_idx), codes=codes, target=target,
+                   decoy=ex.decoy if ex.decoy in options else None)
 
 
 def shuffled_rows(ex: MenuExample, rng: random.Random, keep_codes: bool) -> MenuExample:

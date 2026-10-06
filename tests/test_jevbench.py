@@ -68,6 +68,36 @@ def test_gold_row_is_the_expected_label():
                 assert ex.gold_idx == r["expected"] and gold_name == q["criteria"][r["expected"]], r["id"]
 
 
+def test_each_question_carries_its_family():
+    """family 原样带上, 评估时按它分开报. 三档各自的 family 集合与文件相同."""
+    sets = load_jevbench()
+    for t in TIERS:
+        for r, ex in zip(_rows(t), sets[f"jevbench_{t}"]):
+            assert ex.family == r["family"], r["id"]
+    assert {ex.family for ex in sets["jevbench_hard"]} == {
+        "long_policy", "multi_hop", "judge_hard", "temporal_numeric", "probability", "trap", "ambiguous", "tradeoff",
+        "adversarial", "routing_hard"}
+
+
+def test_hard_questions_mark_the_surface_answer_as_the_decoy():
+    """hard 档的 provenance.surface_answer 是出题人埋的诱饵 (只看表面会选的那个错答案), 记成菜单上那一行的类 id.
+    choice 按 criteria 的键, noul 按 no / yes, score 按分级序号 (文件里写成字符串). 没写诱饵的题 decoy 为 None;
+    easy / original 没有诱饵."""
+    sets = load_jevbench()
+    hard = list(zip(_rows("hard"), sets["jevbench_hard"]))
+    for r, ex in hard:
+        surface = r["provenance"].get("surface_answer")
+        if surface is None or (r["question"]["type"] == "choice" and surface not in r["question"]["criteria"]):
+            assert ex.decoy is None, r["id"]
+            continue
+        row = ex.options.index(ex.decoy)
+        assert row != ex.gold_idx, r["id"]
+        name = ex.option_names[row]
+        assert (row == int(surface)) if r["question"]["type"] == "score" else name.split(":")[0] == surface, r["id"]
+    assert sum(ex.decoy is not None for _, ex in hard) == 106
+    assert all(ex.decoy is None for t in ("easy", "original") for ex in sets[f"jevbench_{t}"])
+
+
 def test_json_states_are_written_out_as_indented_json():
     hard = [r for r in _rows("hard") if isinstance(r["state"], dict)]
     assert hard, "the hard tier has object states"
