@@ -13,7 +13,7 @@ from sors.core.menu import MenuExample, arrangements, with_partners
 from sors.core.model import grouped_last_logits, last_logits, prepare_model
 from sors.core.prompt import DEFAULT_LAYOUT
 from sors.core.tokens import install_d_tokens, install_type_tokens
-from sors.evaluation.metrics import first_two_slots, pass_consistency
+from sors.evaluation.metrics import by_family, decoy_summary, first_two_slots, pass_by_family, pass_consistency
 from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate, score_examples
 from sors.training.loop import TrainConfig, eval_record, probe_passes, step_loss, step_target, train
 from sors.training.loss import consistency_js, menu_hits, training_loss
@@ -72,6 +72,46 @@ def test_evaluate_reports_how_much_lands_on_the_first_two_slots():
     want = first_two_slots(s["q"], s["gold"])
     assert r["gold_d01_rate"] == 0.5, r["gold_d01_rate"]
     assert all(abs(r[k] - v) < 1e-9 for k, v in want.items()), ({k: r.get(k) for k in want}, want)
+
+
+def _family_questions():
+    """两族三道: a 族一道带诱饵, b 族一道带诱饵、一道不带."""
+    return [
+        MenuExample(query="I lost my card", options=[0, 1, 2], gold_idx=2, label=2, family="a", decoy=0,
+                    option_names=["change pin", "top up", "card lost"]),
+        MenuExample(query="my top up failed", options=[0, 1], gold_idx=0, label=0, family="b", decoy=1,
+                    option_names=["top up failed", "card lost"]),
+        MenuExample(query="new pin please", options=[0, 1, 2], gold_idx=0, label=0, family="b",
+                    option_names=["change pin", "top up", "card lost"]),
+    ]
+
+
+def test_evaluate_breaks_down_by_family_and_reports_the_decoy_when_the_set_has_them():
+    """评估集的题带 family / decoy 时, evaluate 多报 by_family 与整集的诱饵读数, 与拿同一批逐题概率直接算的相同.
+    都不带的集 (Banking77 等) 两样都不出现."""
+    tok, d_ids, m = _tiny()
+    exs = _family_questions()
+    r = evaluate(m, tok, d_ids, EvalSet(exs, batch_size=2), k_max=3, max_length=512, layout=DEFAULT_LAYOUT)
+    q = score_examples(m, tok, d_ids, exs, 2, 3, 512, DEFAULT_LAYOUT)["q"]
+    assert r["by_family"] == by_family(q, exs) and list(r["by_family"]) == ["a", "b"], r["by_family"]
+    assert {k: r[k] for k in decoy_summary(q, exs)} == decoy_summary(q, exs) and r["n_decoy"] == 2, r
+    plain = evaluate(m, tok, d_ids, EvalSet(_two_questions(), batch_size=2), k_max=3, max_length=512,
+                     layout=DEFAULT_LAYOUT)
+    assert "by_family" not in plain and "decoy_rate" not in plain, plain.keys()
+
+
+def test_consistency_eval_breaks_down_by_family_over_the_arrangements():
+    """几种排法下的一致性也按 family 分开报 (pass_by_family), 整集的诱饵读数是各份 decoy_summary 的平均."""
+    tok, d_ids, m = _tiny()
+    passes = arrangements(_family_questions(), 3, random.Random(0))
+    got = consistency_eval(m, tok, d_ids, passes, batch_size=2, k_max=3, max_length=512, layout=DEFAULT_LAYOUT)
+    qs = [score_examples(m, tok, d_ids, p, 2, 3, 512, DEFAULT_LAYOUT)["q"] for p in passes]
+    assert got["by_family"] == pass_by_family(qs, passes), got["by_family"]
+    rates = [decoy_summary(q, p)["decoy_rate"] for q, p in zip(qs, passes)]
+    assert abs(got["decoy_rate"] - sum(rates) / 3) < 1e-12 and got["n_decoy"] == 2, got
+    plain = consistency_eval(m, tok, d_ids, arrangements(_two_questions(), 2, random.Random(0)), batch_size=2,
+                             k_max=3, max_length=512, layout=DEFAULT_LAYOUT)
+    assert "by_family" not in plain and "decoy_rate" not in plain, plain.keys()
 
 
 def test_step_target_is_none_for_hard_labels_without_smoothing_so_the_old_loss_runs():

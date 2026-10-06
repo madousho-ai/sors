@@ -13,8 +13,8 @@ import torch
 from sors.core.batch import collate
 from sors.core.menu import MenuExample
 from sors.core.model import last_logits
-from sors.evaluation.metrics import (answer_mass_summary, binary_summary, by_gold_slot, first_two_slots, menu_size_summary,
-                                             pass_consistency, summarize)
+from sors.evaluation.metrics import (answer_mass_summary, binary_summary, by_family, by_gold_slot, decoy_summary,
+                                             first_two_slots, menu_size_summary, pass_by_family, pass_consistency, summarize)
 from sors.training.loss import answer_mass, gather_slot_logits, vocab_cross_entropy
 
 
@@ -74,12 +74,27 @@ def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: st
     out.update(first_two_slots(Q, Y))
     out["n"] = len(Y)
     out["by_gold_slot"] = by_gold_slot(Q, Y)
+    out.update(_family_and_decoy(by_family(Q, es.examples), [decoy_summary(Q, es.examples)]))
+    return out
+
+
+def _family_and_decoy(families: dict, decoys: list[dict]) -> dict:
+    """带 family 的集多一项 by_family; 带诱饵的集多整集的诱饵读数 (几份时逐项平均, None 只在有值的份上平均).
+    两样都没有的集 (Banking77 等) 什么都不加."""
+    out = {"by_family": families} if families else {}
+    if decoys[0]:
+        for k in decoys[0]:
+            vals = [d[k] for d in decoys if d[k] is not None]
+            out[k] = decoys[0][k] if k == "n_decoy" else (sum(vals) / len(vals) if vals else None)
     return out
 
 
 def consistency_eval(m, tok, d_ids, passes: list[list[MenuExample]], batch_size: int, k_max: int, max_length: int,
                      layout: str, type_marker: bool = False, context_marker: bool = False) -> dict:
-    """每一份各打一次分, 再按描述对齐比 (metrics.pass_consistency): accuracy / agree / js."""
+    """每一份各打一次分, 再按描述对齐比 (metrics.pass_consistency): accuracy / agree / js.
+    题带 family 时另报 by_family (各份平均), 带诱饵时另报整集的诱饵读数 (各份平均)."""
     qs = [score_examples(m, tok, d_ids, exs, batch_size, k_max, max_length, layout, type_marker, context_marker)["q"]
           for exs in passes]
-    return pass_consistency(qs, passes)
+    out = pass_consistency(qs, passes)
+    out.update(_family_and_decoy(pass_by_family(qs, passes), [decoy_summary(q, p) for q, p in zip(qs, passes)]))
+    return out
