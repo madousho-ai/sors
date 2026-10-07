@@ -369,6 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="从这份存档 (.safetensors 或旧的 trained.pt) 加载 LoRA + D 行再开始 (或配 --steps 0 只评估)")
     ap.add_argument("--trainable", default=None, choices=sorted(TRAINABLE),
                     help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA; "
+                         "attn-mlp-linear 再给 Qwen3.5 的线性注意力层挂 LoRA (in_proj_qkv/in_proj_z/out_proj); "
                          "full 主干全参 (每层全部权重 + 最后的 norm, 词表矩阵照旧只放 D 行, --lr-lora 管主干). "
                           "decision-only 只训新增决策层与 token 行. 不给 = slots 用 attn、新决策架构用 decision-only; 配 --init 时取档里记的")
     ap.add_argument("--architecture", choices=["slots", "minimal", "structural", "candidate"], default=None,

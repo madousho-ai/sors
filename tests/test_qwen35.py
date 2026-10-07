@@ -9,7 +9,7 @@ from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 from _runner import run
 from sors.core.attention import load_causal_lm
 from sors.core.checkpoint import prepare_from_checkpoint, save_trained
-from sors.core.model import last_logits, prepare_model
+from sors.core.model import adapter_config, last_logits, prepare_model
 from sors.training.loop import TrainConfig
 
 
@@ -52,6 +52,22 @@ def test_qwen35_text_backbone_loads_grows_trains_and_reloads():
         fresh, _ = load_causal_lm(base, device="cpu", dtype=torch.float32, local_files_only=True)
         restored, _ = prepare_from_checkpoint(fresh, list(range(60, 68)), checkpoint)
         torch.testing.assert_close(last_logits(restored.eval(), ids, mask), want, rtol=0, atol=0)
+
+
+def test_attn_mlp_linear_puts_lora_on_every_layers_attention():
+    """attn-mlp 只认标准注意力的 q/k/v/o, Qwen3.5 的线性注意力层因此没有 LoRA; attn-mlp-linear 补上
+    这些层的 in_proj_qkv / in_proj_z / out_proj, 两种注意力层都有可训的注意力投影, MLP 照旧."""
+    m = prepare_model(tiny_qwen35(), list(range(60, 68)), lora_r=4, lora_alpha=8, lora_dropout=0.0,
+                      trainable="attn-mlp-linear")
+    lora = {n for n, p in m.named_parameters() if p.requires_grad and "lora_" in n}
+    for layer, kind in enumerate(("linear_attn", "self_attn")):
+        attn = {n for n in lora if f"layers.{layer}.{kind}." in n}
+        mlp = {n for n in lora if f"layers.{layer}.mlp." in n}
+        assert attn, f"layer {layer} ({kind}) has no attention LoRA"
+        assert mlp, f"layer {layer} has no MLP LoRA"
+    for name in ("in_proj_qkv", "in_proj_z", "out_proj"):
+        assert any(f"linear_attn.{name}.lora_" in n for n in lora), name
+    assert adapter_config(m) == {"trainable": "attn-mlp-linear", "lora_r": 4, "lora_alpha": 8}
 
 
 if __name__ == "__main__":

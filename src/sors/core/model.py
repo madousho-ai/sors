@@ -21,12 +21,16 @@ from sors.core.batch import length_groups, trim_left_padding
 
 ATTN_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]
+# Qwen3.5 线性注意力 (Gated DeltaNet) 层的投影: qkv 合在一起进, z 是门, out 出. in_proj_a / in_proj_b
+# 只输出每个头一个标量 (衰减与 beta), rank 比它们的输出维还大, 不挂.
+LINEAR_ATTN_TARGETS = ["in_proj_qkv", "in_proj_z", "out_proj"]
 
-# 放开的范围. 前三档挂 LoRA (d-only 什么都不挂), 第四档 full 是主干全参.
+# 放开的范围. 前四档挂 LoRA (d-only 什么都不挂), full 是主干全参.
 LORA_TARGETS: dict[str, list[str]] = {
     "d-only": [],  # 基模全冻, 只训 rows —— 纯读出
     "attn": ATTN_TARGETS,
     "attn-mlp": ATTN_TARGETS + MLP_TARGETS,
+    "attn-mlp-linear": ATTN_TARGETS + MLP_TARGETS + LINEAR_ATTN_TARGETS,  # 混合注意力主干: 两种注意力层都挂
 }
 # full: 每一层的全部权重 (attention、MLP、norm) 加最后的 norm 都放开, 不套 LoRA; 词嵌入与输出层的那张
 # 151936 行的矩阵照旧冻结、只放 D 行, 与 LoRA 各档只差「主干怎么改」这一个变量.
