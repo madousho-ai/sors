@@ -406,6 +406,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--lr-schedule", default="cosine", choices=["constant", "cosine"])
     ap.add_argument("--warmup", type=int, default=100, help="线性 warmup 步数")
     ap.add_argument("--weight-decay", type=float, default=0.0)
+    ap.add_argument("--optimizer", default="adamw", choices=["adamw", "adamw8bit"],
+                    help="adamw8bit = bitsandbytes 的 8-bit AdamW (动量存 uint8), 全参大模型省显存; 只在 CUDA 上, "
+                         "要 uv sync --group gpu. 给了写进目录名 (-adam8)")
     ap.add_argument("--steps", type=int, default=300, help="0 = 只评估")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--data-workers", type=int, default=2,
@@ -586,6 +589,7 @@ def run_tag(args) -> str:
         + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
         + (f"-lr{args.lr_lora:g}" if args.lr_lora != 1e-4 else "") \
         + (f"-lrd{args.lr_decision:g}" if getattr(args, "lr_decision", None) is not None else "") \
+        + ("-adam8" if getattr(args, "optimizer", "adamw") == "adamw8bit" else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
@@ -670,6 +674,7 @@ def main() -> None:
         data_backend=args.data_backend, device_prefetch=args.device_prefetch,
         max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, weight_decay=args.weight_decay,
+        optimizer=args.optimizer,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,

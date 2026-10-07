@@ -39,6 +39,7 @@ class TrainConfig:
     lr_embed: float = 1e-3
     lr_decision: float | None = None  # 新增决策层单独的学习率; None = 跟主干共用 lr_lora (旧行为)
     weight_decay: float = 0.0
+    optimizer: str = "adamw"  # OPTIMIZERS: adamw 是 torch 的 AdamW; adamw8bit 是 bitsandbytes 的 8-bit 状态版, 只在 CUDA 上
     lr_schedule: str = "constant"  # constant | cosine
     warmup_steps: int = 0
     layout: str = DEFAULT_LAYOUT  # context-first | menu-first
@@ -61,6 +62,21 @@ class TrainConfig:
     data_prefetch: int = 2  # 最多提前准备的批数，独立于有效 batch 与 micro_batches
     data_backend: str = "process"  # process: 子进程准备, 不与训练线程抢 GIL; thread: 训练进程内的线程
     device_prefetch: int = 1  # CUDA 上提前几批锁页并在副 stream 上拷进显存; 0 = 用到时才拷
+
+OPTIMIZERS = ("adamw", "adamw8bit")
+
+
+def make_optimizer(name: str, groups: list[dict], weight_decay: float) -> torch.optim.Optimizer:
+    """adamw8bit 把 Adam 的两份动量存成分块量化的 uint8 (每参数 2 字节, fp32 是 8 字节),
+    全参训练时省下的显存最多. 元素少于 4096 的张量 bitsandbytes 自己留在 32 位."""
+    if name == "adamw":
+        return torch.optim.AdamW(groups, weight_decay=weight_decay)
+    if name == "adamw8bit":
+        import bitsandbytes as bnb  # gpu 依赖组里才有
+
+        return bnb.optim.AdamW8bit(groups, weight_decay=weight_decay)
+    raise ValueError(f"unknown optimizer {name!r}; choose from {OPTIMIZERS}")
+
 
 EXECUTION_ONLY = ("micro_batches", "micro_tokens", "accumulate_gradients", "data_workers", "data_prefetch",
                   "data_backend", "device_prefetch")  # 只影响执行方式, 续跑时可以改
@@ -296,8 +312,12 @@ def train(
     start = int(resume["step"]) if resume else 0
     if not 0 <= start <= cfg.steps or (stop_after is not None and stop_after < 1):
         raise ValueError("invalid completed step or stop_after")
+    if cfg.optimizer not in OPTIMIZERS:
+        raise ValueError(f"unknown optimizer {cfg.optimizer!r}; choose from {OPTIMIZERS}")
     if resume and "config" in resume:
-        changed = {k for k, v in resume["config"].items()
+        # 加 optimizer 之前的存档全是 AdamW 训的
+        saved = {"optimizer": "adamw", **resume["config"]}
+        changed = {k for k, v in saved.items()
                    if k not in EXECUTION_ONLY
                    and asdict(cfg).get(k) != v}
         if changed:
@@ -373,7 +393,7 @@ def train(
     groups[0]["params"] = master.params[:n_body]
     if len(groups) > 2:
         groups[2]["params"] = master.params[n_body:]
-    opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay)
+    opt = make_optimizer(cfg.optimizer, groups, cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )

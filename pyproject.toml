@@ -26,6 +26,7 @@ dev = [
 gpu = [
     "kernels>=0.16.2,<0.17",
     "flash-linear-attention==0.5.2",
+    "bitsandbytes>=0.50.2",
 ]
 gpu-fa4 = [
     "apache-tvm-ffi",
