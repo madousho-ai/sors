@@ -445,6 +445,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--held-out", type=int, default=17, help="Banking77 留出的类数, 训练里完全不出现")
     ap.add_argument("--eval-every", type=int, default=100,
                     help="每隔几步跑一次探针: 只报一致性. 全量评估集的正确率与一致性只在最后一步跑")
+    ap.add_argument("--initial-eval", action=argparse.BooleanOptionalAction, default=True,
+                    help="开训前 (step 0) 先跑一次探针; --no-initial-eval 跳过 (同一个基模评一次就够). "
+                         "--steps 0 时照评")
     ap.add_argument("--save-every", type=int, default=None,
                     help="每隔几步存一次档到 checkpoints/step-<步数>.safetensors. 不给 = 与 --eval-every 相同, "
                           "每个评估点存一次; 0 = 途中不存. 最后一步照旧只存 trained.safetensors")
@@ -678,7 +681,7 @@ def main() -> None:
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
-        eval_every=args.eval_every, save_every=args.save_every, probe_size=args.probe_size,
+        eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,
     )

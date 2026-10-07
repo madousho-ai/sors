@@ -49,6 +49,7 @@ class TrainConfig:
     label_smoothing: float = 0.0  # 目标分布里摊到菜单各行的份额, 见 loss.smooth_target; 0 = 不平滑
     consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (menu.with_partners)
     eval_every: int = 100
+    initial_eval: bool = True  # 开训前 (step 0) 先评一次; False 跳过. steps == 0 (只评估) 时照评
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
     probe_size: int = 200  # 训练中的评估点每个评估集抽几道题, 见 probe_passes
     probe_passes: int = 5  # 每道题排成几种随机的样子 (行打乱、码随机), 训练中与最后一步都用这个数
@@ -79,7 +80,7 @@ def make_optimizer(name: str, groups: list[dict], weight_decay: float) -> torch.
 
 
 EXECUTION_ONLY = ("micro_batches", "micro_tokens", "accumulate_gradients", "data_workers", "data_prefetch",
-                  "data_backend", "device_prefetch")  # 只影响执行方式, 续跑时可以改
+                  "data_backend", "device_prefetch", "initial_eval")  # 只影响执行方式, 续跑时可以改
 
 
 class Fp32Master:
@@ -369,7 +370,7 @@ def train(
     elapsed = resume.get("elapsed", history[-1].get("t", 0) if history else 0) if resume else 0
     t0 = time.time() - elapsed
     m.train()
-    if resume is None:
+    if resume is None and (cfg.initial_eval or cfg.steps == 0):
         do_eval(0, None, final=cfg.steps == 0)
     if cfg.steps == 0:
         if log_f:
