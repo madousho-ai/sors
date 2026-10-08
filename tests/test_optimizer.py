@@ -67,7 +67,62 @@ def _moments(state: dict) -> list[torch.Tensor]:
     return out
 
 
-def test_the_8bit_optimizer_keeps_uint8_moments_and_trains_on_cuda():
+def test_d_code_rows_and_decision_layers_are_the_full_precision_params():
+    from sors.training.loop import full_precision_params
+
+    tok, ids, m = _tiny()
+    rows = [n for n, p in m.named_parameters() if p.requires_grad and n.endswith(".rows")]
+    assert rows and [id(p) for p in full_precision_params(m)] == [id(dict(m.named_parameters())[n]) for n in rows]
+
+    class Decision(torch.nn.Module):
+        decision_config = object()
+
+        def __init__(self):
+            super().__init__()
+            self.base = torch.nn.Linear(4, 4)
+            self.base.rows = torch.nn.Parameter(torch.zeros(2, 4))
+            self.blocks = torch.nn.Linear(4, 4)
+            self.frozen = torch.nn.Linear(4, 4).requires_grad_(False)
+
+    d = Decision()
+    assert {id(p) for p in full_precision_params(d)} == {id(d.base.rows), id(d.blocks.weight), id(d.blocks.bias)}
+
+
+def test_the_8bit_optimizer_keeps_listed_params_in_32_bit_and_the_rest_in_8_bit():
+    if not torch.cuda.is_available():
+        print("SKIP  needs CUDA")
+        return
+    import bitsandbytes as bnb
+    from sors.training.loop import make_optimizer
+
+    body = torch.nn.Parameter(torch.randn(8192, device="cuda"))
+    rows = torch.nn.Parameter(torch.randn(8192, device="cuda"))
+    opt = make_optimizer("adamw8bit", [{"params": [body], "lr": 1e-3}, {"params": [rows], "lr": 1e-3}], 0.0,
+                         full_precision=[rows])
+    body.grad, rows.grad = torch.randn_like(body), torch.randn_like(rows)
+    opt.step()
+    assert opt.state[body]["state1"].dtype == torch.uint8
+    assert opt.state[rows]["state1"].dtype == torch.float32
+    assert opt.state[rows]["state2"].dtype == torch.float32
+    # 覆盖只记在这个优化器上, 进程级的单例不留痕迹, 以后别的参数拿到同一个 id 也不受影响
+    assert id(rows) not in bnb.optim.GlobalOptimManager.get_instance().pid2config
+
+
+def test_32_bit_d_code_rows_hold_in_a_bf16_model():
+    """bf16 模型里 D 码行也是 bf16 (rows 组不经过 Fp32Master, 优化器直接拿模型上那份), 照样 32 位动量."""
+    if not torch.cuda.is_available():
+        print("SKIP  needs CUDA")
+        return
+    cfg = replace(_training_config(), optimizer="adamw8bit")
+    tok, ids, m = _tiny()
+    m.to(device="cuda", dtype=torch.bfloat16)
+    states = []
+    train(m, tok, ids, _Sampler(), {}, cfg, on_state=lambda s: states.append(copy.deepcopy(s)))
+    moments = _moments(states[-1])
+    assert moments and all(v.dtype == torch.float32 for v in moments), "bf16 D-code rows were quantised"
+
+
+def test_the_8bit_optimizer_trains_with_32_bit_d_code_rows_on_cuda():
     if not torch.cuda.is_available():
         print("SKIP  needs CUDA")
         return
@@ -77,8 +132,9 @@ def test_the_8bit_optimizer_keeps_uint8_moments_and_trains_on_cuda():
     before = {n: p.detach().clone() for n, p in m.named_parameters() if p.requires_grad}
     states = []
     train(m, tok, ids, _Sampler(), {}, cfg, on_state=lambda s: states.append(copy.deepcopy(s)))
-    # 小模型里只有 4144 元素的 D 码行够 bitsandbytes 的 4096 门槛, LoRA 小张量留在 fp32
-    assert any(v.dtype == torch.uint8 for v in _moments(states[-1])), "no 8-bit moments"
+    # 小模型里够 bitsandbytes 4096 门槛的只有 D 码行 (4144 元素); 它要留在 32 位, 于是不该剩任何 uint8
+    moments = _moments(states[-1])
+    assert moments and all(v.dtype == torch.float32 for v in moments), "D-code rows were quantised"
     after = dict(m.named_parameters())
     assert any(not torch.equal(before[n], after[n]) for n in before), "no parameter moved"
 

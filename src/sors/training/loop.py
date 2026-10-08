@@ -67,15 +67,33 @@ class TrainConfig:
 OPTIMIZERS = ("adamw", "adamw8bit")
 
 
-def make_optimizer(name: str, groups: list[dict], weight_decay: float) -> torch.optim.Optimizer:
+def full_precision_params(m) -> list[torch.nn.Parameter]:
+    """8-bit 优化器下仍用 32 位动量的参数: D 码行 (从零学起、lr 是主干的 100 倍, 8-bit 优化器论文指出
+    嵌入一类参数最容易被量化弄得不稳) 和决策模型在主干外新增的层. 两样合起来只有几百万参数."""
+    decision = getattr(m, "decision_config", None) is not None
+    return [p for n, p in m.named_parameters()
+            if p.requires_grad and (n.endswith(".rows") or (decision and not n.startswith("base.")))]
+
+
+def make_optimizer(name: str, groups: list[dict], weight_decay: float,
+                   full_precision: list[torch.Tensor] = ()) -> torch.optim.Optimizer:
     """adamw8bit 把 Adam 的两份动量存成分块量化的 uint8 (每参数 2 字节, fp32 是 8 字节),
-    全参训练时省下的显存最多. 元素少于 4096 的张量 bitsandbytes 自己留在 32 位."""
+    全参训练时省下的显存最多. 元素少于 4096 的张量 bitsandbytes 自己留在 32 位;
+    full_precision 里的参数也留在 32 位. adamw 忽略 full_precision, 它本来全是 32 位."""
     if name == "adamw":
         return torch.optim.AdamW(groups, weight_decay=weight_decay)
     if name == "adamw8bit":
         import bitsandbytes as bnb  # gpu 依赖组里才有
 
-        return bnb.optim.AdamW8bit(groups, weight_decay=weight_decay)
+        opt = bnb.optim.AdamW8bit(groups, weight_decay=weight_decay)
+        # bitsandbytes 的覆盖默认记在进程级单例里, 按 id(p) 查; 换成这个优化器私有的一份,
+        # 免得别的优化器 (测试里一个进程建好几个) 拿到同一个 id 的新参数也被改成 32 位
+        mng = bnb.optim.GlobalOptimManager.__new__(bnb.optim.GlobalOptimManager)
+        mng.initialize()
+        for p in full_precision:
+            mng.pid2config[id(p)] = {"optim_bits": 32}
+        opt.mng = mng
+        return opt
     raise ValueError(f"unknown optimizer {name!r}; choose from {OPTIMIZERS}")
 
 
@@ -394,7 +412,8 @@ def train(
     groups[0]["params"] = master.params[:n_body]
     if len(groups) > 2:
         groups[2]["params"] = master.params[n_body:]
-    opt = make_optimizer(cfg.optimizer, groups, cfg.weight_decay)
+    # D 码行在 rows 组里不经过 Fp32Master; 决策层固定 fp32, Fp32Master 原样交出同一个对象
+    opt = make_optimizer(cfg.optimizer, groups, cfg.weight_decay, full_precision=full_precision_params(m))
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
     )
