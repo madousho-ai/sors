@@ -1,0 +1,40 @@
+# 训练环境镜像 (Vast.ai 专用): 只装依赖与常用工具, 源码在运行时 git clone 进来, 不进镜像.
+# 基于 Vast 官方 base-image 的 mini 版 (Ubuntu 24.04, Python 3.13), 自带 Instance Portal:
+# Caddy + cloudflared 隧道 + supervisor 管的 TensorBoard / Jupyter, 控制台上的 Open 按钮可用.
+#
+#   podman build --format docker -f docker/Dockerfile.vastai.train -t <registry>/sors-train:vast-cu130 .
+#   (--format docker: base-image 里有 SHELL 指令, podman 默认的 OCI 格式会丢掉它; docker build 不用加)
+#
+# 依赖装进 Vast 的主环境 /venv/main (Jupyter 内核也是它), 版本由 uv.lock 锁定
+# (默认 dev 组 + gpu 组, 与 `uv sync --group gpu` 同一组包). 跑训练:
+#   git clone <repo> /root/sors && cd /root/sors && PYTHONPATH=src python scripts/train.py ...
+# Portal 里的 TensorBoard 读 TENSORBOARD_LOG_DIR, 默认指向仓库的 runs/.
+ARG VAST_IMAGE=docker.io/vastai/base-image:cuda-13.2-mini-py313-2026-09-07@sha256:e463c899f8992fa55c94a04efd67cef32f6d6d51f937d68dc11b2042209cd777
+FROM ${VAST_IMAGE}
+
+# base-image 的 mini 版不带 sshd 与 tmux; SSH 启动模式需要 sshd.
+# 主机密钥不进镜像: 安装时生成的那套删掉, sshd 换成先 ssh-keygen -A 再 exec 真二进制的包装,
+# 谁起 sshd 都会先给这个容器生成自己的一套 (只补缺的, 重复跑无副作用).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-server tmux less vim-tiny zstd lsof psmisc \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/ssh/ssh_host_* \
+    && mv /usr/sbin/sshd /usr/sbin/sshd.real \
+    && printf '%s\n' '#!/bin/sh' 'mkdir -p /run/sshd' '/usr/bin/ssh-keygen -A >/dev/null' \
+        'exec /usr/sbin/sshd.real "$@"' > /usr/sbin/sshd \
+    && chmod 755 /usr/sbin/sshd \
+    && printf '%s\n' \
+        '# Vast 启动脚本把 /etc/environment 里的 PATH 写成不含 /venv/main/bin 的样子, 而它在 bashrc 里的激活' \
+        '# 只对交互 shell 生效; ssh host "cmd" 这类非交互会话靠这一行拿到 python' \
+        'SetEnv PATH=/venv/main/bin:/opt/instance-tools/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+        > /etc/ssh/sshd_config.d/50-sors-train.conf
+
+COPY pyproject.toml uv.lock /tmp/lock/
+RUN cd /tmp/lock \
+    && uv export --frozen --group gpu --no-emit-project --no-hashes -o requirements.txt \
+    && uv pip install --python /venv/main/bin/python -r requirements.txt \
+    && rm -rf /tmp/lock
+
+ENV TENSORBOARD_LOG_DIR=/root/sors/runs \
+    PATH=/venv/main/bin:$PATH \
+    PYTHONUNBUFFERED=1
