@@ -1,245 +1,127 @@
 # SORS
 
-**State-conditioned Option Ranking System · 基于当前状态的候选排序系统**
-
-在一块笔记本显卡上就能训的 Jev 式决策模型。
+**State-conditioned Option Ranking System**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a.svg?style=for-the-badge&labelColor=000000)](LICENSE)
-[![Base: Qwen3-0.6B-Base](https://img.shields.io/badge/BASE-Qwen3--0.6B--Base-0a0a0a.svg?style=for-the-badge&labelColor=000000)](https://huggingface.co/Qwen/Qwen3-0.6B-Base)
-[![Python 3.13](https://img.shields.io/badge/PYTHON-3.13-0a0a0a.svg?style=for-the-badge&labelColor=000000)](.python-version)
-[![Trainable: 0.43%](https://img.shields.io/badge/TRAINABLE-0.43%25-0a0a0a.svg?style=for-the-badge&labelColor=000000)](#工作原理)
 
 [English](README.md) | **简体中文**
 
-SORS 是 [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) 决策模型的开源实现，基模用千问。你交给它一段 state 和一组带类型的问题，它在你定义的那些选项上给出概率分布，此外什么都不产生。
+给定一段状态、一组问题和调用方自己定义的选项，SORS 只输出这些选项上的概率分布。
 
-前提是答案本来就在基模里。基模缺的是把答案说成软件能直接消费的形状 —— 它的输出是一个字符串，概率摊在 151936 个词表条目上。**所以这里训练的只有输出格式这一件事。** 知识留在从头到尾不吃梯度的权重里：动的是 2.56 M 个参数，占整个模型的 0.43%。
+**模型下载：** [🤗 SakuraYuyuko/Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B)
 
-## 要点
+![SORS 架构](docs/sors-architecture.svg)
 
-- 256 个匿名决策槽住在千问空闲的词表行里。嵌入不用 resize，也不加新的 head —— 槽与选项名的绑定由每次请求给出。
-- 训练的只有输出格式：259 行嵌入加一个 attention 上的 LoRA。596 M 参数的骨干全程冻结。
-- Banking77 的 77 个意图里有 17 个完全退出训练。模型在评估时第一次读到它们的名字，得分 **0.921**，训练见过的那些是 0.948。
-- 每段 state 一份 KV cache 前缀，每个问题接一个分支 —— 同一段 state 上的 N 个问题只付一次这段 state 的前向。
-- 8 GB 笔记本显卡上 2000 步 14 分钟，还带一道给容易过热的机器用的温度闸。
-- 零样本基线脚本会把隐状态和 logits 落盘，探针、温度标定和消融都能离线拟合。
+SORS 在 Qwen3.5 主干的最后几层上接一组决策层。菜单里每个选项行的开头是一个决策 token
+（`<|D0|>` … `<|D255|>`，共 256 个），模型对每个选项的打分挂在这些 token 上。决策 token 本身不带含义：
+训练时每道题都会换一组均衡分配的编号，任何一个编号出现在 k 项菜单上时，是答案的概率都正好是 1/k，
+模型只能读选项的文字作答。选项的名称和数量都由调用方在请求里决定，一个菜单最多 255 项，换一组选项不用重新训练。
 
-## 上手
+主干是因果语言模型，SORS 保留其中有用的那部分顺序：状态在前、问题其次、选项最后，每个选项行都能读到完整的状态和问题。
+多余的那部分是选项之间的先后。决策层里没有选项位置编码，交换两个选项只会交换它们的分数；
+决策层还会把选项集合的信息写回主干。训练上再用图下方的几项约束，把模型对选项顺序和编号的依赖压下去，
+其中最直接的一项是让每道题以两种随机顺序同时出现，用 Jensen–Shannon 散度要求两份答案一致。
 
-需要 Python 3.13 和 [uv](https://docs.astral.sh/uv/)。默认配方在 6 GB 显存的 CUDA 卡上就能跑。
+## 跑分
+
+Sors-2B 只用我们自己合成的数据集 synth-intents-v5.3 训练（数据集整理完成后开源），
+下表里的评估集都不参与训练。合成数据由我们从零编写，不包含任何现有数据集的内容，生成时刻意避开了 Banking77 的银行业务
+和 MASSIVE 的语音助手场景，并有自动检查拦截这些领域的用词。我们拿训练材料（26,755 段不同的文本）逐条比对了下表的全部评估集：
+归一化后完全相同的文本为 0；与 MASSIVE、BoolQ、JevBench 共享连续 8 个词的条目为 0；
+Banking77 的 3,080 条里有 4 条与训练材料共享 8 个词，都是「I don't want to be charged for」这类日常短语。
+
+| 评估集 | 题数 | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) |
+|---|---:|---:|
+| Banking77 | 3,080 | 70.3 |
+| Banking77 + 描述 | 3,080 | 81.1 |
+| MASSIVE | 2,974 | 72.3 |
+| MASSIVE + 描述 | 2,974 | 81.6 |
+| BoolQ | 3,270 | 84.0 |
+| Public JevBench easy | 48 | 100.0 |
+| Public JevBench original | 72 | 90.3 |
+| Public JevBench hard | 111 | 73.0 |
+| Public JevBench 合计 | 231 | 84.0 |
+
+数值是准确率（%）。
+
+- **Banking77 和 MASSIVE 每道题都在完整的意图菜单上作答**：Banking77 一次给出全部 77 个意图，MASSIVE 一次给出全部 60 个意图，
+  没有先用检索或其他模型挑出 top-K 候选再让模型选。「+ 描述」是在每个意图名后面附一句说明。
+- Banking77 有 17 个意图完全不出现在训练中，模型第一次见到它们就是在评估时。
+- 选项顺序：同一批题把选项随机打乱成 5 种顺序分别作答，Sors-2B 的平均准确率与上表相差不超过 1.3 个点，
+  5 种顺序选中同一选项的比例在 Banking77 上是 0.86、MASSIVE 0.82、BoolQ 0.98。
+- Public JevBench 是 JevBench 的公开题集，三档分别只有 48 / 72 / 111 题，几个点以内的差距属于噪声；「合计」是全部 231 题的准确率（194 题答对）。JevBench 榜单的成绩出来后会更新到这里。
+
+## 部署
+
+### 直接运行
+
+需要 Python 3.13、[uv](https://docs.astral.sh/uv/) 和一块 CUDA GPU。
 
 ```bash
-git clone <this repo> sors && cd sors
 uv sync
-PYTHONPATH=src .venv/bin/python scripts/train.py --dataset banking77 --steps 2000
-```
-
-Banking77 自己从钉住的上游 commit 下载到 `data/banking77`，md5 和行数双重校验。每 20 步打一行进度，每 100 步做一次完整评估：
-
-```text
-step  1980  loss 0.0304  845s  tctl 66°C
-{"step": 2000, "train_loss": 0.0299, "t": 852.1, "tctl_c": 65.8, "thermal_waits": 10,
- "seen":   {"accuracy": 0.948, "nll": 0.176, "ece": 0.009, "n": 2400},
- "unseen": {"accuracy": 0.921, "nll": 0.296, "ece": 0.029, "n": 680}}
-```
-
-`seen` 是训练用的那 60 个意图下留出的**样本**。`unseen` 是 17 个训练里完全没出现过的意图 —— 样本没出现，名字也没出现。这两列之间的差距就是全部重点：0.921 说明匹配这件事由基模完成，训练提供的是作答格式。
-
-`.venv/bin/tensorboard --logdir runs` 实时看曲线。
-
-```bash
-# 两个数据集一起训，同一组槽服务两种问题类型
-PYTHONPATH=src .venv/bin/python scripts/train.py --dataset both --steps 2000
-
-# 只训读出 —— 骨干逐比特未变，只有那 259 行嵌入在动
-PYTHONPATH=src .venv/bin/python scripts/train.py --dataset banking77 --trainable d-only --steps 2000
-
-# 拿一份 checkpoint 去评另一个任务，不训练
-PYTHONPATH=src .venv/bin/python scripts/train.py --dataset boolq --init runs/<run>/trained.pt --steps 0
-```
-
-## 工作原理
-
-一次请求变成一条提示。答案 token 紧跟在 `Answer:` 之后；一次前向，读那个位置的 logits，在这条问题的槽 id 上做 softmax：
-
-```text
-Passage: <state>
-
-Question: <问句>
-Options:
-<|D0|>. no
-<|D1|>. yes
-
-Answer:
-```
-
-**256 个槽。** 千问的 tokenizer 占了嵌入矩阵声明的 151936 行里的 151669 行，空着 267 行。256 个槽 token `<|D0|>` … `<|D255|>` 加 3 个类型标记装进这条尾巴，矩阵形状不变，任何 checkpoint 都不用 resize。槽与选项的绑定每条训练样本重新抽一次，同一个意图每次出现都落在不同的槽上 —— 模型学到的是「在给出的选项里指出匹配的那个」，而这正是调用方逐请求定义选项时必须成立的性质。
-
-**一个参数，两端共用。** 千问的 `tie_word_embeddings` 成立，菜单行里读进来的向量和答案位置上打分的向量是同一行。给第 k 个槽打分就是 `h · E[D_k]`，代数上等价于 `nn.Linear(hidden, 256)` 的第 k 行。`SlotEmbedding` 做冻结的查表，再把槽位置盖成自己那个 259 × 1024 的参数；`SlotHead` 算冻结的 `h @ Wᵀ`，再把那 259 列换成 `h @ rowsᵀ`，引用的是同一个张量。AdamW 因此只给 259 行存动量，而非整张 151936 行 —— 早先那版把整张矩阵标成可训、再用梯度 hook 清零，训练效果相同，代价是 1.2 GiB 的优化器状态，其中 99.8% 永远是零。
-
-**损失**是只在这条样本的 k 个槽上做 softmax，交叉熵到正确的那个。其余约 15 万个词表条目不进分母：训练形状与推理形状一致 —— 调用方给 k 个选项，答案必须是其中之一。
-
-**问题隔离与 state 前缀。** `context-first`（默认）把 state 放在菜单之前，同一段 state 的 N 个问题因此共用一份 KV cache 前缀 —— `cache.py` 把 state 跑一次，每个问题接一个分支，每个分支看得到 state 和它自己那段。`menu-first` 是对照组，9 个评估点全部落后（留出类 accuracy 0.888 对 0.903，NLL 0.341 对 0.310），也没有可共享的前缀。
-
-**问题类型。** `<|choice|>` 是 k 个无序选项，`<|bool|>` 是 choice 取 k=2，`<|score|>` 是 k 个有序档位、期望值当分数。带 `--type-marker` 时问句标签写成 `Question (<|bool|>):`，这几行跟着槽一起训。`<|score|>` 目前只占着 id，见[已知限制](#已知限制)。
-
-## 结果
-
-默认配方是 `--trainable attn --lr-schedule cosine --layout context-first`，下面几张表用的就是它：Qwen3-0.6B-Base，2000 步，attention 上 r=8 的 LoRA，cosine 学习率配 100 步 warmup，评估菜单 10 选 1。
-
-**Banking77** —— 77 个意图，17 个完全退出训练：
-
-| | accuracy | NLL | Brier | ECE |
-|---|---|---|---|---|
-| 见过的意图（n=2400） | 0.948 | 0.176 | 0.081 | 0.009 |
-| **留出意图（n=680）** | **0.921** | 0.296 | 0.126 | 0.029 |
-| 留出意图，训练之前 | 0.206 | 2.800 | 0.942 | 0.241 |
-
-10 选 1 的随机水平是 0.100。
-
-**BoolQ** —— yes/no 作为 2 选 1 的菜单，validation n=3270，多数类 0.622：
-
-| | accuracy | AUROC | Brier | ECE |
-|---|---|---|---|---|
-| 训练 1500 步 | 0.805 | 0.877 | 0.277 | 0.032 |
-| `--dataset both`，2000 步 | 0.786 | 0.857 | 0.298 | 0.036 |
-| Banking77 的 checkpoint，零 BoolQ 训练 | 0.612 | 0.645 | 0.502 | 0.168 |
-
-最后一行是一份只在客服意图上训过的 checkpoint，配 `--steps 0` 直接指向阅读理解。AUROC 0.645 说明槽位这套机制跨过了任务边界；accuracy 略低于 0.622 的多数类基线，说明任务本身仍然得训。
-
-**放开范围** —— 模型要动多少：
-
-| `--trainable` | 动的部分 | 见过的意图 | 留出意图 | 峰值显存 |
-|---|---|---|---|---|
-| `d-only` | 259 行嵌入；骨干冻结 | 0.812 | 0.813 | 4.1 GiB |
-| `attn`（默认） | 上面这些 + `q/k/v/o` 上的 LoRA | 0.934 | 0.871 | 5.0 GiB |
-| `attn-mlp` | 上面这些 + `gate/up/down` 上的 LoRA | 0.945 | 0.878 | 6.0 GiB |
-
-`d-only` 在骨干逐比特未变的前提下，对没见过的意图拿到 0.813 —— 这个数字是纯读出。路由住在 attention 里，所以放开它值 +0.058，在它之上再放开 MLP 值 +0.007。这三条跑在布局开关之前，用的是 `menu-first` 加恒定学习率，因此只在它们三者之间横向比较。
-
-**墙钟时间**，一块 RTX 3070 Ti Laptop（8 GB），含温度暂停：Banking77 2000 步 14.2 分钟，BoolQ 1500 步 16.5 分钟，`both` 2000 步 23.0 分钟。
-
-## 训练
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/train.py --help
-```
-
-要紧的几个旋钮：`--dataset banking77 | boolq | both`、`--trainable d-only | attn | attn-mlp`、`--layout context-first | menu-first`、`--type-marker`、`--held-out 17`、`--k-min 2 --k-max 10`（训练菜单长度，每条样本重抽）、`--k-eval 10`。
-
-默认值：LoRA r=8、alpha=16、dropout=0.05；LoRA 用 `1e-4`，嵌入行用 `1e-3`（它们从零起步，需要更快的钟）；cosine 衰减配 100 步 warmup。恒定学习率下留出曲线在评估之间摆动 ±3 个点，大于 n=680 的噪声地板。
-
-每次运行写出 `runs/<时间戳>-<dataset>-<trainable>-<schedule>-<layout>/`：
-
-| 文件 | 内容 |
-|---|---|
-| `log.jsonl` | 每次评估一行；step 0 是训练前、或 `--init` 加载之后的基线 |
-| `result.json` | 参数、类切分、全部评估记录、峰值显存 |
-| `trained.pt` | LoRA 权重加那 259 行嵌入 —— 基模照 `--model` 重新加载 |
-| `tb/` | TensorBoard：`train/loss`、`train/lr_*`、`eval/<set>/<metric>`、`sys/tctl_c` |
-
-`--init runs/<run>/trained.pt` 从 checkpoint 续；配 `--steps 0` 就是只评估。
-
-## 评估
-
-每次评估报 accuracy、top-5、NLL、Brier、ECE 和槽分布上的平均置信度；二元集另加 AUROC、预测正类率和二元 Brier。`n_saturated` 数的是正确类概率跌破 NLL 下限的条目，让那个指标的失真程度可审计。
-
-`scripts/baseline-boolq.py` 和 `scripts/baseline-banking77.py` 在同一套部署形状下量没训练过的读出。两个脚本独立，不从包里 import 任何东西。
-
-BoolQ validation，n=3270，多数类 0.622：
-
-| 模型 | accuracy | Brier | ECE | AUROC |
-|---|---|---|---|---|
-| Qwen3-0.6B-Base | 0.650 | 0.213 | 0.058 | 0.709 |
-| Qwen3-0.6B（instruct） | 0.657 | 0.255 | 0.206 | 0.721 |
-| Qwen3-1.7B-Base | 0.785 | 0.149 | 0.020 | 0.858 |
-| Qwen3-1.7B（instruct） | 0.754 | 0.231 | 0.225 | 0.845 |
-
-instruct 微调把判别力留在原处，把标定弄糟 —— 0.6B 上 ECE 0.206 对 0.058。基模因此是这里的起点。
-
-Banking77 test，n=3080，77 选 1 菜单，Qwen3-1.7B-Base：两套 permutation seed 下 accuracy 0.260 / 0.269，top-5 0.443 / 0.470，45% 的概率质量落在 77 个码之外。随机水平是 0.013。知识本来就在，缺的是读出。
-
-每个基线写出一份 JSON（指标）加一份 NPZ（隐状态、槽 logit、全词表 logsumexp、top-k），探针、温度标定和消融因此可以离线拟合，无需再跑一次前向。Banking77 那份给每个意图绑一个两字母码，带空格和不带空格都是单 token，并跑两套 permutation seed 来量出偏好噪声的地板。
-
-## 导出完整模型与部署
-
-发布时使用一份完整模型目录。`model.safetensors` 同时包含训练后的参数、冻结词嵌入和决策层，
-共享张量只保存一次；`config.json` 记录架构和参数精度，tokenizer 文件保留训练时的 token ID。
-Sors 运行时可直接从这份目录离线加载。
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/export-model.py \
-  --init runs/<run>/trained.safetensors \
-  --base-model /path/to/pinned-base \
-  --out ../Sors-0.8B --device cpu --dtype bfloat16 --local-files-only
-
 PYTHONPATH=src .venv/bin/python scripts/serve.py \
-  --init ../Sors-0.8B --local-files-only --warmup
+  --init SakuraYuyuko/Sors-2B --warmup --port 8000
 ```
 
-导出目录必须尚未存在，导出过程保持内存中的模型原样。服务 CLI 同时接受 HF 上的完整 Sors 模型仓库：
+`--init` 写 HF 仓库名时，第一次启动会把模型下载进标准 HF 缓存（`~/.cache/huggingface`），之后直接从缓存加载；
+私有仓库读取本机的 `hf auth login` 或 `HF_TOKEN`。离线环境加 `--local-files-only` 只读缓存，`--revision` 可以指定分支、tag 或 commit。
+`--init` 也接受本地模型目录。
+设置 `SORS_API_KEY` 或 `--api-key` 后，请求需要带 `Authorization: Bearer <key>`。加上 `--demo` 会在 `/demo/playground/` 开一个试用页。
+
+### 请求
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/serve.py \
-  --init SakuraYuyuko/Sors-0.8B --demo --port 9999 --host 0.0.0.0
+curl -s http://127.0.0.1:8000/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Sors-2B",
+    "state": "I need to cancel my subscription before it renews.",
+    "questions": {
+      "intent": {
+        "type": "choice",
+        "instructions": "What does the customer want?",
+        "criteria": {
+          "Cancel a subscription": null,
+          "Reset a password": null,
+          "Track a shipment": null
+        }
+      },
+      "urgent": {
+        "type": "noul",
+        "instructions": "Does the customer need this done right away?"
+      }
+    }
+  }'
 ```
 
-HF 仓库使用标准 Hugging Face 缓存；私有仓库读取当前机器的 HF 登录信息或 `HF_TOKEN`。
-`--local-files-only` 只使用已有缓存，`--revision` 可指定分支、tag 或 commit。
-已存在的本地路径优先使用。通过 `--local-dir` 下载的模型可直接传入目录，
-例如 `--init data/models/Sors-0.8B`。
+`model` 必须和服务名一致。服务名默认取 HF 仓库名的最后一段或模型目录名，这里是 `Sors-2B`，可以用 `--model-name` 改。一个请求里可以放多道问题，共用同一段 `state`。
 
-完整模型加载保留存档中的混合精度，
-包括 FP32 决策层。训练存档继续保留原格式用于评估和恢复，其服务入口仍支持单独指定 `--base-model`。
-Docker 和 Podman 使用同一份模型目录，见[容器部署](docker/README.md)。
+返回（概率数值为示意）：
 
-## 已知限制
-
-- **部署依赖 Sors 运行时。** 服务提供 `/v1/systemone`，自定义决策架构通过项目的完整模型目录加载入口使用。
-- **`score` 没实现。** `<|score|>` 只占着一个 token id。有序损失和带有序档位的数据集两样都缺，所以今天训的只有 `choice` 及其 k=2 的情形。
-- **BoolQ 超出了纯读出。** 同一基模冻结隐状态上拟合的探针天花板是 AUROC 0.745，训练后的运行到了 0.877。attention LoRA 在那里动了表征，所以「只训格式」这句话在这个任务上说得太满。
-- **端到端只量过一个基模尺寸。** 训过的全是 0.6B。零样本阶梯显示 1.7B 基模在 BoolQ 上起点就是 AUROC 0.858，高于 0.6B 训练后读出的落点 —— 基模规模是更大的那根杠杆，而它在这里除了基线之外没被测过。
-- **单种子。** 一次类切分（seed 0 下的 17 个意图），每种配置一次运行。放开范围那张表里相邻两行的差距，只有 n=680 噪声地板的几倍。
-- **基线数字需要重跑才能复现。** `results/` 在 `.gitignore` 里，上面那些 AUROC 和探针数字是从 NPZ 落盘离线拟合出来的。脚本在仓库里，产物不在。
-- **评估菜单是 10 个选项。** 256 个槽的容量在训练里最多用到 `--k-max`，从未按满宽跑过。
-- **笔记本规模。** 一块 8 GB 显卡，`max_length` 512，batch size 8，还带温度闸。
-
-## 开发
-
-Python 包名为 `sors`，导入使用 `from sors...`。服务鉴权通过 `SORS_API_KEY`
-配置，外部数据仓库通过 `SORS_DATASETS_DIR` 配置，详见[数据配置](DATASETS.md)。
-旧版 API key 和数据路径环境变量继续作为回退项，SORS 变量优先。
-
-只覆盖纯函数 —— 不用 GPU、不联网、不依赖测试框架：
-
-```bash
-for f in tests/test_*.py; do PYTHONPATH=src .venv/bin/python "$f"; done
+```json
+{
+  "model": "Sors-2B",
+  "answers": {
+    "intent": {
+      "type": "choice",
+      "choice": "Cancel a subscription",
+      "probabilities": {"Cancel a subscription": 0.99, "Reset a password": 0.005, "Track a shipment": 0.005},
+      "confidence": 0.985
+    },
+    "urgent": {"type": "noul", "noul": 0.71}
+  },
+  "usage": {"input_tokens": 118, "output_tokens": 2}
+}
 ```
 
-每个文件单独可执行，一个用例打印一行。`ThermalGuard` 每步之前和每次评估之前读一次 `k10temp` 的 Tctl，高于 `--temp-max`（默认 85 °C）就睡着等，暂停次数记在 `sys/thermal_waits` 里，没有这个传感器的机器直接放行。
+问题有三种类型：`choice` 在调用方给的选项里选一个（2–255 项，每个选项可以附一段说明）；`noul` 是是非题，返回答「是」的概率；
+`score` 是有序等级（接口已支持，目前还没有专门的训练数据）。`state`、`instructions` 和选项说明都可以是字符串或 JSON。
 
-| 路径 | 内容 |
-|---|---|
-| `src/sors/core/tokens.py` | 256 个槽 token 与 3 个类型 token，装进 tokenizer |
-| `src/sors/core/menu.py` | 菜单采样、类切分、与数据集无关的 `LabeledSet` |
-| `src/sors/core/prompt.py` | 提示模板与两种布局 |
-| `src/sors/core/batch.py` | 批量张量化，左填充，答案位置钉在最后一列 |
-| `src/sors/core/model.py` | `SlotEmbedding`、`SlotHead`、LoRA 接线、参数分组 |
-| `src/sors/training/loss.py` | 限制在槽上的交叉熵 |
-| `src/sors/evaluation/metrics.py` | accuracy、top-5、NLL、Brier、ECE、AUROC |
-| `src/sors/training/loop.py`、`src/sors/core/checkpoint.py` | 训练循环、评估、存档与读档 |
-| `src/sors/core/cache.py` | 一份 KV cache 前缀接 N 个问题分支 |
-| `src/sors/training/thermal.py` | 温度闸 |
-| `src/sors/data/banking77.py`、`src/sors/data/boolq.py` | 数据集适配 |
+### Docker
 
-## 致谢
+同一个模型目录可以挂进容器运行，构建与启动方法见 [docker/README.md](docker/README.md)。
 
-基模来自 [Qwen](https://huggingface.co/Qwen/Qwen3-0.6B-Base)。数据集：[Banking77](https://github.com/PolyAI-LDN/task-specific-datasets)（PolyAI）与 [BoolQ](https://huggingface.co/datasets/google/boolq)（Google）。接口形状参照 TypeSafe 的 [System One](https://typesafe.ai/blog/introducing-system-one-models-and-jev)；与 TypeSafe AI 无隶属关系，训练方法是本项目自己的。
+## License
 
-相关工作：[kev](https://github.com/jaredpalmer/kev) 在 0.8B–9B 上训练同一类模型，并用兼容 System One 的 API 提供服务。
-
-名字的由来：**SORS** 展开为 **State-conditioned Option Ranking System**，即「基于当前状态的候选排序系统」。拉丁语 *sors* 带有抽签、机缘与命运的意象，呼应模型读取局势、衡量各个选择的职责。Python 包名和项目标识统一使用 `sors`。
-
-## 许可
-
-[MIT](LICENSE)。
+代码使用 [MIT](LICENSE)。模型权重沿用 Qwen 的 Apache-2.0。API 形状参照 TypeSafe 的
+[System One](https://typesafe.ai/blog/introducing-system-one-models-and-jev)，本项目与 TypeSafe AI 无关联。

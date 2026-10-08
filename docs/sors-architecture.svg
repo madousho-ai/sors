@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="864" viewBox="0 0 1200 864" role="img" aria-labelledby="diagram-title diagram-description" font-family="Inter, Helvetica, Arial, sans-serif">
+  <title id="diagram-title">SORS — State-conditioned Option Ranking System</title>
+  <desc id="diagram-description">A left-to-right architecture diagram. A prompt containing the state, question and caller-defined options enters a pretrained Qwen3.5 text backbone. The last decoder layers feed SORS decision layers, which produce only a probability distribution over the supplied options. A write-back arrow carries option-set information from the decision layers into the upper backbone layers. Design assumptions preserve the causal order of state, question and options while removing position encoding between options. A bottom panel shows five training mechanisms that enforce order-invariance.
+Prompt:
+Customer message: I need to cancel my subscription before it renews.
+
+Question: What does the customer want?
+Options:
+&lt;|D17|&gt;. Cancel a subscription
+&lt;|D203|&gt;. Reset a password
+&lt;|D42|&gt;. Track a shipment
+
+Answer:</desc>
+  <defs>
+    <marker id="gray-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#6b7280"/>
+    </marker>
+    <marker id="blue-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <!-- An explicit background keeps text readable in light and dark README themes. -->
+  <rect width="1200" height="864" fill="#ffffff"/>
+  <g fill="#1f2937">
+    <text x="22" y="36" font-size="21" font-weight="600">SORS — State-conditioned Option Ranking System</text>
+    <text x="22" y="65" font-size="14" fill="#4b5563">State + question + caller-defined options → a probability distribution over those options</text>
+  </g>
+
+  <!-- Design assumptions are separated from the architecture and its arrows. -->
+  <rect x="22" y="86" width="624" height="76" rx="6" fill="#f3f4f6" stroke="#d1d5db" stroke-width="1.2"/>
+  <text x="38" y="113" font-size="13" fill="#374151">
+    <tspan x="38" font-weight="600">Kept: causal order — state → question → options,</tspan>
+    <tspan x="38" dy="24">every option row reads the full state and question.</tspan>
+  </text>
+  <rect x="676" y="86" width="502" height="76" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.2"/>
+  <text x="692" y="113" font-size="13" fill="#1f2937">
+    <tspan x="692" font-weight="600" fill="#2563eb">Removed: option order — no position encoding</tspan>
+    <tspan x="692" dy="24">between options; swapping two options only swaps their scores.</tspan>
+  </text>
+
+  <!-- Retain the original four columns and captions with additional space above. -->
+  <g id="architecture" transform="translate(0 110)">
+  <!-- Prompt: its long first line is visually wrapped; the full text is in desc. -->
+  <text x="22" y="112" font-size="15" font-weight="600" fill="#374151">Prompt</text>
+  <rect x="22" y="134" width="414" height="282" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <g font-family="monospace" font-size="13" fill="#1f2937">
+    <text x="38" y="165">Customer message: I need to cancel my <tspan x="38" y="188">subscription before it renews.</tspan></text>
+    <text x="38" y="228">Question: What does the customer want?</text>
+    <text x="38" y="252">Options:</text>
+    <text x="38" y="280"><tspan fill="#2563eb" font-weight="700">&lt;|D17|&gt;</tspan><tspan>. Cancel a subscription</tspan></text>
+    <text x="38" y="304"><tspan fill="#2563eb" font-weight="700">&lt;|D203|&gt;</tspan><tspan>. Reset a password</tspan></text>
+    <text x="38" y="328"><tspan fill="#2563eb" font-weight="700">&lt;|D42|&gt;</tspan><tspan>. Track a shipment</tspan></text>
+    <text x="38" y="378">Answer:</text>
+  </g>
+  <text x="22" y="449" font-size="13" fill="#4b5563">
+    <tspan x="22">Each option row starts with a decision token.</tspan>
+    <tspan x="22" dy="20">256 tokens &lt;|D0|&gt;…&lt;|D255|&gt;; during training</tspan>
+    <tspan x="22" dy="20">each question gets a random set of codes.</tspan>
+  </text>
+
+  <!-- Neutral pretrained decoder stack. Higher rectangles are the last layers. -->
+  <text x="466" y="112" font-size="15" font-weight="600" fill="#374151">Pretrained backbone</text>
+  <rect x="466" y="134" width="180" height="282" rx="8" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+  <g fill="#374151" text-anchor="middle">
+    <text x="556" y="163" font-size="14" font-weight="600">Qwen3.5 base model</text>
+    <text x="556" y="185" font-size="13">(text backbone)</text>
+  </g>
+  <g fill="#e5e7eb" stroke="#9ca3af" stroke-width="1.2">
+    <rect x="486" y="213" width="140" height="28" rx="3"/>
+    <rect x="486" y="249" width="140" height="28" rx="3"/>
+    <rect x="486" y="329" width="140" height="28" rx="3"/>
+    <rect x="486" y="365" width="140" height="28" rx="3"/>
+  </g>
+  <g fill="#4b5563" font-size="13" text-anchor="middle">
+    <text x="556" y="232">Decoder layer</text>
+    <text x="556" y="268">Decoder layer</text>
+    <text x="556" y="309" font-size="22">…</text>
+    <text x="556" y="348">Decoder layer</text>
+    <text x="556" y="384">Decoder layer</text>
+  </g>
+  <g fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#gray-arrow)">
+    <path d="M 556 365 L 556 358"/>
+    <path d="M 556 329 L 556 318"/>
+    <path d="M 556 290 L 556 278"/>
+    <path d="M 556 249 L 556 242"/>
+    <path d="M 436 379 L 485 379"/>
+  </g>
+  <text x="443" y="433" font-size="13" fill="#6b7280">Prompt tokens</text>
+
+  <!-- Read connections from the last decoder layers to the decision layers. -->
+  <g fill="none" stroke="#2563eb" stroke-width="1.8" marker-end="url(#blue-arrow)">
+    <path d="M 626 227 L 657 227 L 657 216 L 675 216"/>
+    <path d="M 626 263 L 657 263 L 657 300 L 675 300"/>
+  </g>
+  <rect x="676" y="134" width="286" height="282" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
+  <text x="693" y="165" font-size="18" font-weight="600" fill="#2563eb">SORS decision layers</text>
+  <g fill="#1f2937" font-size="13">
+    <text x="693" y="202">Option rows read the state &amp;</text>
+    <text x="693" y="224">question (cross-attention)</text>
+    <text x="693" y="286">Options compare with each other</text>
+    <text x="693" y="308">(set attention)</text>
+    <text x="693" y="370">Shared scorer → one score per option</text>
+  </g>
+  <g stroke="#2563eb" stroke-opacity="0.2">
+    <path d="M 693 248 L 945 248"/>
+    <path d="M 693 332 L 945 332"/>
+  </g>
+
+  <!-- Probabilities cover exactly the three caller-supplied options. -->
+  <path d="M 962 275 L 991 275" fill="none" stroke="#2563eb" stroke-width="1.8" marker-end="url(#blue-arrow)"/>
+  <text x="992" y="112" font-size="15" font-weight="600" fill="#374151">Output</text>
+  <rect x="992" y="134" width="186" height="282" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="1006" y="164" font-size="14" font-weight="600" fill="#1f2937">Option probabilities</text>
+  <g fill="#1f2937" font-size="13">
+    <text x="1006" y="194">Cancel a subscription</text>
+    <text x="1164" y="208" text-anchor="end">0.97</text>
+    <text x="1006" y="272">Reset a password</text>
+    <text x="1164" y="286" text-anchor="end">0.02</text>
+    <text x="1006" y="350">Track a shipment</text>
+    <text x="1164" y="364" text-anchor="end">0.01</text>
+  </g>
+  <g fill="#e5e7eb">
+    <rect x="1006" y="216" width="158" height="17" rx="2"/>
+    <rect x="1006" y="294" width="158" height="17" rx="2"/>
+    <rect x="1006" y="372" width="158" height="17" rx="2"/>
+  </g>
+  <g fill="#2563eb">
+    <rect x="1006" y="216" width="153.26" height="17" rx="2"/>
+    <rect x="1006" y="294" width="3.16" height="17" rx="1"/>
+    <rect x="1006" y="372" width="1.58" height="17" rx="0.7"/>
+  </g>
+  <text x="992" y="449" font-size="13" fill="#4b5563">
+    <tspan x="992">softmax over the options</tspan>
+    <tspan x="992" dy="20">on this menu only</tspan>
+  </text>
+  </g>
+
+  <!-- Write-back travels above the boxes, then enters the upper layer from the right. -->
+  <text x="644" y="191" font-size="13" fill="#2563eb">write-back: option-set info flows back into the backbone</text>
+  <path d="M 930 244 L 930 216 Q 930 204 918 204 L 650 204 Q 638 204 638 216 L 638 318 Q 638 330 626 330" fill="none" stroke="#2563eb" stroke-width="1.8" marker-end="url(#blue-arrow)"/>
+
+  <!-- Five compact cards: each description is one statement, wrapped for readability. -->
+  <rect x="22" y="632" width="1156" height="208" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="38" y="660" font-size="18" font-weight="600" fill="#2563eb">Training enforces order-invariance</text>
+  <g fill="#eff6ff" stroke="#2563eb" stroke-opacity="0.35" stroke-width="1.2">
+    <rect x="38" y="679" width="216" height="145" rx="6"/>
+    <rect x="266" y="679" width="216" height="145" rx="6"/>
+    <rect x="494" y="679" width="216" height="145" rx="6"/>
+    <rect x="722" y="679" width="216" height="145" rx="6"/>
+    <rect x="950" y="679" width="216" height="145" rx="6"/>
+  </g>
+  <g font-size="15" font-weight="600" fill="#2563eb">
+    <text x="52" y="705">Menu-only softmax</text>
+    <text x="280" y="705">Random codes</text>
+    <text x="508" y="705">Shuffled twin</text>
+    <text x="736" y="705">Hidden descriptions</text>
+    <text x="964" y="705">Fallback option</text>
+  </g>
+  <g font-size="13" fill="#1f2937">
+    <text x="52" y="735">
+      <tspan x="52">probabilities are normalised</tspan>
+      <tspan x="52" dy="19">over this menu's options only</tspan>
+    </text>
+    <text x="280" y="735">
+      <tspan x="280">each question gets a fresh,</tspan>
+      <tspan x="280" dy="19">balanced set of &lt;|D..|&gt; codes,</tspan>
+      <tspan x="280" dy="19">so a code never hints at</tspan>
+      <tspan x="280" dy="19">the answer</tspan>
+    </text>
+    <text x="508" y="735">
+      <tspan x="508">every question appears twice</tspan>
+      <tspan x="508" dy="19">with options shuffled; a</tspan>
+      <tspan x="508" dy="19">Jensen–Shannon term pulls</tspan>
+      <tspan x="508" dy="19">the two answers together</tspan>
+    </text>
+    <text x="736" y="735">
+      <tspan x="736">half the questions show</tspan>
+      <tspan x="736" dy="19">option names only</tspan>
+    </text>
+    <text x="964" y="735">
+      <tspan x="964">half the menus add a</tspan>
+      <tspan x="964" dy="19">'none of these' option</tspan>
+    </text>
+  </g>
+</svg>
