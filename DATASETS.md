@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.4/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.5/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.4
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.5
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -20,12 +20,16 @@ added to every domain, `synth-intents-v5.2` became `synth-intents-v5.3` when the
 `contrast` goal (confusable-intent menus and minimal-edit counterfactuals) was added, and
 `synth-intents-v5.3` became `synth-intents-v5.4` when 1,299 JevBench-style hard items
 (rule documents, state tracking, lead qualification and score items, 100 of them with
-two-level soft answers) and five new domains were added. `--dataset synth-v5.1`,
-`synth-v5.2` and `synth-v5.3` are rejected with a pointer to the new name; `synth-v5`
+two-level soft answers) and five new domains were added, and `synth-intents-v5.4`
+became `synth-intents-v5.5` when every counterfactual material recorded the material
+it was edited from (`contrast_of`), so training puts the original and the edited item
+into the same batch. `--dataset synth-v5.1`, `synth-v5.2`, `synth-v5.3` and
+`synth-v5.4` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.4. A `--mix` written for v5.2 must add a
+resume fingerprint check against v5.5. A `--mix` written for v5.2 must add a
 `contrast=` share, since every goal in the data keeps a positive share. Sors-2B was
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
+The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36.
 
 The order is an explicit `--datasets-dir` / API argument, then
 `SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling
@@ -64,8 +68,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.4+sharc+toolace \
-  --dataset-weights synth-v5.4=27,sharc=6,toolace=3 \
+  --dataset synth-v5.5+sharc+toolace \
+  --dataset-weights synth-v5.5=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 

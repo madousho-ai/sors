@@ -42,31 +42,32 @@ def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
 
     item = _marked()
     with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
-        current, _, info = _mod.build_data(_args("synth-v5.4", eval="simple", fallback_rate=1.0))
+        current, _, info = _mod.build_data(_args("synth-v5.5", eval="simple", fallback_rate=1.0))
         legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
     assert current(8, random.Random(0)) == legacy(8, random.Random(0))
     assert info == old_info
-    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.4", "--fallback-rate", "1"])
+    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.5", "--fallback-rate", "1"])
     assert "-fallback1" in _mod.run_tag(args)
 
 
 def test_v51_and_its_legacy_alias_cannot_duplicate_the_dataset():
     try:
-        _mod.parse_datasets("synth-v5+synth-v5.4")
+        _mod.parse_datasets("synth-v5+synth-v5.5")
     except SystemExit:
         return
     raise AssertionError("the same dataset was accepted twice through aliases")
 
 
-def test_the_retired_v51_v52_and_v53_names_point_to_v54():
-    """v5.1 改名 v5.2 加了难题, v5.2 改名 v5.3 加了 contrast, v5.3 改名 v5.4 加了 jevhard 题; 旧名字不能悄悄读到新数据."""
-    for old in ("synth-v5.1", "synth-v5.2", "synth-v5.3"):
+def test_the_retired_v51_to_v54_names_point_to_v55():
+    """v5.1 改名 v5.2 加了难题, v5.2 改名 v5.3 加了 contrast, v5.3 改名 v5.4 加了 jevhard 题, v5.4 改名 v5.5 加了
+    contrast_of; 旧名字不能悄悄读到新数据."""
+    for old in ("synth-v5.1", "synth-v5.2", "synth-v5.3", "synth-v5.4"):
         for parse in (lambda: _mod.parse_datasets(old),
                       lambda: _mod.parse_dataset_weights(f"{old}=1", ["synth-v5"])):
             try:
                 parse()
             except (SystemExit, ValueError) as exc:
-                assert "synth-v5.4" in str(exc), exc
+                assert "synth-v5.5" in str(exc), exc
                 continue
             raise AssertionError(f"{old} was accepted")
 
@@ -259,14 +260,14 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """v5.4 的七个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/7。
+    """v5.5 的七个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/7。
     intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
     assert info["synth_v5_items"] == 86355, info
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "contrast": 1.0,
                                          "edge_case": 1.0, "long_context": 1.0, "long_menu": 1.0})]
     full_menus = {}
-    for path in asset_path("synth-intents-v5.4").glob("*.questions.json"):
+    for path in asset_path("synth-intents-v5.5").glob("*.questions.json"):
         for question in json.loads(path.read_text())["questions"]:
             if len(question["options"]) == 256:
                 rows = frozenset(f"{key}: {description}" for key, description in question["options"].items())
@@ -345,7 +346,7 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
             assert a.question == b.question and sorted(a.options) == sorted(b.options)
             assert [b.options[j] for j in row_alignment(a, b)] == a.options
             reworded += a.query != b.query
-    # 160 对里能换说法的才算; v5.4 的 jevhard 题只有一种说法, 在 complex / edge_case / long_context 里约占三成,
+    # 160 对里能换说法的才算; v5.4 起的 jevhard 题只有一种说法, 在 complex / edge_case / long_context 里约占三成,
     # 所以从 v5.3 的 >120 降到 >80 (seed 0 实测 107)
     assert reworded > 80, reworded
 
@@ -405,7 +406,7 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """v5.4 有86355个绑定、742对菜单版本，一轮85613次抽取；
+    """v5.5 有86355个绑定、742对菜单版本，一轮85613次抽取；
     complex / edge_case / long_context 共7523个绑定各多出两遍。"""
     _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
     assert info["synth_v5_round"] == 85613 + 2 * 7523, info
