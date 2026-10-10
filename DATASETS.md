@@ -23,7 +23,9 @@ added to every domain, `synth-intents-v5.2` became `synth-intents-v5.3` when the
 two-level soft answers) and five new domains were added, and `synth-intents-v5.4`
 became `synth-intents-v5.5` when every counterfactual material recorded the material
 it was edited from (`contrast_of`), so training puts the original and the edited item
-into the same batch. `--dataset synth-v5.1`, `synth-v5.2`, `synth-v5.3` and
+into the same batch: drawing an edited item also draws the same question on its source
+material, and the pair counts as two questions of the batch (`split.synth_v5_contrast_items`,
+and `synth_v5_contrast_draws` per round with `--passes`). `--dataset synth-v5.1`, `synth-v5.2`, `synth-v5.3` and
 `synth-v5.4` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
 resume fingerprint check against v5.5. A `--mix` written for v5.2 must add a

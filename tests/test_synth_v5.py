@@ -431,5 +431,67 @@ def test_a_pair_is_one_draw_of_a_round_and_brings_one_random_view():
     assert set(got.values()) == {4}, got
 
 
+# ---- 反事实 (v5.5): 改动材料写了 contrast_of, 抽到改动题时原材料上同一道题一起出
+
+EDITED = {"id": "telecom_queue_a/cf", "label": "Security on-call screen", "goal": "contrast",
+          "contrast_of": "telecom_queue_a",
+          "text": ["NET-0457 raised 12:47, no owner. LOG-0719 raised 13:58, no owner.",
+                   "Two alerts have no owner: LOG-0719 (raised 13:58) and NET-0457 (raised 12:47)."],
+          "questions": [{"question": "pickup", "answer": "NET-0457"}]}
+CF_GOALS = GOALS | {"contrast"}
+
+
+def _contrasted():
+    return load_synth_v5(_data(telecom=(TELECOM_Q, [*TELECOM_C, EDITED])))
+
+
+def test_an_edited_binding_points_at_the_same_question_on_its_source_material():
+    items = _contrasted()
+    edited, source = _find(items, "telecom_queue_a/cf", "pickup"), _find(items, "telecom_queue_a", "pickup")
+    assert items[edited.contrast] == source
+    assert source.contrast is None and sum(it.contrast is not None for it in items) == 1
+
+
+def _is(ex, cid):
+    return ex.query in next(c["text"] for c in [*TELECOM_C, EDITED] if c["id"] == cid)
+
+
+def test_drawing_an_edited_item_brings_its_source_into_the_same_batch_by_mix():
+    items = _contrasted()
+    s = V5Sampler(items, parse_mix("long_menu=1,breadth=1,complex=1,contrast=3", CF_GOALS), 0.0)
+    rng = random.Random(0)
+    seen = 0
+    for _ in range(300):
+        batch = s(5, rng)
+        assert len(batch) == 5, len(batch)
+        edited = sum(_is(ex, "telecom_queue_a/cf") for ex in batch)
+        source = sum(_is(ex, "telecom_queue_a") for ex in batch)
+        assert source >= edited, (edited, source)
+        seen += edited
+    assert seen > 100, seen
+
+
+def test_a_round_brings_each_edited_item_with_its_source_and_counts_both():
+    """11 个绑定, 其中 1 个改动题: 一轮 12 道题 (原题自己出一遍, 跟着改动题再出一遍)."""
+    items = _contrasted()
+    s = V5Rounds(items, parse_passes(None, CF_GOALS), 0.0)
+    assert s.round_size == len(items) + 1
+    rng = random.Random(0)
+    for n in (5, 3, 12):
+        for _ in range(20):
+            batch = s(n, rng)
+            assert len(batch) == n
+            edited = sum(_is(ex, "telecom_queue_a/cf") for ex in batch)
+            assert sum(_is(ex, "telecom_queue_a") for ex in batch) >= edited
+    got = collections.Counter((_which(items, ex).context_id, _which(items, ex).question_id)
+                              for ex in V5Rounds(items, parse_passes(None, CF_GOALS), 0.0)(12, random.Random(1)))
+    assert got[("telecom_queue_a", "pickup")] == 2 and got[("telecom_queue_a/cf", "pickup")] == 1, got
+
+
+def test_data_without_contrast_of_draws_exactly_as_before():
+    items = _items()
+    assert all(it.contrast is None for it in items)
+
+
 if __name__ == "__main__":
     run(globals())

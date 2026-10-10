@@ -290,12 +290,14 @@ def build_data(args):
         v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
         goals = {it.goal for it in v5}
         split_info["synth_v5_items"] = len(v5)
+        split_info["synth_v5_contrast_items"] = sum(it.contrast is not None for it in v5)
         split_info["synth_v5_fallback_rate"] = fallback_rate
         try:
             if args.passes:
                 rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions, fallback_rate)
                 split_info["synth_v5_passes"] = rounds.passes
                 split_info["synth_v5_round"] = rounds.round_size
+                split_info["synth_v5_contrast_draws"] = rounds.contrast_draws
                 samplers.append(rounds)
             else:
                 mix = parse_mix(args.mix, goals)
@@ -493,7 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--passes", default=None,
                     help="synth-v5 按轮抽, 代替 --mix: 一轮把每个绑定出一遍, 这里列的目标出 N 遍, 如 "
                          "complex=3,edge_case=3,long_context=3 (不列的 1 遍). 轮内打乱, 一轮取完再开一轮. "
-                         "一轮的抽取数记在 result.json 的 split.synth_v5_round; 要整场至少过一轮, "
+                         "一轮的题数记在 result.json 的 split.synth_v5_round (改动题连原题算两道); 要整场至少过一轮, "
                          "v5 每步分到的抽取数 × --steps 要不少于它. 写进目录名 (-pass<hash>)")
     ap.add_argument("--mask-descriptions", type=float, default=0.0,
                     help="synth-v5 里绑定写了 maskable 的题, 以这个比例遮掉全部选项说明只留键 (0..1); "

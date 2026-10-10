@@ -407,9 +407,14 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
     """v5.5 有86355个绑定、742对菜单版本，一轮85613次抽取；
-    complex / edge_case / long_context 共7523个绑定各多出两遍。"""
+    complex / edge_case / long_context 共7523个绑定各多出两遍。改动题 (contrast_of) 每抽一次连原题多出一道题。"""
+    from sors.data.synth_v5 import draw_of, load_synth_v5
     _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
-    assert info["synth_v5_round"] == 85613 + 2 * 7523, info
+    items = load_synth_v5()
+    passes = {"complex": 3, "edge_case": 3, "long_context": 3}
+    extra = sum(passes.get(items[d[0][0]].goal, 1) for d in {draw_of(items, i) for i in range(len(items))} if len(d) == 2)
+    assert extra > 1500 and info["synth_v5_contrast_draws"] == extra, (extra, info)
+    assert info["synth_v5_round"] == 85613 + 2 * 7523 + extra, info
     assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "contrast": 1, "edge_case": 3,
                                        "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info

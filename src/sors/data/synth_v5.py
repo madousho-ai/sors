@@ -11,6 +11,10 @@
 这个领域里等概率挑一个题型 -> 等概率挑一份材料 (再在它这个题型的绑定里挑一个). 大领域、材料多的题型不会挤掉别人.
 配比 (parse_mix) 可以随训练步数分段变化, 但数据里有的每个目标在每一段都要有份额.
 
+反事实 (v5.5): 材料写了 contrast_of (它改自哪一份材料) 时, 它上面每个绑定记下原材料上同一道题的绑定 (contrast).
+抽到这样的改动题, 原题一起出, 两道题进同一批: 两份材料只差那一处关键事实, 梯度只能落在那里.
+这一抽算两道题 (批的大小按题数算); 原题自己照常也会被抽到.
+
 另一种抽法是按轮抽 (V5Rounds): 一轮把每个绑定出一遍, parse_passes 给了遍数的目标出那么多遍, 轮内整体打乱,
 一轮取完再打乱出下一轮. 用来保证训练里每个绑定至少见过一次; 各目标的份额就是它们在数据里的量乘遍数.
 
@@ -57,6 +61,7 @@ class V5Item:
     fallback_row: str | None = None
     fallback_bare: str | None = None
     fallback_correct: bool = False
+    contrast: int | None = None  # 改动题: 原材料 (contrast_of) 上同一道题的绑定下标; 抽到它时原题一起出
 
 
 def _schema(data_dir: pathlib.Path):
@@ -119,7 +124,22 @@ def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
                 if base is not None:
                     i, k = start + j, at[base]
                     out[i], out[k] = replace(out[i], pair=k), replace(out[k], pair=i)
+        _link_contrasts(out, contexts, domain)
     return out
+
+
+def _link_contrasts(out: list[V5Item], contexts: list[dict], domain: str) -> None:
+    """改动材料的每个绑定指向原材料 (contrast_of) 上同一道题的绑定. 原材料没有这道题的绑定就不连."""
+    at = {(it.context_id, it.question_id): i for i, it in enumerate(out) if it.domain == domain}
+    for c in contexts:
+        src = c.get("contrast_of")
+        if src is None:
+            continue
+        for b in c["questions"]:
+            j = at.get((src, b["question"]))
+            if j is not None:
+                i = at[(c["id"], b["question"])]
+                out[i] = replace(out[i], contrast=j)
 
 
 def _choose(it: V5Item, rng: random.Random, mask_rate: float) -> tuple[bool, str, str | None]:
@@ -216,6 +236,18 @@ def mix_at(stages: Mix, step: int) -> dict[str, float]:
     return next(w for s, w in reversed(stages) if s <= step)
 
 
+def draw_of(items: list[V5Item], i: int) -> tuple[tuple[int, ...], ...]:
+    """抽到绑定 i 时出的题: 一个单元 (unit_of), 改动题再加上原题的单元. 每个单元出一道题."""
+    u = unit_of(items, i)
+    src = next((items[k].contrast for k in u if items[k].contrast is not None), None)
+    return (u,) if src is None else (u, unit_of(items, src))
+
+
+def draw_examples(items: list[V5Item], draw: tuple[tuple[int, ...], ...], rng: random.Random, mask_rate: float,
+                  fallback_rate: float) -> list[MenuExample]:
+    return [ex for u in draw for ex in unit_examples(items, u, rng, mask_rate, fallback_rate)]
+
+
 class V5Sampler:
     """训练批里 v5 的那一份. 每调用一次算训练的一步 (train() 每步调一次 sample_fn), 配比按这个步数取.
     rate 是遮说明的比例 (只作用在绑定写了 maskable 的题上)."""
@@ -243,10 +275,13 @@ class V5Sampler:
         weights = mix_at(self.mix, self.step)
         goals = sorted(weights)
         out = []
-        for g in rng.choices(goals, [weights[x] for x in goals], k=n):
-            ctxs = rng.choice(rng.choice(self.tree[g]))
-            out += unit_examples(self.items, unit_of(self.items, rng.choice(rng.choice(ctxs))), rng, self.mask_rate,
-                                 self.fallback_rate)
+        while len(out) < n:
+            for g in rng.choices(goals, [weights[x] for x in goals], k=n - len(out)):
+                ctxs = rng.choice(rng.choice(self.tree[g]))
+                draw = draw_of(self.items, rng.choice(rng.choice(ctxs)))
+                if len(draw) > n - len(out):
+                    continue  # 改动题连原题要两个位置, 只剩一个: 这一抽作废, 外层再补
+                out += draw_examples(self.items, draw, rng, self.mask_rate, self.fallback_rate)
         return out
 
 
@@ -288,7 +323,8 @@ def parse_passes(spec: str | None, goals: set[str]) -> dict[str, int]:
 class V5Rounds:
     """按轮抽: 一轮把每个绑定出一遍, parse_passes 列了遍数的目标出那么多遍, 轮内整体打乱.
     一批从上一批停下的地方接着取, 一轮取完就打乱出下一轮, 一批可以跨过两轮的边界.
-    成对的两半 (原题与 other 版) 算一个单元、随机选一版，同 V5Sampler。round_size 是一轮的抽取次数。"""
+    成对的两半 (原题与 other 版) 算一个单元、随机选一版，同 V5Sampler。改动题一抽连原题出两道 (见 draw_of)。
+    round_size 是一轮出的题数 (改动题算两道)。"""
 
     def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0, fallback_rate: float = 0.5):
         _check_fallback_rate(fallback_rate)
@@ -297,17 +333,25 @@ class V5Rounds:
         if missing:
             raise ValueError(f"the passes and the data disagree on goals {sorted(missing)}")
         self.items, self.passes, self.mask_rate = items, passes, mask_rate
-        units = sorted({unit_of(items, i) for i in range(len(items))})
-        self.units = [u for u in units for _ in range(passes[items[u[0]].goal])]
-        self.round_size = len(self.units)
-        self.queue: list[tuple[int, ...]] = []
+        draws = sorted({draw_of(items, i) for i in range(len(items))})
+        self.units = [d for d in draws for _ in range(passes[items[d[0][0]].goal])]
+        self.round_size = sum(len(d) for d in self.units)
+        self.contrast_draws = sum(len(d) == 2 for d in self.units)  # 一轮里连原题一起出的改动题抽取数
+        self.queue: list[tuple[tuple[int, ...], ...]] = []
         self.rounds = 0  # 已经开了几轮
 
     def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
         out = []
-        for _ in range(n):
+        while len(out) < n:
             if not self.queue:
                 self.queue = rng.sample(self.units, len(self.units))[::-1]  # 从尾部 pop, 顺序仍是均匀的
                 self.rounds += 1
-            out += unit_examples(self.items, self.queue.pop(), rng, self.mask_rate, self.fallback_rate)
+            if len(self.queue[-1]) > n - len(out):
+                # 改动题连原题要两个位置, 这批只剩一个: 换一道单出的题先出, 改动题留在队尾给下一批
+                j = next((j for j in range(len(self.queue) - 2, -1, -1) if len(self.queue[j]) == 1), None)
+                if j is None:
+                    out += draw_examples(self.items, self.queue.pop()[:1], rng, self.mask_rate, self.fallback_rate)
+                    continue
+                self.queue[j], self.queue[-1] = self.queue[-1], self.queue[j]
+            out += draw_examples(self.items, self.queue.pop(), rng, self.mask_rate, self.fallback_rate)
         return out
