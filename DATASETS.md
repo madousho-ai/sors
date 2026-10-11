@@ -33,6 +33,11 @@ resume fingerprint check against v5.5. A `--mix` written for v5.2 must add a
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
 The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36.
 
+`--contrast-balance` makes drawing the original item bring its edited item too, so both
+appear equally often (without it the original appears once more per edit, and since their
+answers are opposite, cross-entropy leans toward the original's answer;
+`split.synth_v5_contrast_balance` records it).
+
 The order is an explicit `--datasets-dir` / API argument, then
 `SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling
 `decidophobia-dataset` checkout. The separate data repository retains its current name.

@@ -14,6 +14,8 @@
 反事实 (v5.5): 材料写了 contrast_of (它改自哪一份材料) 时, 它上面每个绑定记下原材料上同一道题的绑定 (contrast).
 抽到这样的改动题, 原题一起出, 两道题进同一批: 两份材料只差那一处关键事实, 梯度只能落在那里.
 这一抽算两道题 (批的大小按题数算); 原题自己照常也会被抽到.
+contrast_balance (--contrast-balance) 时原题自己被抽到也带上它的改动题 (edit_map), 两边出现次数相同;
+不开时原题比改动题多出一份, 而两份标签相反, 交叉熵会偏向原题的答案.
 
 另一种抽法是按轮抽 (V5Rounds): 一轮把每个绑定出一遍, parse_passes 给了遍数的目标出那么多遍, 轮内整体打乱,
 一轮取完再打乱出下一轮. 用来保证训练里每个绑定至少见过一次; 各目标的份额就是它们在数据里的量乘遍数.
@@ -236,11 +238,24 @@ def mix_at(stages: Mix, step: int) -> dict[str, float]:
     return next(w for s, w in reversed(stages) if s <= step)
 
 
-def draw_of(items: list[V5Item], i: int) -> tuple[tuple[int, ...], ...]:
-    """抽到绑定 i 时出的题: 一个单元 (unit_of), 改动题再加上原题的单元. 每个单元出一道题."""
+def draw_of(items: list[V5Item], i: int, edits: dict[int, int] | None = None) -> tuple[tuple[int, ...], ...]:
+    """抽到绑定 i 时出的题: 一个单元 (unit_of), 改动题再加上原题的单元. 每个单元出一道题.
+    edits (edit_map) 给了就是曝光平衡: 原题的这一抽也带上它的改动题, 两边出现次数相同."""
     u = unit_of(items, i)
     src = next((items[k].contrast for k in u if items[k].contrast is not None), None)
-    return (u,) if src is None else (u, unit_of(items, src))
+    if src is not None:
+        return (u, unit_of(items, src))
+    edit = next((edits[k] for k in u if k in edits), None) if edits else None
+    return (u,) if edit is None else (u, unit_of(items, edit))
+
+
+def edit_map(items: list[V5Item]) -> dict[int, int]:
+    """原题 -> 它的改动题 (下标). 一份原材料有几份改动时取下标最小的那份, 其余改动题照常只在自己被抽到时带上原题."""
+    out: dict[int, int] = {}
+    for i, it in enumerate(items):
+        if it.contrast is not None:
+            out.setdefault(it.contrast, i)
+    return out
 
 
 def draw_examples(items: list[V5Item], draw: tuple[tuple[int, ...], ...], rng: random.Random, mask_rate: float,
@@ -252,10 +267,12 @@ class V5Sampler:
     """训练批里 v5 的那一份. 每调用一次算训练的一步 (train() 每步调一次 sample_fn), 配比按这个步数取.
     rate 是遮说明的比例 (只作用在绑定写了 maskable 的题上)."""
 
-    def __init__(self, items: list[V5Item], mix: Mix, mask_rate: float = 0.0, fallback_rate: float = 0.5):
+    def __init__(self, items: list[V5Item], mix: Mix, mask_rate: float = 0.0, fallback_rate: float = 0.5,
+                 contrast_balance: bool = False):
         _check_fallback_rate(fallback_rate)
         self.fallback_rate = fallback_rate
         self.items, self.mix, self.mask_rate, self.step = items, mix, mask_rate, 0
+        self.edits = edit_map(items) if contrast_balance else None
         tree: dict = {}
         for i, it in enumerate(items):
             if it.pair is not None and i > it.pair:
@@ -278,7 +295,7 @@ class V5Sampler:
         while len(out) < n:
             for g in rng.choices(goals, [weights[x] for x in goals], k=n - len(out)):
                 ctxs = rng.choice(rng.choice(self.tree[g]))
-                draw = draw_of(self.items, rng.choice(rng.choice(ctxs)))
+                draw = draw_of(self.items, rng.choice(rng.choice(ctxs)), self.edits)
                 if len(draw) > n - len(out):
                     continue  # 改动题连原题要两个位置, 只剩一个: 这一抽作废, 外层再补
                 out += draw_examples(self.items, draw, rng, self.mask_rate, self.fallback_rate)
@@ -326,17 +343,19 @@ class V5Rounds:
     成对的两半 (原题与 other 版) 算一个单元、随机选一版，同 V5Sampler。改动题一抽连原题出两道 (见 draw_of)。
     round_size 是一轮出的题数 (改动题算两道)。"""
 
-    def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0, fallback_rate: float = 0.5):
+    def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0, fallback_rate: float = 0.5,
+                 contrast_balance: bool = False):
         _check_fallback_rate(fallback_rate)
         self.fallback_rate = fallback_rate
         missing = {it.goal for it in items} ^ set(passes)
         if missing:
             raise ValueError(f"the passes and the data disagree on goals {sorted(missing)}")
         self.items, self.passes, self.mask_rate = items, passes, mask_rate
-        draws = sorted({draw_of(items, i) for i in range(len(items))})
+        edits = edit_map(items) if contrast_balance else None
+        draws = sorted({draw_of(items, i, edits) for i in range(len(items))})
         self.units = [d for d in draws for _ in range(passes[items[d[0][0]].goal])]
         self.round_size = sum(len(d) for d in self.units)
-        self.contrast_draws = sum(len(d) == 2 for d in self.units)  # 一轮里连原题一起出的改动题抽取数
+        self.contrast_draws = sum(len(d) == 2 for d in self.units)  # 一轮里成对出的抽取数 (改动题带原题, 平衡时也有原题带改动题)
         self.queue: list[tuple[tuple[int, ...], ...]] = []
         self.rounds = 0  # 已经开了几轮
 

@@ -493,5 +493,32 @@ def test_data_without_contrast_of_draws_exactly_as_before():
     assert all(it.contrast is None for it in items)
 
 
+
+# ---- 曝光平衡 (contrast_balance): 原题与改动题总是一起出, 出现次数相同
+
+def test_balanced_rounds_draw_the_source_and_its_edit_together_as_often_as_each_other():
+    """平衡后原题自己的那一抽也带上改动题: 11 个绑定, 一轮 13 道题, 原题与改动题各 2 道."""
+    items = _contrasted()
+    s = V5Rounds(items, parse_passes(None, CF_GOALS), 0.0, contrast_balance=True)
+    assert s.round_size == len(items) + 2, s.round_size
+    got = collections.Counter((_which(items, ex).context_id, _which(items, ex).question_id)
+                              for ex in s(13, random.Random(1)))
+    assert got[("telecom_queue_a", "pickup")] == 2 and got[("telecom_queue_a/cf", "pickup")] == 2, got
+
+
+def test_balanced_mix_never_draws_the_source_without_its_edit():
+    items = _contrasted()
+    s = V5Sampler(items, parse_mix("long_menu=1,breadth=3,complex=1,contrast=1", CF_GOALS), 0.0, contrast_balance=True)
+    rng = random.Random(0)
+    seen = 0
+    for _ in range(300):
+        batch = s(5, rng)
+        assert len(batch) == 5
+        edited = sum(_is(ex, "telecom_queue_a/cf") for ex in batch)
+        assert sum(_is(ex, "telecom_queue_a") for ex in batch) == edited
+        seen += edited
+    assert seen > 50, seen
+
+
 if __name__ == "__main__":
     run(globals())

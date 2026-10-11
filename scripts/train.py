@@ -239,8 +239,10 @@ def build_data(args):
         raise SystemExit(f"--fallback-rate must be a probability in 0..1; got {fallback_rate}")
     if requested_fallback is not None and "synth-v5" not in datasets:
         raise SystemExit("--fallback-rate only applies to --dataset synth-v5.5 (legacy alias: synth-v5)")
-    if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes):
-        raise SystemExit("--mix, --passes and --mask-descriptions only apply to --dataset synth-v5.5 (legacy alias: synth-v5)")
+    balance = getattr(args, "contrast_balance", False)
+    if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes or balance):
+        raise SystemExit("--mix, --passes, --mask-descriptions and --contrast-balance only apply to --dataset synth-v5.5 "
+                         "(legacy alias: synth-v5)")
     if args.mix and args.passes:
         raise SystemExit("--mix draws goals by weight and --passes draws in rounds; pick one")
     erng = random.Random(args.seed + 1)
@@ -292,16 +294,19 @@ def build_data(args):
         split_info["synth_v5_items"] = len(v5)
         split_info["synth_v5_contrast_items"] = sum(it.contrast is not None for it in v5)
         split_info["synth_v5_fallback_rate"] = fallback_rate
+        if balance:
+            split_info["synth_v5_contrast_balance"] = True
         try:
             if args.passes:
-                rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions, fallback_rate)
+                rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions, fallback_rate,
+                                  contrast_balance=balance)
                 split_info["synth_v5_passes"] = rounds.passes
                 split_info["synth_v5_round"] = rounds.round_size
                 split_info["synth_v5_contrast_draws"] = rounds.contrast_draws
                 samplers.append(rounds)
             else:
                 mix = parse_mix(args.mix, goals)
-                samplers.append(V5Sampler(v5, mix, args.mask_descriptions, fallback_rate))
+                samplers.append(V5Sampler(v5, mix, args.mask_descriptions, fallback_rate, contrast_balance=balance))
                 split_info["synth_v5_mix"] = mix
         except ValueError as e:
             raise SystemExit(str(e)) from None
@@ -497,6 +502,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "complex=3,edge_case=3,long_context=3 (不列的 1 遍). 轮内打乱, 一轮取完再开一轮. "
                          "一轮的题数记在 result.json 的 split.synth_v5_round (改动题连原题算两道); 要整场至少过一轮, "
                          "v5 每步分到的抽取数 × --steps 要不少于它. 写进目录名 (-pass<hash>)")
+    ap.add_argument("--contrast-balance", action="store_true",
+                    help="synth-v5 曝光平衡: 原题自己被抽到时也带上它的改动题 (contrast_of), 原题与改动题出现次数相同. "
+                         "不给 = 只在抽到改动题时带原题 (原题多出一份). 写进目录名 (-cbal)")
     ap.add_argument("--mask-descriptions", type=float, default=0.0,
                     help="synth-v5 里绑定写了 maskable 的题, 以这个比例遮掉全部选项说明只留键 (0..1); "
                          "一致性配对的两份一起遮. 0 = 不遮. 写进目录名")
@@ -612,6 +620,7 @@ def run_tag(args) -> str:
         + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.5"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
+        + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
         + (f"-{args.architecture}-decision{hashlib.sha1(json.dumps(resolve_architecture(args), sort_keys=True).encode()).hexdigest()[:6]}"

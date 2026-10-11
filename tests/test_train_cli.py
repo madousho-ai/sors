@@ -438,6 +438,25 @@ def test_passes_are_named_in_the_run_directory():
     assert "-pass" not in _mod.run_tag(p.parse_args(["--dataset", "synth-v5"]))
 
 
+
+def test_contrast_balance_draws_each_source_with_its_edit_and_is_named_in_the_run_directory():
+    """--contrast-balance: 原题自己的那一抽也带上改动题, 一轮多出一份原题带改动题的抽取."""
+    _, _, plain = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=2"))
+    _, _, bal = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=2", contrast_balance=True))
+    assert bal["synth_v5_contrast_balance"] is True and "synth_v5_contrast_balance" not in plain
+    assert bal["synth_v5_contrast_draws"] > plain["synth_v5_contrast_draws"] + 3000, (plain, bal)
+    assert bal["synth_v5_round"] - plain["synth_v5_round"] == bal["synth_v5_contrast_draws"] - plain["synth_v5_contrast_draws"]
+    p = _mod.build_parser()
+    assert p.parse_args([]).contrast_balance is False
+    a, b = p.parse_args(["--dataset", "synth-v5"]), p.parse_args(["--dataset", "synth-v5", "--contrast-balance"])
+    assert "-cbal" in _mod.run_tag(b) and "-cbal" not in _mod.run_tag(a)
+    try:
+        _mod.build_data(_args("synth", eval="massive", contrast_balance=True))
+    except SystemExit:
+        return
+    raise AssertionError("--contrast-balance accepted without synth-v5")
+
+
 def test_max_length_defaults_to_8192():
     assert _mod.build_parser().parse_args([]).max_length == 8192
 
