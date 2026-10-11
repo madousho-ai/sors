@@ -68,6 +68,7 @@ from transformers import AutoTokenizer
 from sors.core.attention import add_attention_arguments, load_causal_lm
 from sors.core.checkpoint import checkpoint_adapter, checkpoint_architecture, load_trained, save_trained
 from sors.core.decision import DecisionConfig, architecture_config, decision_config
+from sors.core.batch import group_contrasts
 from sors.core.menu import RandomCodes, class_split, menu_k_range, with_partners
 from sors.core.model import TRAINABLE, keep_layer_activations, prepare_model
 from sors.core.prompt import DEFAULT_LAYOUT, LAYOUTS
@@ -226,6 +227,8 @@ def build_data(args):
                          f"got {args.label_smoothing}")
     if args.consistency < 0:
         raise SystemExit(f"--consistency is the weight of the JS term, >= 0; got {args.consistency}")
+    if getattr(args, "contrast_weight", 0.0) < 0:
+        raise SystemExit(f"--contrast-weight is the weight of the counterfactual pair term, >= 0; got {args.contrast_weight}")
     if args.probe_size < 1 or args.probe_passes < 2:
         raise SystemExit(f"--probe-size must be >= 1 and --probe-passes >= 2 (one arrangement has nothing to compare); "
                          f"got {args.probe_size} and {args.probe_passes}")
@@ -359,6 +362,8 @@ def build_data(args):
         parts = dataset_parts(n, sampler_names, weights)
         out = [ex for s, c in zip(samplers, parts) for ex in s(c, rng)]
         rng.shuffle(out)
+        if getattr(args, "contrast_weight", 0.0) > 0:
+            out = group_contrasts(out)  # 原题与改动题挨着, 成对损失要两道题在同一次前向里
         if args.consistency > 0:
             out = with_partners(out, rng)
         return random_codes(out, rng)
@@ -502,6 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "complex=3,edge_case=3,long_context=3 (不列的 1 遍). 轮内打乱, 一轮取完再开一轮. "
                          "一轮的题数记在 result.json 的 split.synth_v5_round (改动题连原题算两道); 要整场至少过一轮, "
                          "v5 每步分到的抽取数 × --steps 要不少于它. 写进目录名 (-pass<hash>)")
+    ap.add_argument("--contrast-weight", type=float, default=0.0,
+                    help="原题与改动题 (contrast_of) 的成对对数几率差损失的权重: 同一个答案在改动题上的偏好要比在原题上"
+                         "高出 --contrast-margin, 两份材料共有的特征在差里抵消. 0 = 不算. 配 --accumulate-gradients 时要给 "
+                         "--micro-tokens (配对整组进一次前向). 写进目录名 (-cw<w>-cm<m>)")
+    ap.add_argument("--contrast-margin", type=float, default=2.0, help="成对损失要求的对数几率差间隔 m (默认 2)")
     ap.add_argument("--contrast-balance", action="store_true",
                     help="synth-v5 曝光平衡: 原题自己被抽到时也带上它的改动题 (contrast_of), 原题与改动题出现次数相同. "
                          "不给 = 只在抽到改动题时带原题 (原题多出一份). 写进目录名 (-cbal)")
@@ -616,6 +626,7 @@ def run_tag(args) -> str:
         + (f"-rcodes{args.random_codes:g}" if args.random_codes > 0 else "") \
         + (f"-ls{args.label_smoothing:g}" if args.label_smoothing > 0 else "") \
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
+        + (f"-cw{args.contrast_weight:g}-cm{args.contrast_margin:g}" if getattr(args, "contrast_weight", 0.0) > 0 else "") \
         + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
         + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.5"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
@@ -637,6 +648,9 @@ def main() -> None:
         raise SystemExit(str(error)) from None
     if args.micro_tokens < 0:
         raise SystemExit(f"--micro-tokens is a padded-token budget per group, >= 0; got {args.micro_tokens}")
+    if args.contrast_weight > 0 and args.accumulate_gradients and args.micro_tokens <= 0 and args.micro_batches > 1:
+        raise SystemExit("--contrast-weight with --accumulate-gradients needs --micro-tokens, so each original and "
+                         "edited item stay in one forward group")
     args.datasets_dir = str(datasets_root(args.datasets_dir))
     architecture = resolve_architecture(args)
     args.architecture = architecture["kind"]
@@ -700,6 +714,7 @@ def main() -> None:
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
+        contrast_weight=args.contrast_weight, contrast_margin=args.contrast_margin,
         eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,
@@ -710,7 +725,7 @@ def main() -> None:
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
     print(f"dataset={'+'.join(datasets)} architecture={args.architecture} prefix_cache={args.candidate_prefix_cache} trainable={args.trainable} layout={args.layout} loss={args.loss} "
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
-          f"consistency={args.consistency:g} "
+          f"consistency={args.consistency:g} contrast_weight={args.contrast_weight:g} contrast_margin={args.contrast_margin:g} "
           f"data_workers={cfg.data_workers} data_prefetch={cfg.data_prefetch} data_backend={cfg.data_backend} "
           f"device_prefetch={cfg.device_prefetch} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "

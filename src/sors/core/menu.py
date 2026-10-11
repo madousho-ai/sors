@@ -46,6 +46,7 @@ class MenuExample:
     partner_query: str | None = None  # 同一份材料的另一种说法; 一致性配对的第二份读它 (partner), None = 两份读同一份
     decoy: int | None = None  # 诱饵那一行的类 id: 只看表面会选的那个错答案 (JevBench hard 的 surface_answer); None = 没有
     family: str | None = None  # 题目所属的类别 (JevBench 的 family), 评估时按它分开报; None = 不分
+    contrast_group: int | None = None  # 同一批里原题与改动题 (只差一处事实) 共用的编号, 成对损失按它配对; None = 不成对
 
     def __post_init__(self):
         # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.

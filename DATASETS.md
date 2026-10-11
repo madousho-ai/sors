@@ -33,10 +33,17 @@ resume fingerprint check against v5.5. A `--mix` written for v5.2 must add a
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
 The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36.
 
-`--contrast-balance` makes drawing the original item bring its edited item too, so both
-appear equally often (without it the original appears once more per edit, and since their
-answers are opposite, cross-entropy leans toward the original's answer;
-`split.synth_v5_contrast_balance` records it).
+Two options act on these pairs. `--contrast-balance` makes drawing the original item bring its
+edited item too, so both appear equally often (without it the original appears once more per
+edit, and since their answers are opposite, cross-entropy leans toward the original's answer;
+`split.synth_v5_contrast_balance` records it). `--contrast-weight w` adds a pairwise
+log-odds term: with answers A (original) and B (edited), each row's d = log p(B) - log p(A)
+is averaged over the rows that answer B and over those that answer A, and the loss is
+w · softplus(m - (mean_B d - mean_A d)) with m = `--contrast-margin` (default 2). Features
+the two materials share cancel in the difference, so the gradient comes from the edited
+fact. Pairs with the same answer, soft labels or a missing option row are skipped. A batch
+keeps each pair and its consistency copies adjacent and, with `--accumulate-gradients`,
+in one `--micro-tokens` group (required). TensorBoard logs `train/contrast_margin`.
 
 The order is an explicit `--datasets-dir` / API argument, then
 `SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling

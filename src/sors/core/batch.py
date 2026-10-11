@@ -85,16 +85,20 @@ def length_groups(attention_mask: torch.Tensor, n: int) -> list[torch.Tensor]:
     return list(torch.tensor_split(order, min(n, B)))
 
 
-def token_groups(lengths: Sequence[int], budget: int, unit: int = 1) -> list[list[int]]:
+def token_groups(lengths: Sequence[int], budget: int, unit: int | Sequence[int] = 1) -> list[list[int]]:
     """按 token 预算把一批行分组, 每组前向时补齐到组里最长那条: 补齐后的 token 数 (行数 × 最长) 不超过 budget.
     超过预算的单个单元自己一组. 相邻 unit 行 (JS 配对的两种排法) 是一个单元, 按其中最长那条算, 不拆开.
+    unit 也可以是一串单元的行数 (按顺序铺满整批, 例如原题与改动题连同各自的配对共 4 行一个单元).
 
     单元按长度从长到短排 (等长保持批里的顺序), 只在这个顺序上切段: 先取组数最少的切法, 再取其中补齐最少的.
     组数决定每步前向的次数 (CPU 发射开销与同步次数), 补齐决定白算的 token; 显存峰值由 budget 封顶.
     lengths 是 CPU 上的整数, 整个分组不读 GPU."""
-    if budget < 1 or unit < 1 or len(lengths) % unit:
+    sizes = [unit] * (len(lengths) // unit) if isinstance(unit, int) and unit >= 1 and not len(lengths) % unit \
+        else (list(unit) if not isinstance(unit, int) else [])
+    if budget < 1 or not sizes or min(sizes) < 1 or sum(sizes) != len(lengths):
         raise ValueError("token_groups needs a positive budget and complete units of adjacent rows")
-    widths = [max(lengths[i:i + unit]) for i in range(0, len(lengths), unit)]
+    starts = [sum(sizes[:u]) for u in range(len(sizes))]
+    widths = [max(lengths[a:a + k]) for a, k in zip(starts, sizes)]
     order = sorted(range(len(widths)), key=lambda u: -widths[u])
     n = len(order)
     best: list[tuple[int, int]] = [(0, 0)] * (n + 1)  # 从第 i 个单元起切到底: (组数, 补齐 token)
@@ -102,7 +106,7 @@ def token_groups(lengths: Sequence[int], budget: int, unit: int = 1) -> list[lis
     for i in range(n - 1, -1, -1):
         best[i] = (n + 1, 0)
         for j in range(i + 1, n + 1):
-            padded = (j - i) * unit * widths[order[i]]
+            padded = sum(sizes[u] for u in order[i:j]) * widths[order[i]]
             if padded > budget and j > i + 1:
                 break
             groups, tokens = best[j]
@@ -110,7 +114,7 @@ def token_groups(lengths: Sequence[int], budget: int, unit: int = 1) -> list[lis
                 best[i], cut[i] = (groups + 1, tokens + padded), j
     out, i = [], 0
     while i < n:
-        out.append([u * unit + r for u in order[i:cut[i]] for r in range(unit)])
+        out.append([starts[u] + r for u in order[i:cut[i]] for r in range(sizes[u])])
         i = cut[i]
     return out
 
@@ -131,3 +135,59 @@ def pair_alignment(examples: list[MenuExample], k_max: int) -> torch.Tensor:
         rows = row_alignment(examples[i], examples[i + 1])
         out[i // 2, : len(rows)] = torch.tensor(rows)
     return out
+
+
+# 原题与改动题 (MenuExample.contrast_group) 的成对损失: 配对在批里的位置与两种答案在各行菜单上的位置.
+
+
+def group_contrasts(examples: list[MenuExample]) -> list[MenuExample]:
+    """同一个 contrast_group 的题挪到一起, 放在其中最早那道的位置; 其余题顺序不动, 不消耗随机数."""
+    out, done = [], set()
+    for ex in examples:
+        g = ex.contrast_group
+        if g is None:
+            out.append(ex)
+        elif g not in done:
+            done.add(g)
+            out += [e for e in examples if e.contrast_group == g]
+    return out
+
+
+def contrast_units(examples: list[MenuExample], width: int) -> list[int]:
+    """按 token 预算分组用的单元行数: 每 width 行 (一道题和它的一致性配对) 一个单元, 同一 contrast_group
+    相邻的几个单元并成一个, 成对损失需要两道题在同一次前向里."""
+    sizes, last = [], None
+    for i in range(0, len(examples), width):
+        g = examples[i].contrast_group
+        if g is not None and g == last:
+            sizes[-1] += width
+        else:
+            sizes.append(width)
+        last = g
+    return sizes
+
+
+def contrast_rows(examples: list[MenuExample]) -> dict[str, torch.Tensor] | None:
+    """成对损失要的下标. 一组 = contrast_group 相同的行 (原题、改动题和各自的一致性配对), 正好有两种硬标签答案
+    A、B (按第一次出现排), 而且每一行的菜单上两者都在; 不满足的组跳过. 没有可用的组时返回 None.
+    返回 row (批里的行) / group (第几组, 0 起) / is_b (这一行答 B) / pos_a / pos_b (A、B 在这一行菜单上的位置)."""
+    groups: dict[int, list[int]] = {}
+    for i, ex in enumerate(examples):
+        if ex.contrast_group is not None:
+            groups.setdefault(ex.contrast_group, []).append(i)
+    rows, gid, is_b, pos_a, pos_b = [], [], [], [], []
+    for members in groups.values():
+        labels = list(dict.fromkeys(examples[i].label for i in members))
+        if len(labels) != 2 or any(examples[i].target is not None for i in members):
+            continue
+        a, b = labels
+        if not all(a in examples[i].options and b in examples[i].options for i in members):
+            continue
+        g = len(set(gid))
+        for i in members:
+            rows.append(i); gid.append(g); is_b.append(examples[i].label == b)
+            pos_a.append(examples[i].options.index(a)); pos_b.append(examples[i].options.index(b))
+    if not rows:
+        return None
+    t = lambda x, dt=torch.long: torch.tensor(x, dtype=dt)  # noqa: E731
+    return {"row": t(rows), "group": t(gid), "is_b": t(is_b, torch.bool), "pos_a": t(pos_a), "pos_b": t(pos_b)}

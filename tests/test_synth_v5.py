@@ -520,5 +520,25 @@ def test_balanced_mix_never_draws_the_source_without_its_edit():
     assert seen > 50, seen
 
 
+
+def test_a_source_and_its_edit_share_a_contrast_group_that_no_other_draw_uses():
+    items = _contrasted()
+    for s in (V5Rounds(items, parse_passes(None, CF_GOALS), 0.0, contrast_balance=True),
+              V5Sampler(items, parse_mix("long_menu=1,breadth=3,complex=1,contrast=3", CF_GOALS), 0.0)):
+        rng, seen = random.Random(0), 0
+        for _ in range(60):
+            batch = s(6, rng)
+            groups = collections.Counter(ex.contrast_group for ex in batch if ex.contrast_group is not None)
+            assert all(v == 2 for v in groups.values()), groups
+            for ex in batch:
+                if _is(ex, "telecom_queue_a/cf") and isinstance(s, V5Sampler):
+                    assert ex.contrast_group is not None, ex  # 按配比抽时改动题总是连原题一起出
+                    # (按轮抽在一轮末尾只剩单题位置时会把配对拆开单出, 那一道不成对)
+                elif not (_is(ex, "telecom_queue_a") or _is(ex, "telecom_queue_a/cf")):
+                    assert ex.contrast_group is None, ex
+            seen += len(groups)
+        assert seen > 10, seen
+
+
 if __name__ == "__main__":
     run(globals())

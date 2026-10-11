@@ -31,6 +31,7 @@ fallback_rate 默认 0.5，每次抽取出一个菜单版本。既有 other_of �
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import os
 import pathlib
 import random
@@ -258,9 +259,17 @@ def edit_map(items: list[V5Item]) -> dict[int, int]:
     return out
 
 
+_GROUPS = itertools.count()
+
+
 def draw_examples(items: list[V5Item], draw: tuple[tuple[int, ...], ...], rng: random.Random, mask_rate: float,
                   fallback_rate: float) -> list[MenuExample]:
-    return [ex for u in draw for ex in unit_examples(items, u, rng, mask_rate, fallback_rate)]
+    """一抽出的题. 原题与改动题成对出时两道题记同一个 contrast_group (进程内递增, 不消耗随机数), 成对损失按它配对."""
+    out = [ex for u in draw for ex in unit_examples(items, u, rng, mask_rate, fallback_rate)]
+    if len(draw) == 2:
+        g = next(_GROUPS)
+        out = [replace(ex, contrast_group=g) for ex in out]
+    return out
 
 
 class V5Sampler:

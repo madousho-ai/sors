@@ -120,6 +120,25 @@ def consistency_js(logits: torch.Tensor, slot_ids: torch.Tensor, align: torch.Te
     return torch.where(on, term, torch.zeros_like(term)).sum(1).mean()
 
 
+def contrast_margin_loss(logits: torch.Tensor, slot_ids: torch.Tensor, rows: dict[str, torch.Tensor],
+                         margin: float) -> torch.Tensor:
+    """原题与改动题的成对对数几率差损失 (batch.contrast_rows 给 rows). 每一行 d = log p(B) - log p(A), 只在菜单上比
+    (差与分母无关); 一组的差 Δ = 答 B 那些行的 d 平均 - 答 A 那些行的 d 平均, 损失 softplus(margin - Δ), 按组平均.
+    两份材料共有的特征在 Δ 里抵消; 模型给两道题一样的输出时 Δ = 0, 损失 softplus(margin)."""
+    r = rows["row"].to(logits.device)
+    slots = gather_slot_logits(logits[r], slot_ids[r])
+    d = slots.gather(1, rows["pos_b"].to(logits.device)[:, None]) - slots.gather(1, rows["pos_a"].to(logits.device)[:, None])
+    d = d.squeeze(1)
+    g, is_b = rows["group"].to(logits.device), rows["is_b"].to(logits.device)
+    n = int(rows["group"].max()) + 1
+    sign = is_b.to(d.dtype) * 2 - 1
+    count_b = torch.zeros(n, device=d.device, dtype=d.dtype).index_add_(0, g, is_b.to(d.dtype))
+    count_a = torch.zeros(n, device=d.device, dtype=d.dtype).index_add_(0, g, (~is_b).to(d.dtype))
+    weight = torch.where(is_b, 1 / count_b[g], 1 / count_a[g])
+    gap = torch.zeros(n, device=d.device, dtype=d.dtype).index_add_(0, g, sign * weight * d)
+    return F.softplus(margin - gap).mean()
+
+
 def menu_hit_counts(
     logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:

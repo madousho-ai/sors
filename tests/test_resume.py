@@ -42,7 +42,7 @@ def test_accumulation_matches_whole_batch_gradients_with_unequal_groups_and_soft
     expected_ce, expected_js = ce.item(), js.item()
     del logits, loss, ce, js
     m.zero_grad(set_to_none=True)
-    got_ce, got_js, _, _ = backward_groups(m, cfg, exs, b, ids)
+    got_ce, got_js, _, _, _ = backward_groups(m, cfg, exs, b, ids)
     assert abs(got_ce - expected_ce) < 2e-5
     assert abs(got_js - expected_js) < 2e-6
     for k, p in m.named_parameters():
@@ -74,7 +74,7 @@ def test_token_budget_groups_keep_pairs_together_and_match_whole_batch_gradients
     h = m.register_forward_pre_hook(lambda mod, args, kwargs: seen.append(kwargs["input_ids"].shape[0]),
                                     with_kwargs=True)
     m.zero_grad(set_to_none=True)
-    got_ce, got_js, _, _ = backward_groups(m, cfg, exs, b, ids, lengths)
+    got_ce, got_js, _, _, _ = backward_groups(m, cfg, exs, b, ids, lengths)
     h.remove()
     assert seen == [len(g) for g in groups], (seen, groups)
     assert abs(got_ce - expected_ce) < 2e-5

@@ -27,7 +27,7 @@ def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
                 consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq",
-                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None)
+                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None, contrast_weight=0.0)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -455,6 +455,35 @@ def test_contrast_balance_draws_each_source_with_its_edit_and_is_named_in_the_ru
     except SystemExit:
         return
     raise AssertionError("--contrast-balance accepted without synth-v5")
+
+
+
+def test_contrast_weight_keeps_each_source_and_edit_adjacent_with_their_copies_and_is_named():
+    """--contrast-weight > 0: 一批里同一 contrast_group 的题挨着排, 一致性配对之后是 [原, 原', 改, 改'] 4 行连着."""
+    import random
+    from sors.core.batch import contrast_rows, contrast_units
+
+    sample, _, _ = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=2", consistency=1.0,
+                                         contrast_balance=True, contrast_weight=0.5))
+    rng, groups = random.Random(0), 0
+    for _ in range(30):
+        batch = sample(36, rng)
+        spans = contrast_units(batch, 2)
+        rows = contrast_rows(batch)
+        groups += 0 if rows is None else int(rows["group"].max()) + 1
+        start = 0
+        for k in spans:
+            ids = {e.contrast_group for e in batch[start:start + k]}
+            assert len(ids) == 1, ids
+            start += k
+        seen = [e.contrast_group for e in batch if e.contrast_group is not None]
+        assert all(seen.count(g) == 4 or seen.count(g) == 2 for g in set(seen)), seen
+    assert groups > 10, groups
+    p = _mod.build_parser()
+    d = p.parse_args([])
+    assert (d.contrast_weight, d.contrast_margin) == (0.0, 2.0)
+    tag = _mod.run_tag(p.parse_args(["--contrast-weight", "0.5"]))
+    assert "-cw0.5-cm2" in tag and "-cw" not in _mod.run_tag(d), tag
 
 
 def test_max_length_defaults_to_8192():
