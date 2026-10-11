@@ -290,7 +290,7 @@ def build_data(args):
     if "synth-v5" in datasets:
         # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
         # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
-        from sors.data.synth_v5 import V5Rounds, V5Sampler, load_synth_v5, parse_mix, parse_passes
+        from sors.data.synth_v5 import V5Rounds, V5Sampler, V5Strata, load_synth_v5, parse_mix, parse_passes
 
         v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
         goals = {it.goal for it in v5}
@@ -300,7 +300,19 @@ def build_data(args):
         if balance:
             split_info["synth_v5_contrast_balance"] = True
         try:
-            if args.passes:
+            pairs = getattr(args, "contrast_pairs", 0)
+            if pairs and (not args.passes or balance):
+                raise SystemExit("--contrast-pairs needs --passes and already balances each source with its edit "
+                                 "(drop --contrast-balance)")
+            if pairs:
+                strata = V5Strata(v5, parse_passes(args.passes, goals), pairs, args.batch_size,
+                                  args.mask_descriptions, fallback_rate)
+                split_info["synth_v5_passes"] = strata.passes
+                split_info["synth_v5_contrast_pairs"] = pairs
+                split_info["synth_v5_quota"] = strata.quota
+                split_info["synth_v5_pair_units"] = len(strata.pair_units)
+                samplers.append(strata)
+            elif args.passes:
                 rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions, fallback_rate,
                                   contrast_balance=balance)
                 split_info["synth_v5_passes"] = rounds.passes
@@ -512,6 +524,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "高出 --contrast-margin, 两份材料共有的特征在差里抵消. 0 = 不算. 配 --accumulate-gradients 时要给 "
                          "--micro-tokens (配对整组进一次前向). 写进目录名 (-cw<w>-cm<m>)")
     ap.add_argument("--contrast-margin", type=float, default=2.0, help="成对损失要求的对数几率差间隔 m (默认 2)")
+    ap.add_argument("--contrast-pairs", type=int, default=0,
+                    help="synth-v5 分层抽批 (要 --passes): 每批固定这么多对原题+改动题 (contrast_of), 其余位置按目标"
+                         "固定份额 (正比于一轮里各目标单出的题数, 每个目标至少一道). 原题与改动题总是成对出. "
+                         "0 = 不分层. 写进目录名 (-cp<n>)")
     ap.add_argument("--contrast-balance", action="store_true",
                     help="synth-v5 曝光平衡: 原题自己被抽到时也带上它的改动题 (contrast_of), 原题与改动题出现次数相同. "
                          "不给 = 只在抽到改动题时带原题 (原题多出一份). 写进目录名 (-cbal)")
@@ -632,6 +648,7 @@ def run_tag(args) -> str:
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
+        + (f"-cp{args.contrast_pairs}" if getattr(args, "contrast_pairs", 0) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
         + (f"-{args.architecture}-decision{hashlib.sha1(json.dumps(resolve_architecture(args), sort_keys=True).encode()).hexdigest()[:6]}"

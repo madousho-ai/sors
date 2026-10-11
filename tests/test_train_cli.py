@@ -27,7 +27,7 @@ def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
                 consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq",
-                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None, contrast_weight=0.0)
+                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None, contrast_weight=0.0, batch_size=36)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -484,6 +484,31 @@ def test_contrast_weight_keeps_each_source_and_edit_adjacent_with_their_copies_a
     assert (d.contrast_weight, d.contrast_margin) == (0.0, 2.0)
     tag = _mod.run_tag(p.parse_args(["--contrast-weight", "0.5"]))
     assert "-cw0.5-cm2" in tag and "-cw" not in _mod.run_tag(d), tag
+
+
+
+def test_contrast_pairs_build_every_batch_from_the_same_strata_and_are_named():
+    """--contrast-pairs 2 配 --passes: 每批 36 道里正好 2 对原题+改动题, 其余 32 道按目标固定份额."""
+    import collections
+    import random
+
+    sample, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=2,edge_case=2,long_context=2",
+                                            contrast_pairs=2, contrast_weight=0.5))
+    assert info["synth_v5_contrast_pairs"] == 2 and sum(info["synth_v5_quota"].values()) == 32, info
+    rng = random.Random(0)
+    for _ in range(5):
+        batch = sample(36, rng)
+        groups = collections.Counter(e.contrast_group for e in batch if e.contrast_group is not None)
+        assert len(batch) == 36 and len(groups) == 2 and set(groups.values()) == {2}, groups
+    p = _mod.build_parser()
+    assert p.parse_args([]).contrast_pairs == 0
+    assert "-cp2" in _mod.run_tag(p.parse_args(["--dataset", "synth-v5", "--contrast-pairs", "2"]))
+    for bad in (dict(passes=None, contrast_pairs=2), dict(passes="complex=2", contrast_pairs=2, contrast_balance=True)):
+        try:
+            _mod.build_data(_args("synth-v5", eval="massive", **bad))
+        except SystemExit:
+            continue
+        raise AssertionError(f"accepted {bad}")
 
 
 def test_max_length_defaults_to_8192():

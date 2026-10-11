@@ -15,7 +15,7 @@ import tempfile
 from _runner import run
 from sors.core.menu import row_alignment, with_partners
 from sors.data.paths import asset_path
-from sors.data.synth_v5 import (V5Rounds, V5Sampler, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
+from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, batch_quota, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
                                         parse_passes)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -538,6 +538,59 @@ def test_a_source_and_its_edit_share_a_contrast_group_that_no_other_draw_uses():
                     assert ex.contrast_group is None, ex
             seen += len(groups)
         assert seen > 10, seen
+
+
+
+# ---- 分层抽批 (V5Strata, --contrast-pairs): 每批固定几对改动题, 其余位置按题型固定份额
+
+def test_batch_quota_follows_the_shares_by_largest_remainder_and_gives_every_goal_a_slot():
+    shares = {"ambiguous": 1159, "breadth": 48411, "complex": 7570, "contrast": 10357, "edge_case": 2654,
+              "long_context": 3128, "long_menu": 11513}
+    got = batch_quota(shares, 32)
+    assert got == {"ambiguous": 1, "breadth": 18, "complex": 3, "contrast": 4, "edge_case": 1, "long_context": 1,
+                   "long_menu": 4}, got
+    try:
+        batch_quota(shares, 6)
+    except ValueError:
+        return
+    raise AssertionError("6 slots cannot give 7 goals one each")
+
+
+def test_strata_put_exactly_the_given_pairs_and_the_goal_quota_into_every_batch():
+    items = _contrasted()
+    s = V5Strata(items, parse_passes(None, CF_GOALS), pairs=1, batch_size=5, mask_rate=0.0)
+    singles = {g: q for g, q in s.quota.items()}
+    assert sum(singles.values()) == 3 and set(singles) <= CF_GOALS, singles
+    rng = random.Random(0)
+    for _ in range(40):
+        batch = s(5, rng)
+        assert len(batch) == 5
+        groups = collections.Counter(ex.contrast_group for ex in batch if ex.contrast_group is not None)
+        assert len(groups) == 1 and set(groups.values()) == {2}, groups
+        plain = collections.Counter(_which(items, ex).goal for ex in batch if ex.contrast_group is None)
+        assert plain == collections.Counter(singles), (plain, singles)
+
+
+def test_strata_keep_each_source_and_edit_pair_once_and_never_alone():
+    """平衡后同一对会从原题、改动题两边各抽出一次; 分层抽批里去重成一对, 两道题也不再单出."""
+    items = _contrasted()
+    s = V5Strata(items, parse_passes(None, CF_GOALS), pairs=1, batch_size=5, mask_rate=0.0)
+    assert len(s.pair_units) == 1, s.pair_units
+    rng = random.Random(1)
+    for _ in range(40):
+        for ex in s(5, rng):
+            if _is(ex, "telecom_queue_a") or _is(ex, "telecom_queue_a/cf"):
+                if _which(items, ex).question_id == "pickup":
+                    assert ex.contrast_group is not None, ex
+
+
+def test_strata_refuse_a_batch_size_other_than_the_one_they_were_built_for():
+    s = V5Strata(_contrasted(), parse_passes(None, CF_GOALS), pairs=1, batch_size=5, mask_rate=0.0)
+    try:
+        s(6, random.Random(0))
+    except ValueError:
+        return
+    raise AssertionError("a 6-question batch from a 5-question plan")
 
 
 if __name__ == "__main__":

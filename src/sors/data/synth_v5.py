@@ -383,3 +383,68 @@ class V5Rounds:
                 self.queue[j], self.queue[-1] = self.queue[-1], self.queue[j]
             out += draw_examples(self.items, self.queue.pop(), rng, self.mask_rate, self.fallback_rate)
         return out
+
+
+# ---------------------------------------------------------------- 分层抽批
+
+def batch_quota(shares: dict[str, float], n: int) -> dict[str, int]:
+    """n 个位置按 shares 的比例分给各目标 (最大余数法), 每个目标至少一个; 不够每个目标一个时报 ValueError.
+    分到 0 的目标从「分到的减应得」最多的目标那里拿一个."""
+    if n < len(shares):
+        raise ValueError(f"{n} slots cannot give each of {len(shares)} goals one")
+    total = sum(shares.values())
+    exact = {g: n * v / total for g, v in shares.items()}
+    alloc = {g: int(x) for g, x in exact.items()}
+    for g in sorted(exact, key=lambda g: (alloc[g] - exact[g], g))[: n - sum(alloc.values())]:
+        alloc[g] += 1
+    for g in sorted(g for g in alloc if alloc[g] == 0):
+        donor = max((d for d in alloc if alloc[d] > 1), key=lambda d: (alloc[d] - exact[d], d))
+        alloc[donor] -= 1
+        alloc[g] = 1
+    return alloc
+
+
+class V5Strata:
+    """分层抽批 (--contrast-pairs): 每批固定 pairs 对原题+改动题, 其余 batch_size - 2·pairs 个位置按目标固定份额
+    (batch_quota, 份额正比于该目标一轮里单出的题数). 原题与改动题总是成对出 (曝光相同, 同 contrast_balance),
+    同一对只算一个单元. 每个目标、以及成对的单元各有自己的队列, 各自按轮打乱取完再开下一轮; 遍数同 V5Rounds.
+    目的: 每一步的批构成相同, 成对损失每步都有、量也不变, 不会某几步一下子来很多对."""
+
+    def __init__(self, items: list[V5Item], passes: dict[str, int], pairs: int, batch_size: int,
+                 mask_rate: float = 0.0, fallback_rate: float = 0.5):
+        _check_fallback_rate(fallback_rate)
+        missing = {it.goal for it in items} ^ set(passes)
+        if missing:
+            raise ValueError(f"the passes and the data disagree on goals {sorted(missing)}")
+        if pairs < 1 or 2 * pairs >= batch_size:
+            raise ValueError(f"--contrast-pairs {pairs} must be >= 1 and leave room in a batch of {batch_size}")
+        self.items, self.passes, self.mask_rate, self.fallback_rate = items, passes, mask_rate, fallback_rate
+        self.pairs, self.batch_size = pairs, batch_size
+        edits = edit_map(items)
+        draws = {draw_of(items, i, edits) for i in range(len(items))}
+        goal = lambda d: max(passes[items[k].goal] for u in d for k in u)  # noqa: E731
+        self.pair_units = sorted({tuple(sorted(d)) for d in draws if len(d) == 2})
+        singles: dict[str, list] = {}
+        for d in sorted(d for d in draws if len(d) == 1):
+            singles.setdefault(items[d[0][0]].goal, []).extend([d] * passes[items[d[0][0]].goal])
+        self.singles = singles
+        self.pool = [d for d in self.pair_units for _ in range(goal(d))]
+        self.quota = batch_quota({g: len(v) for g, v in singles.items()}, batch_size - 2 * pairs)
+        self.queues: dict[str, list] = {}
+
+    def _take(self, key: str, pool: list, k: int, rng: random.Random) -> list:
+        out = []
+        while len(out) < k:
+            q = self.queues.get(key)
+            if not q:
+                q = self.queues[key] = rng.sample(pool, len(pool))[::-1]
+            out.append(q.pop())
+        return out
+
+    def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
+        if n != self.batch_size:
+            raise ValueError(f"the strata were planned for batches of {self.batch_size}, asked for {n}")
+        draws = self._take("\0pairs", self.pool, self.pairs, rng)
+        for g in sorted(self.quota):
+            draws += self._take(g, self.singles[g], self.quota[g], rng)
+        return [ex for d in draws for ex in draw_examples(self.items, d, rng, self.mask_rate, self.fallback_rate)]

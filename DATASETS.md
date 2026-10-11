@@ -44,6 +44,11 @@ the two materials share cancel in the difference, so the gradient comes from the
 fact. Pairs with the same answer, soft labels or a missing option row are skipped. A batch
 keeps each pair and its consistency copies adjacent and, with `--accumulate-gradients`,
 in one `--micro-tokens` group (required). TensorBoard logs `train/contrast_margin`.
+`--contrast-pairs n` (with `--passes`) builds every batch the same way: exactly n
+original/edited pairs, and the remaining slots split among goals in proportion to their
+single draws per round (largest remainder, at least one each; recorded as
+`split.synth_v5_quota`). Each goal and the pairs keep their own shuffled queue, so the
+pair term is present in every step at the same size instead of 0-9 pairs per batch.
 
 The order is an explicit `--datasets-dir` / API argument, then
 `SORS_DATASETS_DIR`, then the legacy `DECIDOPHOBIA_DATASETS_DIR`, then a sibling
