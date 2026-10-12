@@ -44,12 +44,12 @@ def test_a_noul_is_a_no_yes_menu_with_its_criteria_written_after_each_side():
     assert half.option_names == ["no", "yes: Time-sensitive"]
 
 
-def test_a_score_is_a_menu_of_its_levels_from_low_to_high_asked_as_a_choice():
-    """分级按顺序排成菜单, 读出来的分布再在 serve.api 里算期望. 训练里没有带 <|score|> 的题,
-    所以类型写 choice —— 只有训练时开了 --type-marker 的存档才会把类型写进提示."""
+def test_a_score_is_a_menu_of_its_levels_from_low_to_high_asked_as_a_score():
+    """分级按顺序排成菜单, 读出来的分布再在 serve.api 里算期望. 训练数据 (synth-v5) 的评分题也记 score,
+    只有训练时开了 --type-marker 的存档才会把类型写进提示; 之前的存档都没开, 不受影响."""
     ex = to_example(_q({"type": "score", "instructions": "How frustrated is the customer?",
                         "criteria": ["Calm", "Frustrated", "Very angry"]}), STATE, "State")
-    assert ex.option_names == ["Calm", "Frustrated", "Very angry"] and ex.qtype == "choice"
+    assert ex.option_names == ["Calm", "Frustrated", "Very angry"] and ex.qtype == "score"
 
 
 def test_object_state_and_instructions_are_written_as_indented_json_and_object_descriptions_on_one_line():

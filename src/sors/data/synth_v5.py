@@ -57,7 +57,7 @@ class V5Item:
     asks: list[str]
     rows: list[str]  # 菜单各行, 带说明
     bare: list[str] | None  # 遮掉说明后的各行; None = 这个绑定不许遮
-    qtype: str  # choice | bool
+    qtype: str  # choice | bool | score (分级从低到高, 类 id 就是级别)
     target: list[float] | None  # 分布答案归一化后的各行概率; None = 硬标签
     gold: int
     pair: int | None = None  # 成对的另一半 (原题与它的 other 版, 同一份材料) 在 load_synth_v5 结果里的下标
@@ -99,7 +99,7 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
         extra_bare = key
     return V5Item(domain=domain, context_id=c["id"], question_id=q["id"], kind=q.get("kind", q["id"]),
                   goal=schema.goal_of(c, b), label=c["label"], texts=[state_text(t) for t in schema.variants(c["text"])],
-                  asks=list(q["ask"]), rows=rows, bare=bare, qtype="bool" if kind == "yes_no" else "choice",
+                  asks=list(q["ask"]), rows=rows, bare=bare, qtype={"yes_no": "bool", "score": "score"}.get(kind, "choice"),
                   target=target, gold=gold, fallback_row=extra, fallback_bare=extra_bare,
                   fallback_correct=(fallback, b.get("uncertainty")) in
                   (("other", "menu_missing"), ("unknown", "insufficient_evidence")))

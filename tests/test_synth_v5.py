@@ -110,7 +110,7 @@ def test_listed_options_and_score_levels_are_shown_as_written_and_cannot_be_mask
     p = _find(items, "telecom_queue_a", "pickup")
     assert p.rows == ["LOG-0719", "NET-0457", "EDR-2310"] and p.gold == 0 and p.bare is None
     s = _find(items, "telecom_rule_1", "level")
-    assert s.rows == ["Cosmetic", "Degraded", "Down"] and s.qtype == "choice" and s.bare is None
+    assert s.rows == ["Cosmetic", "Degraded", "Down"] and s.qtype == "score" and s.bare is None
 
 
 def test_a_distribution_is_normalised_and_its_most_likely_option_is_the_gold():
@@ -591,6 +591,16 @@ def test_strata_refuse_a_batch_size_other_than_the_one_they_were_built_for():
     except ValueError:
         return
     raise AssertionError("a 6-question batch from a 5-question plan")
+
+
+
+def test_a_score_item_shown_with_a_fallback_row_is_no_longer_an_ordered_scale():
+    """兜底行 (Other / 信息不足) 不在分级上, 加了兜底的评分题按选择题出."""
+    s = _find(_items(), "telecom_rule_1", "level")
+    assert s.qtype == "score"
+    if s.fallback_row is not None:
+        ex = item_example(s, random.Random(0), 0.0, fallback_rate=1.0)
+        assert ex.qtype == "choice", ex
 
 
 if __name__ == "__main__":

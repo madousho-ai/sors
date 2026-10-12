@@ -37,7 +37,7 @@ def to_example(q: Noul | Choice | Score, state, context_label: str) -> MenuExamp
         c = q.criteria
         names, qtype = [option_row(YES_NO[0], c and c.false), option_row(YES_NO[1], c and c.true)], "bool"
     else:
-        names, qtype = [_one_line(level) for level in q.criteria], "choice"
+        names, qtype = [_one_line(level) for level in q.criteria], "score"
     k = len(names)
     return MenuExample(query=state_text(state), options=list(range(k)), gold_idx=0, label=0, option_names=names,
                        context_label=context_label, question=state_text(q.instructions), qtype=qtype)
