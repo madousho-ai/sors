@@ -15,7 +15,7 @@ import tempfile
 from _runner import run
 from sors.core.menu import row_alignment, with_partners
 from sors.data.paths import asset_path
-from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, batch_quota, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
+from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, batch_quota, parse_type_quota, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
                                         parse_passes)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -601,6 +601,49 @@ def test_a_score_item_shown_with_a_fallback_row_is_no_longer_an_ordered_scale():
     if s.fallback_row is not None:
         ex = item_example(s, random.Random(0), 0.0, fallback_rate=1.0)
         assert ex.qtype == "choice", ex
+
+
+
+# ---- 按题型分段抽批 (V5TypeStrata, --type-quota): 每批选择题 / 是非题 / 评分题各固定几道
+
+def test_type_quota_is_parsed_and_must_cover_every_question_type_in_the_data():
+    assert parse_type_quota("choice=18,bool=14,score=4", {"choice", "bool", "score"}) == {"choice": 18, "bool": 14, "score": 4}
+    for bad in ("choice=18,bool=14", "choice=18,bool=14,score=0", "choice=x,bool=1,score=1", "choice=1,bool=1,score=1,rank=1"):
+        try:
+            parse_type_quota(bad, {"choice", "bool", "score"})
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted {bad!r}")
+
+
+def test_type_strata_fill_every_batch_with_the_quota_of_each_question_type():
+    items = _contrasted()
+    quota = {"choice": 3, "bool": 2, "score": 1}
+    s = V5TypeStrata(items, parse_passes(None, CF_GOALS), quota, mask_rate=0.0, fallback_rate=0.0)
+    rng, pairs = random.Random(0), 0
+    for _ in range(60):
+        batch = s(6, rng)
+        assert collections.Counter(ex.qtype for ex in batch) == collections.Counter(quota), [ex.qtype for ex in batch]
+        groups = collections.Counter(ex.contrast_group for ex in batch if ex.contrast_group is not None)
+        assert set(groups.values()) <= {2}, groups
+        pairs += len(groups)
+    assert pairs > 10, pairs
+
+
+def test_type_strata_draw_each_source_with_its_edit_and_refuse_another_batch_size():
+    items = _contrasted()
+    s = V5TypeStrata(items, parse_passes(None, CF_GOALS), {"choice": 3, "bool": 2, "score": 1}, 0.0, 0.0)
+    rng = random.Random(3)
+    for _ in range(40):
+        batch = s(6, rng)
+        edited = [ex for ex in batch if _is(ex, "telecom_queue_a/cf")]
+        for ex in edited:
+            assert ex.contrast_group is not None and sum(e.contrast_group == ex.contrast_group for e in batch) == 2
+    try:
+        s(7, rng)
+    except ValueError:
+        return
+    raise AssertionError("a 7-question batch from a 6-question quota")
 
 
 if __name__ == "__main__":

@@ -511,6 +511,35 @@ def test_contrast_pairs_build_every_batch_from_the_same_strata_and_are_named():
         raise AssertionError(f"accepted {bad}")
 
 
+
+def test_type_quota_splits_every_batch_into_choice_bool_and_score():
+    """--type-quota choice=18,bool=14,score=4 配 --passes: 每批 36 道, 三种题型各固定题数 (兜底增强后的是非题记 choice)."""
+    import collections
+    import random
+
+    sample, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=2,edge_case=2,long_context=2",
+                                            type_quota="choice=18,bool=14,score=4"))
+    assert info["synth_v5_type_quota"] == {"choice": 18, "bool": 14, "score": 4}, info
+    rng = random.Random(0)
+    for _ in range(5):
+        batch = sample(36, rng)
+        got = collections.Counter(e.qtype for e in batch)
+        assert len(batch) == 36 and got["score"] == 4 and got["choice"] >= 18 and got["choice"] + got["bool"] == 32, got
+    p = _mod.build_parser()
+    d = p.parse_args([])
+    assert d.type_quota is None
+    tag = _mod.run_tag(p.parse_args(["--dataset", "synth-v5", "--type-quota", "choice=18,bool=14,score=4"]))
+    assert "-tq18.14.4" in tag, tag
+    for bad in (dict(passes=None, type_quota="choice=18,bool=14,score=4"),
+                dict(passes="complex=2", type_quota="choice=18,bool=14"),
+                dict(passes="complex=2", type_quota="choice=18,bool=14,score=4", contrast_pairs=2)):
+        try:
+            _mod.build_data(_args("synth-v5", eval="massive", **bad))
+        except SystemExit:
+            continue
+        raise AssertionError(f"accepted {bad}")
+
+
 def test_max_length_defaults_to_8192():
     assert _mod.build_parser().parse_args([]).max_length == 8192
 

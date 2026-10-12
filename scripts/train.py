@@ -290,7 +290,8 @@ def build_data(args):
     if "synth-v5" in datasets:
         # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
         # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
-        from sors.data.synth_v5 import V5Rounds, V5Sampler, V5Strata, load_synth_v5, parse_mix, parse_passes
+        from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, load_synth_v5, parse_mix,
+                                        parse_passes, parse_type_quota)
 
         v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
         goals = {it.goal for it in v5}
@@ -301,10 +302,26 @@ def build_data(args):
             split_info["synth_v5_contrast_balance"] = True
         try:
             pairs = getattr(args, "contrast_pairs", 0)
+            type_quota = getattr(args, "type_quota", None)
+            if type_quota and (not args.passes or pairs or balance):
+                raise SystemExit("--type-quota needs --passes, draws each source with its edit already and replaces "
+                                 "--contrast-pairs / --contrast-balance")
             if pairs and (not args.passes or balance):
                 raise SystemExit("--contrast-pairs needs --passes and already balances each source with its edit "
                                  "(drop --contrast-balance)")
-            if pairs:
+            if type_quota:
+                quota = parse_type_quota(type_quota, {it.qtype for it in v5})
+                strata = V5TypeStrata(v5, parse_passes(args.passes, goals), quota, args.mask_descriptions,
+                                      fallback_rate)
+                if strata.batch_size != args.batch_size:
+                    raise SystemExit(f"--type-quota adds up to {strata.batch_size} questions, --batch-size is "
+                                     f"{args.batch_size}")
+                split_info["synth_v5_passes"] = strata.passes
+                split_info["synth_v5_type_quota"] = strata.quota
+                split_info["synth_v5_type_pools"] = {t: len(v) for t, v in strata.pools.items()}
+                split_info["synth_v5_pair_units"] = strata.pair_units
+                samplers.append(strata)
+            elif pairs:
                 strata = V5Strata(v5, parse_passes(args.passes, goals), pairs, args.batch_size,
                                   args.mask_descriptions, fallback_rate)
                 split_info["synth_v5_passes"] = strata.passes
@@ -524,6 +541,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "高出 --contrast-margin, 两份材料共有的特征在差里抵消. 0 = 不算. 配 --accumulate-gradients 时要给 "
                          "--micro-tokens (配对整组进一次前向). 写进目录名 (-cw<w>-cm<m>)")
     ap.add_argument("--contrast-margin", type=float, default=2.0, help="成对损失要求的对数几率差间隔 m (默认 2)")
+    ap.add_argument("--type-quota", default=None,
+                    help="synth-v5 按题型分段抽批 (要 --passes), 例如 choice=18,bool=14,score=4: 每批每种题型固定题数, "
+                         "加起来要等于 --batch-size, 数据里有的题型都要列. 各题型各自按轮出题, 原题与改动题成对出. "
+                         "写进目录名 (-tq<各题数>)")
     ap.add_argument("--contrast-pairs", type=int, default=0,
                     help="synth-v5 分层抽批 (要 --passes): 每批固定这么多对原题+改动题 (contrast_of), 其余位置按目标"
                          "固定份额 (正比于一轮里各目标单出的题数, 每个目标至少一道). 原题与改动题总是成对出. "
@@ -649,6 +670,7 @@ def run_tag(args) -> str:
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
         + (f"-cp{args.contrast_pairs}" if getattr(args, "contrast_pairs", 0) else "") \
+        + (f"-tq{'.'.join(v.split('=')[1] for v in args.type_quota.split(','))}" if getattr(args, "type_quota", None) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
         + (f"-{args.architecture}-decision{hashlib.sha1(json.dumps(resolve_architecture(args), sort_keys=True).encode()).hexdigest()[:6]}"

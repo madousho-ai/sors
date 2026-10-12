@@ -448,3 +448,82 @@ class V5Strata:
         for g in sorted(self.quota):
             draws += self._take(g, self.singles[g], self.quota[g], rng)
         return [ex for d in draws for ex in draw_examples(self.items, d, rng, self.mask_rate, self.fallback_rate)]
+
+
+# ---------------------------------------------------------------- 按题型分段抽批
+
+QTYPE_ORDER = ("choice", "bool", "score")
+
+
+def parse_type_quota(spec: str, qtypes: set[str]) -> dict[str, int]:
+    """'choice=18,bool=14,score=4' -> {题型: 每批题数}. 数据里有的每种题型都要列出, 题数 >= 1; 不认识的题型报错."""
+    out: dict[str, int] = {}
+    for part in spec.split(","):
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name not in QTYPE_ORDER or name in out:
+            raise ValueError(f"--type-quota: unknown or repeated question type {name!r} (known: {', '.join(QTYPE_ORDER)})")
+        try:
+            out[name] = int(value)
+        except ValueError:
+            raise ValueError(f"--type-quota: {part!r} is not type=count") from None
+        if out[name] < 1:
+            raise ValueError(f"--type-quota: {name} needs at least one question per batch, got {out[name]}")
+    if set(out) != qtypes:
+        raise ValueError(f"--type-quota lists {sorted(out)} but the data has {sorted(qtypes)}")
+    return out
+
+
+class V5TypeStrata:
+    """按题型分段抽批 (--type-quota): 每批选择题 / 是非题 / 评分题各 quota[t] 道, 三段的题各自按自己的 loss 算.
+    分段按绑定本来的题型 (V5Item.qtype); 兜底增强把是非题变成三行菜单时, 出来的题记 choice, 按选择题算 loss.
+    每种题型一个队列, 一轮把这种题型的绑定按遍数 (parse_passes) 各出一遍, 打乱, 取完再开下一轮.
+    原题与改动题总是成对出 (同 contrast_balance, 同一对只算一个单元), 一对占自己题型的两个位置;
+    这一段只剩一个位置时换队里下一道单出的题先出, 没有单出的题就只出这一对的前一半."""
+
+    def __init__(self, items: list[V5Item], passes: dict[str, int], quota: dict[str, int],
+                 mask_rate: float = 0.0, fallback_rate: float = 0.5):
+        _check_fallback_rate(fallback_rate)
+        missing = {it.goal for it in items} ^ set(passes)
+        if missing:
+            raise ValueError(f"the passes and the data disagree on goals {sorted(missing)}")
+        if set(quota) != {it.qtype for it in items}:
+            raise ValueError(f"the quota lists {sorted(quota)} but the data has {sorted({it.qtype for it in items})}")
+        self.items, self.passes, self.quota = items, passes, dict(quota)
+        self.mask_rate, self.fallback_rate = mask_rate, fallback_rate
+        self.batch_size = sum(quota.values())
+        edits = edit_map(items)
+        draws = sorted({tuple(sorted(d)) if len(d) == 2 else d for d in (draw_of(items, i, edits) for i in range(len(items)))})
+        self.pools: dict[str, list] = {t: [] for t in quota}
+        for d in draws:
+            first = items[d[0][0]]
+            reps = max(passes[items[k].goal] for u in d for k in u)
+            self.pools[first.qtype].extend([d] * reps)
+        self.pair_units = sum(len(d) == 2 for d in draws)
+        self.queues: dict[str, list] = {}
+        self.rounds = {t: 0 for t in quota}
+
+    def _segment(self, t: str, rng: random.Random) -> list:
+        out, room = [], self.quota[t]
+        while room:
+            q = self.queues.get(t)
+            if not q:
+                q = self.queues[t] = rng.sample(self.pools[t], len(self.pools[t]))[::-1]
+                self.rounds[t] += 1
+            if len(q[-1]) > room:
+                j = next((j for j in range(len(q) - 2, -1, -1) if len(q[j]) <= room), None)
+                if j is None:
+                    out.append(q.pop()[:1])
+                    room -= 1
+                    continue
+                q[j], q[-1] = q[-1], q[j]
+            d = q.pop()
+            out.append(d)
+            room -= len(d)
+        return out
+
+    def __call__(self, n: int, rng: random.Random) -> list[MenuExample]:
+        if n != self.batch_size:
+            raise ValueError(f"the type quota {self.quota} makes batches of {self.batch_size}, asked for {n}")
+        draws = [d for t in QTYPE_ORDER if t in self.quota for d in self._segment(t, rng)]
+        return [ex for d in draws for ex in draw_examples(self.items, d, rng, self.mask_rate, self.fallback_rate)]
