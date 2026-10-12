@@ -19,9 +19,15 @@ from sors.serve.api import Choice, Noul, Score
 YES_NO = ("no", "yes")  # 与训练里二元题的两项同名同序
 
 
+_LINE_BREAK = re.compile(r"\s*[\r\n]+\s*")
+
+
 def _one_line(v) -> str:
     s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-    return re.sub(r"\s*[\r\n]+\s*", " ", s)
+    # 绝大多数选项本来就是单行; 正则只会在 \r / \n 处命中, 先查一下能省掉训练数据加载的大半时间.
+    if "\n" not in s and "\r" not in s:
+        return s
+    return _LINE_BREAK.sub(" ", s)
 
 
 def option_row(name: str, description) -> str:
