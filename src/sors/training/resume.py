@@ -128,7 +128,7 @@ def resume_writer(out, completed_step: int):
 SAMPLING_SOURCES = ("scripts/train.py", "src/sors/data/synth_v5.py", "src/sors/core/menu.py",
                     "src/sors/core/prompt.py", "src/sors/serve/menus.py",
                     "src/sors/data/paths.py", "src/sors/training/resume.py")
-V5 = "synth-intents-v5.6"
+V5 = "synth-intents-v5.7"
 
 
 def _git(repo, *args) -> bytes:
