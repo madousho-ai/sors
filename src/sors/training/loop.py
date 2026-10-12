@@ -16,13 +16,15 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from sors.core.batch import collate, contrast_rows, contrast_units, pair_alignment, token_groups, trim_left_padding
+from sors.core.batch import (collate, contrast_rows, contrast_units, pair_alignment, score_levels, token_groups,
+                             trim_left_padding)
 from sors.core.menu import MenuExample, arrangements
 from sors.core.model import decision_logits, grouped_last_logits, last_logits, select_batch, trainable_param_groups
 from sors.core.decision import architecture_config
 from sors.core.prompt import DEFAULT_LAYOUT
 from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate
-from sors.training.loss import consistency_js, contrast_margin_loss, menu_hit_counts, smooth_target, training_loss
+from sors.training.loss import (consistency_js, contrast_margin_loss, menu_hit_counts, score_emd_loss, smooth_target,
+                                training_loss)
 from sors.training.prefetch import device_prefetch, prefetch_batches, validate_data_preparation
 from sors.training.schedule import lr_scale
 
@@ -50,6 +52,8 @@ class TrainConfig:
     consistency: float = 0.0  # 一致性项的权重 λ, 见 step_loss; > 0 时 sample_fn 要给成对的题 (menu.with_partners)
     contrast_weight: float = 0.0  # 原题/改动题成对损失的权重, 见 contrast_term; 0 = 不算
     contrast_margin: float = 2.0  # 成对损失要求的对数几率差间隔 m
+    contrast_qtypes: tuple[str, ...] | None = None  # 成对损失只算这些题型的配对; None = 全部
+    score_emd: float = 0.0  # 评分题分级距离项 (loss.score_emd_loss) 的权重; 0 = 不算
     eval_every: int = 100
     initial_eval: bool = True  # 开训前 (step 0) 先评一次; False 跳过. steps == 0 (只评估) 时照评
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
@@ -188,8 +192,18 @@ def contrast_term(cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: tor
     或批里没有可用的配对时是 None."""
     if cfg.contrast_weight <= 0:
         return None
-    rows = contrast_rows(exs)
+    rows = contrast_rows(exs, cfg.contrast_qtypes)
     return None if rows is None else contrast_margin_loss(logits, b["slot_ids"], rows, cfg.contrast_margin)
+
+
+def score_term(cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: torch.Tensor,
+               target: torch.Tensor | None = None) -> torch.Tensor | None:
+    """评分题的分级距离项 (乘权重之前), 按整批题数平均. cfg.score_emd 0 时是 None.
+    目标分布用 b["target"] (软标签原样, 不加标签平滑)."""
+    if cfg.score_emd <= 0:
+        return None
+    levels = score_levels(exs, b["slot_ids"].shape[1]).to(logits.device)
+    return score_emd_loss(logits, b["slot_ids"], levels, b["target"] if target is None else target)
 
 
 def step_loss(
@@ -203,6 +217,8 @@ def step_loss(
                        target=step_target(exs, b, cfg.label_smoothing))
     margin = contrast_term(cfg, exs, b, logits)
     total = ce if margin is None else ce + cfg.contrast_weight * margin
+    emd = score_term(cfg, exs, b, logits)
+    total = total if emd is None else total + cfg.score_emd * emd
     if cfg.consistency <= 0:
         return total, ce, None
     align = pair_alignment(exs, b["slot_ids"].shape[1]).to(logits.device)
@@ -248,7 +264,8 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         raise ValueError("empty batch, incomplete consistency pairs, or invalid micro_batches")
     alignment = pair_alignment(exs, b["slot_ids"].shape[1]).to(b["input_ids"].device) if paired else None
     target = step_target(exs, b, cfg.label_smoothing)
-    contrasts = contrast_rows(exs) if cfg.contrast_weight > 0 else None
+    contrasts = contrast_rows(exs, cfg.contrast_qtypes) if cfg.contrast_weight > 0 else None
+    levels = score_levels(exs, b["slot_ids"].shape[1]).to(b["input_ids"].device) if cfg.score_emd > 0 else None
     spans = contrast_units(exs, width) if contrasts is not None else width
     if contrasts is not None and cfg.micro_tokens <= 0 and cfg.micro_batches > 1:
         raise ValueError("the contrast loss with accumulated groups needs --micro-tokens (pairs stay in one group)")
@@ -275,10 +292,12 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         js = consistency_js(logits, slots, alignment[units]) if paired else None
         weight = len(rows) / size
         loss = ce if js is None else ce + cfg.consistency * js
+        if levels is not None:  # 组内按行平均, 乘 weight 后就是整批 Σ EMD / 整批行数
+            loss = loss + cfg.score_emd * score_emd_loss(logits, slots, levels[rows], targets)
         local = None
         if contrasts is not None:
             sub = [exs[i] for i in rows.tolist()]
-            picked = contrast_rows(sub)
+            picked = contrast_rows(sub, cfg.contrast_qtypes)
             if picked is not None:
                 local = contrast_margin_loss(logits, slots, picked, cfg.contrast_margin)
                 share = (int(picked["group"].max()) + 1) / n_groups

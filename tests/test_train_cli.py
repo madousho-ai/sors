@@ -512,7 +512,7 @@ def test_contrast_pairs_build_every_batch_from_the_same_strata_and_are_named():
 
 
 
-def test_type_quota_splits_every_batch_into_choice_bool_and_score():
+def test_type_quota_splits_every_batch_into_choice_bool_and_score_and_the_type_losses_are_named():
     """--type-quota choice=18,bool=14,score=4 配 --passes: 每批 36 道, 三种题型各固定题数 (兜底增强后的是非题记 choice)."""
     import collections
     import random
@@ -527,9 +527,10 @@ def test_type_quota_splits_every_batch_into_choice_bool_and_score():
         assert len(batch) == 36 and got["score"] == 4 and got["choice"] >= 18 and got["choice"] + got["bool"] == 32, got
     p = _mod.build_parser()
     d = p.parse_args([])
-    assert d.type_quota is None
-    tag = _mod.run_tag(p.parse_args(["--dataset", "synth-v5", "--type-quota", "choice=18,bool=14,score=4"]))
-    assert "-tq18.14.4" in tag, tag
+    assert (d.type_quota, d.score_emd, d.contrast_qtypes) == (None, 0.0, None)
+    tag = _mod.run_tag(p.parse_args(["--dataset", "synth-v5", "--type-quota", "choice=18,bool=14,score=4",
+                                     "--score-emd", "1", "--contrast-weight", "0.5", "--contrast-qtypes", "bool"]))
+    assert "-tq18.14.4" in tag and "-emd1" in tag and "-cqbool" in tag, tag
     for bad in (dict(passes=None, type_quota="choice=18,bool=14,score=4"),
                 dict(passes="complex=2", type_quota="choice=18,bool=14"),
                 dict(passes="complex=2", type_quota="choice=18,bool=14,score=4", contrast_pairs=2)):

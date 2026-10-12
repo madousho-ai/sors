@@ -139,6 +139,26 @@ def contrast_margin_loss(logits: torch.Tensor, slot_ids: torch.Tensor, rows: dic
     return F.softplus(margin - gap).mean()
 
 
+def score_emd_loss(logits: torch.Tensor, slot_ids: torch.Tensor, levels: torch.Tensor,
+                   target: torch.Tensor) -> torch.Tensor:
+    """评分题的分级距离项. levels (batch.score_levels) 给每行的级别, 非评分题全是 -1.
+    每道评分题: 菜单 softmax 后按级别排好, EMD = Σ_j (CDF_p(j) - CDF_t(j))², j 到倒数第二级 (最后一级两边都是 1).
+    返回 各评分题 EMD 之和 / 整批行数 (按题数加权, 非评分题记 0), 没有评分题时是 0."""
+    rows = (levels >= 0).any(1)
+    if not rows.any():
+        return logits.new_zeros(())
+    lv = levels[rows]
+    p = torch.softmax(gather_slot_logits(logits[rows].float(), slot_ids[rows]), dim=-1)
+    t = target[rows].to(p.dtype)
+    n_levels = int(lv.max()) + 1
+    idx = lv.clamp_min(0)
+    keep = (lv >= 0).to(p.dtype)
+    p_lv = torch.zeros(p.shape[0], n_levels, dtype=p.dtype, device=p.device).scatter_add_(1, idx, p * keep)
+    t_lv = torch.zeros_like(p_lv).scatter_add_(1, idx, t * keep)
+    gap = (p_lv.cumsum(1) - t_lv.cumsum(1))[:, :-1]
+    return (gap ** 2).sum() / logits.shape[0]
+
+
 def menu_hit_counts(
     logits: torch.Tensor, slot_ids: torch.Tensor, target: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:

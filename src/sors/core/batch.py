@@ -167,9 +167,10 @@ def contrast_units(examples: list[MenuExample], width: int) -> list[int]:
     return sizes
 
 
-def contrast_rows(examples: list[MenuExample]) -> dict[str, torch.Tensor] | None:
+def contrast_rows(examples: list[MenuExample], qtypes=None) -> dict[str, torch.Tensor] | None:
     """成对损失要的下标. 一组 = contrast_group 相同的行 (原题、改动题和各自的一致性配对), 正好有两种硬标签答案
     A、B (按第一次出现排), 而且每一行的菜单上两者都在; 不满足的组跳过. 没有可用的组时返回 None.
+    qtypes 给了就只要组里每一行的题型 (MenuExample.qtype) 都在其中的组, 例如只对是非题算成对损失.
     返回 row (批里的行) / group (第几组, 0 起) / is_b (这一行答 B) / pos_a / pos_b (A、B 在这一行菜单上的位置)."""
     groups: dict[int, list[int]] = {}
     for i, ex in enumerate(examples):
@@ -179,6 +180,8 @@ def contrast_rows(examples: list[MenuExample]) -> dict[str, torch.Tensor] | None
     for members in groups.values():
         labels = list(dict.fromkeys(examples[i].label for i in members))
         if len(labels) != 2 or any(examples[i].target is not None for i in members):
+            continue
+        if qtypes is not None and any(examples[i].qtype not in qtypes for i in members):
             continue
         a, b = labels
         if not all(a in examples[i].options and b in examples[i].options for i in members):
@@ -191,3 +194,13 @@ def contrast_rows(examples: list[MenuExample]) -> dict[str, torch.Tensor] | None
         return None
     t = lambda x, dt=torch.long: torch.tensor(x, dtype=dt)  # noqa: E731
     return {"row": t(rows), "group": t(gid), "is_b": t(is_b, torch.bool), "pos_a": t(pos_a), "pos_b": t(pos_b)}
+
+
+def score_levels(examples: list[MenuExample], k_max: int) -> torch.Tensor:
+    """(n, k_max): 评分题 (qtype score) 菜单第 j 行的级别 (类 id, 0 最低); 其余题、菜单之外补 -1.
+    行序打乱、换码都不影响级别, 级别跟着类 id 走."""
+    out = torch.full((len(examples), k_max), -1, dtype=torch.long)
+    for i, ex in enumerate(examples):
+        if ex.qtype == "score":
+            out[i, : len(ex.options)] = torch.tensor(ex.options)
+    return out

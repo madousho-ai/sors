@@ -545,6 +545,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="synth-v5 按题型分段抽批 (要 --passes), 例如 choice=18,bool=14,score=4: 每批每种题型固定题数, "
                          "加起来要等于 --batch-size, 数据里有的题型都要列. 各题型各自按轮出题, 原题与改动题成对出. "
                          "写进目录名 (-tq<各题数>)")
+    ap.add_argument("--score-emd", type=float, default=0.0,
+                    help="评分题分级距离项的权重: 每道评分题按级别比累计分布的平方差, 按整批题数平均后加进损失. "
+                         "0 = 评分题只用交叉熵. 写进目录名 (-emd<w>)")
+    ap.add_argument("--contrast-qtypes", default=None,
+                    help="成对损失只算这些题型的原题/改动题配对, 逗号分隔 (choice / bool / score); 不给 = 全部. "
+                         "写进目录名 (-cq<题型>)")
     ap.add_argument("--contrast-pairs", type=int, default=0,
                     help="synth-v5 分层抽批 (要 --passes): 每批固定这么多对原题+改动题 (contrast_of), 其余位置按目标"
                          "固定份额 (正比于一轮里各目标单出的题数, 每个目标至少一道). 原题与改动题总是成对出. "
@@ -671,6 +677,8 @@ def run_tag(args) -> str:
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
         + (f"-cp{args.contrast_pairs}" if getattr(args, "contrast_pairs", 0) else "") \
         + (f"-tq{'.'.join(v.split('=')[1] for v in args.type_quota.split(','))}" if getattr(args, "type_quota", None) else "") \
+        + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
+        + (f"-cq{args.contrast_qtypes.replace(',', '+')}" if getattr(args, "contrast_qtypes", None) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
         + (f"-{args.architecture}-decision{hashlib.sha1(json.dumps(resolve_architecture(args), sort_keys=True).encode()).hexdigest()[:6]}"
@@ -687,6 +695,10 @@ def main() -> None:
         raise SystemExit(str(error)) from None
     if args.micro_tokens < 0:
         raise SystemExit(f"--micro-tokens is a padded-token budget per group, >= 0; got {args.micro_tokens}")
+    if args.score_emd < 0:
+        raise SystemExit(f"--score-emd is a weight, >= 0; got {args.score_emd}")
+    if args.contrast_qtypes and not set(args.contrast_qtypes.split(",")) <= {"choice", "bool", "score"}:
+        raise SystemExit(f"--contrast-qtypes takes choice / bool / score, got {args.contrast_qtypes!r}")
     if args.contrast_weight > 0 and args.accumulate_gradients and args.micro_tokens <= 0 and args.micro_batches > 1:
         raise SystemExit("--contrast-weight with --accumulate-gradients needs --micro-tokens, so each original and "
                          "edited item stay in one forward group")
@@ -754,6 +766,8 @@ def main() -> None:
         context_marker=args.context_marker,
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
         contrast_weight=args.contrast_weight, contrast_margin=args.contrast_margin,
+        contrast_qtypes=tuple(args.contrast_qtypes.split(",")) if args.contrast_qtypes else None,
+        score_emd=args.score_emd,
         eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,
@@ -765,6 +779,7 @@ def main() -> None:
     print(f"dataset={'+'.join(datasets)} architecture={args.architecture} prefix_cache={args.candidate_prefix_cache} trainable={args.trainable} layout={args.layout} loss={args.loss} "
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"consistency={args.consistency:g} contrast_weight={args.contrast_weight:g} contrast_margin={args.contrast_margin:g} "
+          f"contrast_qtypes={args.contrast_qtypes} score_emd={args.score_emd:g} "
           f"data_workers={cfg.data_workers} data_prefetch={cfg.data_prefetch} data_backend={cfg.data_backend} "
           f"device_prefetch={cfg.device_prefetch} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "
