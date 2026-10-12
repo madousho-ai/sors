@@ -96,7 +96,7 @@ def test_accumulated_metrics_do_not_read_scalars_inside_each_group():
         data = collate(examples, tok, ids, 3)
         cfg = TrainConfig(k_max=3, loss='vocab', consistency=consistency, micro_batches=3)
         with Operations() as operations:
-            ce, js, hits, count, _ = backward_groups(model, cfg, examples, data, ids)
+            ce, js, hits, count, _, _ = backward_groups(model, cfg, examples, data, ids)
         assert isinstance(ce, float) and (js is None if not consistency else isinstance(js, float))
         assert isinstance(hits, int) and isinstance(count, int) and count == len(examples)
         assert 0 <= hits <= count and ce > 0
@@ -236,7 +236,7 @@ def test_group_reporting_keeps_python_sequential_rounding_exactly():
         hits_sum += hits
         n_sum += count
     got = backward_groups(model, cfg, examples, data, ids)
-    assert got == (ce_sum, js_sum, hits_sum, n_sum, None), (got, (ce_sum, js_sum, hits_sum, n_sum))
+    assert got == (ce_sum, js_sum, hits_sum, n_sum, None, None), (got, (ce_sum, js_sum, hits_sum, n_sum))
 
 
 def test_output_coordinates_keep_original_bounds_and_avoid_an_extra_full_table_copy():

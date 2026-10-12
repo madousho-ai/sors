@@ -206,6 +206,13 @@ def score_term(cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: torch.
     return score_emd_loss(logits, b["slot_ids"], levels, b["target"] if target is None else target)
 
 
+def score_item_emd(cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: torch.Tensor) -> float | None:
+    """日志用: 这一批每道评分题的 EMD 平均. score_term 是除以整批题数的那个量, 这里换算回每道评分题."""
+    emd = score_term(cfg, exs, b, logits)
+    n_score = sum(ex.qtype == "score" for ex in exs)
+    return None if emd is None or not n_score else float(emd) * len(exs) / n_score
+
+
 def step_loss(
     cfg: TrainConfig, exs: list[MenuExample], b: dict, logits: torch.Tensor, d_ids: list[int],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
@@ -275,7 +282,7 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         order = torch.argsort(lengths_t, descending=True, stable=True)
         plan = [((units[:, None] * width + torch.arange(width, device=units.device)).flatten(), None)
                 for units in torch.tensor_split(order, min(cfg.micro_batches, len(order)))]
-    reports, weights, margin_parts = [], [], []
+    reports, weights, margin_parts, emd_parts = [], [], [], []
     n_groups = int(contrasts["group"].max()) + 1 if contrasts is not None else 0
     for rows, text_width in plan:
         units = rows[::width].div(width, rounding_mode="floor")
@@ -293,7 +300,9 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         weight = len(rows) / size
         loss = ce if js is None else ce + cfg.consistency * js
         if levels is not None:  # 组内按行平均, 乘 weight 后就是整批 Σ EMD / 整批行数
-            loss = loss + cfg.score_emd * score_emd_loss(logits, slots, levels[rows], targets)
+            emd = score_emd_loss(logits, slots, levels[rows], targets)
+            emd_parts.append(emd.detach() * len(rows))  # 本组评分题 EMD 之和
+            loss = loss + cfg.score_emd * emd
         local = None
         if contrasts is not None:
             sub = [exs[i] for i in rows.tolist()]
@@ -317,7 +326,9 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         js_sum += weight * row[1]
     hits_sum, n_sum = (sum(int(row[i]) for row in values) for i in (2, 3))
     margin_sum = float(torch.stack(margin_parts).sum().cpu()) if margin_parts else None
-    return ce_sum, js_sum if paired else None, hits_sum, n_sum, margin_sum
+    n_score = int((levels >= 0).any(1).sum()) if levels is not None else 0
+    emd_mean = float(torch.stack(emd_parts).sum().cpu()) / n_score if n_score else None
+    return ce_sum, js_sum if paired else None, hits_sum, n_sum, margin_sum, emd_mean
 
 
 def _prepare_batch(spec: tuple, sample, tokenizer):
@@ -355,6 +366,7 @@ def train(
                                     是不是目标分布的最大行; 均匀标签的题不计). 批里是打乱过、换过码的题, 成对时两份都算
       train/js                      cfg.consistency > 0 时, 成对题的 JS (乘 λ 之前)
       train/contrast_margin         cfg.contrast_weight > 0 时, 原题/改动题成对损失 (乘权重之前)
+      train/score_emd               cfg.score_emd > 0 时, 每道评分题的分级距离 EMD 平均 (乘权重、除整批题数之前)
       consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
       eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
       consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
@@ -492,6 +504,7 @@ def train(
                            lr_at_resume=[g["lr"] for g in opt.param_groups])
     running, running_js, running_hits, running_n = resume.get("running", [0.0, 0.0, 0, 0]) if resume else (0.0, 0.0, 0, 0)
     running_cm, running_cm_n = 0.0, 0
+    running_emd, running_emd_n = 0.0, 0
     consumed_rng = rng.getstate()
 
     def samples():
@@ -528,7 +541,7 @@ def train(
                 data_wait += time.perf_counter() - waited
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
-                    ce_value, js_value, hits, n, cm_value = backward_groups(m, cfg, exs, b, d_ids, lengths)
+                    ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(m, cfg, exs, b, d_ids, lengths)
                 else:
                     groups = planned_groups(cfg, lengths, b) or cfg.micro_batches
                     logits = (decision_logits(m, b, groups) if architecture["kind"] != "slots" else
@@ -537,6 +550,7 @@ def train(
                     metrics = _metric_tensor(ce, js, logits, b["slot_ids"], b["target"])
                     cm = contrast_term(cfg, exs, b, logits.detach())
                     cm_value = None if cm is None else float(cm)
+                    emd_value = score_item_emd(cfg, exs, b, logits.detach())
                     loss.backward()
                     ce_value, js_value, hits, n = metrics.cpu().tolist()
                     js_value = js_value if js is not None else None
@@ -556,6 +570,8 @@ def train(
                     running_js += js_value
                 if cm_value is not None:  # 成对损失 (乘权重之前), 只进日志, 不进续训状态
                     running_cm, running_cm_n = running_cm + cm_value, running_cm_n + 1
+                if emd_value is not None:  # 每道评分题的 EMD (乘权重之前), 同上只进日志
+                    running_emd, running_emd_n = running_emd + emd_value, running_emd_n + 1
                 if step % cfg.log_every == 0:
                     avg = running / cfg.log_every
                     avg_js = running_js / cfg.log_every
@@ -564,6 +580,7 @@ def train(
                     print(f"step {step:5d}  loss {avg:.4f}" + (f"  js {avg_js:.4f}" if js_value is not None else "")
                           + (f"  acc {acc:.3f}" if acc is not None else "")
                           + (f"  cmargin {running_cm / running_cm_n:.4f}" if running_cm_n else "")
+                          + (f"  emd {running_emd / running_emd_n:.4f}" if running_emd_n else "")
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
                         writer.add_scalar("sys/data_wait_ms", 1e3 * data_wait / cfg.log_every, step)
@@ -574,12 +591,15 @@ def train(
                             writer.add_scalar("train/js", avg_js, step)
                         if running_cm_n:
                             writer.add_scalar("train/contrast_margin", running_cm / running_cm_n, step)
+                        if running_emd_n:
+                            writer.add_scalar("train/score_emd", running_emd / running_emd_n, step)
                         for i, g in enumerate(opt.param_groups):
                             writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
                         if t is not None:
                             writer.add_scalar("sys/tctl_c", t, step)
                     running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
                     running_cm, running_cm_n = 0.0, 0
+                    running_emd, running_emd_n = 0.0, 0
                     data_wait = 0.0
                 if step % cfg.eval_every == 0 or step == cfg.steps:
                     do_eval(step, ce_value, final=step == cfg.steps)

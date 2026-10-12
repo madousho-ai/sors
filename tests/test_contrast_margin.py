@@ -138,7 +138,7 @@ def test_token_budget_accumulation_keeps_contrast_pairs_together_and_matches_who
     want_margin = contrast_term(cfg, exs, b, logits).item()
     m.zero_grad(set_to_none=True)
     lengths = b["attention_mask"].sum(1).tolist()
-    got_ce, got_js, _, _, got_margin = backward_groups(m, cfg, exs, b, ids, lengths)
+    got_ce, got_js, _, _, got_margin, _ = backward_groups(m, cfg, exs, b, ids, lengths)
     assert abs(got_ce - ce.item()) < 2e-5 and abs(got_js - js.item()) < 2e-6
     assert abs(got_margin - want_margin) < 2e-5, (got_margin, want_margin)
     for k, p in m.named_parameters():

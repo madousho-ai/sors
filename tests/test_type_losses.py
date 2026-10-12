@@ -16,9 +16,9 @@ from _runner import run
 from sors.core.batch import collate, contrast_rows, group_contrasts, score_levels
 from sors.core.menu import MenuExample, reorder_menu, with_partners
 from sors.core.model import last_logits
-from sors.training.loop import TrainConfig, backward_groups, step_loss
+from sors.training.loop import TrainConfig, backward_groups, step_loss, train
 from sors.training.loss import score_emd_loss
-from test_evaluate import D5, _hand_batch, _tiny
+from test_evaluate import D5, _Writer, _hand_batch, _tiny
 
 LEVELS = ["low", "mid", "high"]
 
@@ -112,11 +112,40 @@ def test_token_budget_accumulation_matches_the_whole_batch_with_score_and_bool_o
     loss, ce, js = step_loss(cfg, exs, b, logits, ids)
     loss.backward()
     expected = {k: p.grad.clone() for k, p in m.named_parameters() if p.grad is not None}
+    want_emd = score_emd_loss(logits, b["slot_ids"], score_levels(exs, 3), b["target"]).item() * len(exs) / 4
     m.zero_grad(set_to_none=True)
-    backward_groups(m, cfg, exs, b, ids, b["attention_mask"].sum(1).tolist())
+    got = backward_groups(m, cfg, exs, b, ids, b["attention_mask"].sum(1).tolist())
+    assert len(got) == 6 and abs(got[5] - want_emd) < 2e-5, (got, want_emd)  # 每道评分题 (4 行) 的平均 EMD
     for k, p in m.named_parameters():
         if k in expected:
             torch.testing.assert_close(p.grad, expected[k], rtol=2e-4, atol=2e-5)
+
+
+
+def _emd_per_score_item(m, tok, ids, exs):
+    b = collate(exs, tok, ids, 3)
+    with torch.no_grad():
+        logits = last_logits(m, b["input_ids"], b["attention_mask"])
+    n_score = sum(e.qtype == "score" for e in exs)
+    return score_emd_loss(logits, b["slot_ids"], score_levels(exs, 3), b["target"]).item() * len(exs) / n_score
+
+
+def test_train_logs_the_score_emd_per_score_item_with_and_without_accumulation():
+    """train/score_emd: 这一步每道评分题的 EMD 平均 (乘权重之前); 没开 --score-emd 时不记."""
+    for accumulate in (False, True):
+        tok, ids, m = _tiny()
+        exs = [_score(2, order=(1, 0, 2)), _choice(1), _score(0, order=(2, 0, 1)), _choice(0)]
+        want = _emd_per_score_item(m, tok, ids, exs)
+        w = _Writer()
+        cfg = TrainConfig(steps=1, batch_size=4, k_max=3, loss="menu", eval_every=1, log_every=1, score_emd=0.5,
+                          accumulate_gradients=accumulate, micro_tokens=64 if accumulate else 0)
+        train(m, tok, ids, lambda n, rng: list(exs), {}, cfg, writer=w)
+        got = [v for t, v, _ in w.scalars if t == "train/score_emd"]
+        assert len(got) == 1 and abs(got[0] - want) < 2e-5, (accumulate, got, want)
+        w = _Writer()
+        train(m, tok, ids, lambda n, rng: list(exs), {},
+              TrainConfig(steps=1, batch_size=4, k_max=3, loss="menu", eval_every=1, log_every=1), writer=w)
+        assert not [t for t, _, _ in w.scalars if t == "train/score_emd"]
 
 
 if __name__ == "__main__":
