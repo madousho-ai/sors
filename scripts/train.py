@@ -290,10 +290,17 @@ def build_data(args):
     if "synth-v5" in datasets:
         # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
         # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
-        from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, load_synth_v5, parse_mix,
-                                        parse_passes, parse_type_quota)
+        from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, drop_categories, load_synth_v5,
+                                        parse_mix, parse_passes, parse_type_quota)
 
         v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
+        excluded = sorted(set(args.exclude_categories.split(","))) if getattr(args, "exclude_categories", None) else []
+        if excluded:
+            try:
+                v5 = drop_categories(v5, set(excluded))
+            except ValueError as e:
+                raise SystemExit(f"--exclude-categories: {e}") from None
+            split_info["synth_v5_excluded_categories"] = excluded
         goals = {it.goal for it in v5}
         split_info["synth_v5_items"] = len(v5)
         split_info["synth_v5_contrast_items"] = sum(it.contrast is not None for it in v5)
@@ -541,6 +548,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "高出 --contrast-margin, 两份材料共有的特征在差里抵消. 0 = 不算. 配 --accumulate-gradients 时要给 "
                          "--micro-tokens (配对整组进一次前向). 写进目录名 (-cw<w>-cm<m>)")
     ap.add_argument("--contrast-margin", type=float, default=2.0, help="成对损失要求的对数几率差间隔 m (默认 2)")
+    ap.add_argument("--exclude-categories", default=None,
+                    help="synth-v5 不训练带这些能力类别的绑定, 逗号分隔 (数据 categories/<domain>.json 的类别, 例如 "
+                         "computation_easy,computation_hard; 另有自动的 long_context). 改动题对少了一边就单出. "
+                         "写进目录名 (-xc<类别>)")
     ap.add_argument("--type-quota", default=None,
                     help="synth-v5 按题型分段抽批 (要 --passes), 例如 choice=18,bool=14,score=4: 每批每种题型固定题数, "
                          "加起来要等于 --batch-size, 数据里有的题型都要列. 各题型各自按轮出题, 原题与改动题成对出. "
@@ -676,6 +687,7 @@ def run_tag(args) -> str:
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
         + (f"-cp{args.contrast_pairs}" if getattr(args, "contrast_pairs", 0) else "") \
+        + (f"-xc{'+'.join(sorted(set(args.exclude_categories.split(','))))}" if getattr(args, "exclude_categories", None) else "") \
         + (f"-tq{'.'.join(v.split('=')[1] for v in args.type_quota.split(','))}" if getattr(args, "type_quota", None) else "") \
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
         + (f"-cq{args.contrast_qtypes.replace(',', '+')}" if getattr(args, "contrast_qtypes", None) else "") \

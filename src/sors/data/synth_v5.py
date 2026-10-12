@@ -65,6 +65,7 @@ class V5Item:
     fallback_bare: str | None = None
     fallback_correct: bool = False
     contrast: int | None = None  # 改动题: 原材料 (contrast_of) 上同一道题的绑定下标; 抽到它时原题一起出
+    categories: tuple[str, ...] = ()  # 能力类别 (数据的 categories/<domain>.json, 多标签; 长材料多一个 long_context); 数据没标就是空
 
 
 def _schema(data_dir: pathlib.Path):
@@ -117,10 +118,18 @@ def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
         if errs:
             raise ValueError(f"{domain}: {len(errs)} format problems, e.g. {errs[:2]}; "
                               f"run {data_dir / 'schema.py'} {domain} to see them all")
+        cats = schema.load_categories(domain, data_dir) if hasattr(schema, "load_categories") else None
+        if cats is not None:
+            errs = schema.category_problems(domain, contexts, cats)
+            if errs:
+                raise ValueError(f"{domain}: {len(errs)} category problems, e.g. {errs[:2]}; "
+                                 f"run {data_dir / 'schema.py'} {domain} to see them all")
         by_id = {q["id"]: q for q in bank}
         for c in contexts:
             start = len(out)
-            out += [_item(schema, domain, c, b, by_id[b["question"]]) for b in c["questions"]]
+            out += [replace(_item(schema, domain, c, b, by_id[b["question"]]),
+                            categories=tuple(schema.categories_of(c, b, cats)) if cats is not None else ())
+                    for b in c["questions"]]
             at = {b["question"]: start + j for j, b in enumerate(c["questions"])}
             for j, b in enumerate(c["questions"]):
                 base = by_id[b["question"]].get("other_of")
@@ -129,6 +138,23 @@ def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
                     out[i], out[k] = replace(out[i], pair=k), replace(out[k], pair=i)
         _link_contrasts(out, contexts, domain)
     return out
+
+
+def drop_categories(items: list[V5Item], excluded: set[str]) -> list[V5Item]:
+    """去掉带任一 excluded 类别的绑定 (--exclude-categories). 留下的绑定之间的下标 (pair、contrast) 重新编号,
+    指向被去掉的绑定的那一头置空: 原题还在、改动题去掉了, 原题照常单出; 反过来改动题单出.
+    excluded 为空时原样返回; 不认识的类别报 ValueError."""
+    if not excluded:
+        return items
+    known = {c for it in items for c in it.categories} | {"long_context"}
+    if any(it.categories == () for it in items):
+        raise ValueError("--exclude-categories needs data whose every binding has categories")
+    unknown = set(excluded) - known
+    if unknown:
+        raise ValueError(f"unknown categories {sorted(unknown)}; the data has {sorted(known)}")
+    keep = [i for i, it in enumerate(items) if not set(excluded) & set(it.categories)]
+    new = {old: k for k, old in enumerate(keep)}
+    return [replace(items[i], pair=new.get(items[i].pair), contrast=new.get(items[i].contrast)) for i in keep]
 
 
 def _link_contrasts(out: list[V5Item], contexts: list[dict], domain: str) -> None:

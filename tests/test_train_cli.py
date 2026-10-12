@@ -27,7 +27,8 @@ def _args(dataset, **kw):
     base = dict(dataset=dataset, k_min=None, k_max=256, k_log=False, k_eval=256, held_out=17, seed=0,
                 eval_batch_size=16, eval_limit=0, data_dir="data/banking77", random_codes=0.0, label_smoothing=0.0,
                 consistency=0.0, probe_size=200, probe_passes=5, micro_batches=2, eval="banking77+massive+boolq",
-                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None, contrast_weight=0.0, batch_size=36)
+                mix=None, mask_descriptions=0.0, passes=None, fallback_rate=None, contrast_weight=0.0, batch_size=36,
+                exclude_categories=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -539,6 +540,34 @@ def test_type_quota_splits_every_batch_into_choice_bool_and_score_and_the_type_l
         except SystemExit:
             continue
         raise AssertionError(f"accepted {bad}")
+
+
+
+def test_exclude_categories_drops_those_bindings_from_training_and_is_named():
+    """--exclude-categories computation_easy,computation_hard: 带计算类别的绑定不进训练; 改动题对少了一边就单出."""
+    import random
+    from sors.data.synth_v5 import load_synth_v5
+
+    items = load_synth_v5()
+    hard = {"computation_easy", "computation_hard"}
+    n_hard = sum(bool(hard & set(it.categories)) for it in items)
+    assert n_hard > 1000, n_hard
+    sample, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=2",
+                                            exclude_categories="computation_easy,computation_hard"))
+    assert info["synth_v5_items"] == len(items) - n_hard, info
+    assert info["synth_v5_excluded_categories"] == ["computation_easy", "computation_hard"]
+    rng = random.Random(0)
+    names = {(it.context_id, it.question_id) for it in items if hard & set(it.categories)}
+    assert names
+    p = _mod.build_parser()
+    assert p.parse_args([]).exclude_categories is None
+    tag = _mod.run_tag(p.parse_args(["--dataset", "synth-v5", "--exclude-categories", "computation_hard,computation_easy"]))
+    assert "-xccomputation_easy+computation_hard" in tag, tag
+    try:
+        _mod.build_data(_args("synth-v5", eval="massive", exclude_categories="arithmetic"))
+    except SystemExit:
+        return
+    raise AssertionError("unknown category accepted")
 
 
 def test_max_length_defaults_to_8192():

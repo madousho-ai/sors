@@ -15,7 +15,7 @@ import tempfile
 from _runner import run
 from sors.core.menu import row_alignment, with_partners
 from sors.data.paths import asset_path
-from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, batch_quota, parse_type_quota, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
+from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, batch_quota, drop_categories, parse_type_quota, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
                                         parse_passes)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -644,6 +644,77 @@ def test_type_strata_draw_each_source_with_its_edit_and_refuse_another_batch_siz
     except ValueError:
         return
     raise AssertionError("a 7-question batch from a 6-question quota")
+
+
+
+# ---- 能力类别 (categories/<domain>.json): 多标签, 训练时可按类别关掉
+
+def _categories(d, domain, questions, bindings=None):
+    (d / "categories").mkdir(exist_ok=True)
+    (d / "categories" / f"{domain}.json").write_text(json.dumps(
+        {"domain": domain, "questions": questions, "bindings": bindings or {}}))
+
+
+TELECOM_CATS = {"intent": ["intent"], "direct": ["fact_lookup"], "detail_cancel_contract": ["fact_lookup"],
+                "detail_view_latest_bill": ["fact_lookup"], "pickup": ["fact_compose", "computation_easy"],
+                "level": ["computation_hard"]}
+
+
+def _labelled(**over):
+    d = _data(**over)
+    _categories(d, "telecom", TELECOM_CATS, {"telecom_queue_a": {"pickup": ["fact_lookup"]}})
+    _categories(d, "hotel", {"intent": ["intent"]})
+    return d
+
+
+def test_categories_come_from_the_question_with_binding_overrides_and_long_texts_are_marked():
+    long_text = "x " * 600
+    c = [*TELECOM_C, {"id": "telecom_long", "label": "", "goal": "long_context", "text": long_text,
+                      "questions": [{"question": "direct", "answer": "no"}]}]
+    items = load_synth_v5(_labelled(telecom=(TELECOM_Q, c)))
+    assert _find(items, "telecom_cancel_contract#0", "direct").categories == ("fact_lookup",)
+    assert _find(items, "telecom_queue_a", "pickup").categories == ("fact_lookup",)  # 绑定覆盖
+    assert _find(items, "telecom_rule_1", "level").categories == ("computation_hard",)
+    assert _find(items, "telecom_long", "direct").categories == ("fact_lookup", "long_context")  # >= 1000 字符自动加
+    assert all(it.categories == () for it in _items()), "没有 categories 目录的数据不带类别"
+
+
+def test_categories_must_cover_every_bound_question_with_known_labels():
+    for qs, binds in (({k: v for k, v in TELECOM_CATS.items() if k != "pickup"}, {}),
+                      ({**TELECOM_CATS, "pickup": ["arithmetic"]}, {}),
+                      (TELECOM_CATS, {"telecom_queue_a": {"level": ["intent"]}})):
+        d = _data()
+        _categories(d, "telecom", qs, binds)
+        _categories(d, "hotel", {"intent": ["intent"]})
+        try:
+            load_synth_v5(d)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted {qs} / {binds}")
+
+
+def test_dropping_categories_removes_those_items_and_keeps_the_links_of_the_rest_consistent():
+    items = load_synth_v5(_labelled(telecom=(TELECOM_Q, [*TELECOM_C, EDITED])))
+    edited = _find(items, "telecom_queue_a/cf", "pickup")
+    assert edited.contrast is not None and edited.categories == ("fact_compose", "computation_easy")
+    kept = drop_categories(items, {"computation_easy", "computation_hard"})
+    assert not any({"computation_easy", "computation_hard"} & set(it.categories) for it in kept)
+    assert len(kept) == len(items) - 2  # 改动题 (pickup 没覆盖) 与 level 题
+    assert _find(kept, "telecom_queue_a", "pickup").contrast is None
+    for it in kept:
+        for link in (it.pair, it.contrast):
+            assert link is None or 0 <= link < len(kept)
+        if it.pair is not None:
+            assert kept[it.pair].pair is not None and kept[kept[it.pair].pair] == it
+    assert drop_categories(items, set()) == items
+    shifted = drop_categories(items, {"intent"})  # 去掉排在前面的意图题, 后面的下标整体前移
+    e = _find(shifted, "telecom_queue_a/cf", "pickup")
+    assert shifted[e.contrast] == _find(shifted, "telecom_queue_a", "pickup")
+    try:
+        drop_categories(items, {"arithmetic"})
+    except ValueError:
+        return
+    raise AssertionError("unknown category accepted")
 
 
 if __name__ == "__main__":
