@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.5/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.6/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.5
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.6
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -25,13 +25,22 @@ became `synth-intents-v5.5` when every counterfactual material recorded the mate
 it was edited from (`contrast_of`), so training puts the original and the edited item
 into the same batch: drawing an edited item also draws the same question on its source
 material, and the pair counts as two questions of the batch (`split.synth_v5_contrast_items`,
-and `synth_v5_contrast_draws` per round with `--passes`). `--dataset synth-v5.1`, `synth-v5.2`, `synth-v5.3` and
-`synth-v5.4` are rejected with a pointer to the new name; `synth-v5`
+and `synth_v5_contrast_draws` per round with `--passes`), and `synth-intents-v5.5`
+became `synth-intents-v5.6` when every question gained ability categories
+(`categories/<domain>.json`: fact_lookup, fact_compose, negation_update, intent,
+computation_easy, computation_hard, plus long_context for materials of 1,000+ chars) and
+1,188 `factread` materials were added: 297 long materials, each in four versions (the
+original, two edits of different text facts that change the answer, one edit that keeps
+it), none of which touches a digit, with 144 held-out groups kept out of training.
+`--exclude-categories computation_easy,computation_hard` drops the items that need
+arithmetic or date reasoning (`split.synth_v5_excluded_categories`; run dir `-xc...`).
+`--dataset synth-v5.1` through `synth-v5.5` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.5. A `--mix` written for v5.2 must add a
+resume fingerprint check against v5.6. A `--mix` written for v5.2 must add a
 `contrast=` share, since every goal in the data keeps a positive share. Sors-2B was
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
-The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36.
+The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36; the v5.5
+runs of 2026-10-11/12 (v55, v56c, v56s, v57) used eca83c1.
 
 Two options act on these pairs. `--contrast-balance` makes drawing the original item bring its
 edited item too, so both appear equally often (without it the original appears once more per
@@ -87,8 +96,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.5+sharc+toolace \
-  --dataset-weights synth-v5.5=27,sharc=6,toolace=3 \
+  --dataset synth-v5.6+sharc+toolace \
+  --dataset-weights synth-v5.6=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 
