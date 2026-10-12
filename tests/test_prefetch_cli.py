@@ -9,7 +9,6 @@ import tempfile
 import threading
 from unittest.mock import patch
 
-from _runner import run
 from test_decision import tokenizer, tiny_backbone
 from test_resume import _Sampler
 from sors.training import loop
@@ -202,7 +201,3 @@ def test_old_resume_configs_get_defaults_and_invalid_overrides_are_refused():
         except ValueError:
             continue
         raise AssertionError("invalid resume execution limits accepted")
-
-
-if __name__ == "__main__":
-    run(globals())

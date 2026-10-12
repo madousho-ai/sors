@@ -5,9 +5,9 @@ from pathlib import Path
 import random
 import tempfile
 
+import pytest
 import torch
 
-from _runner import run
 from test_decision import batch, examples, tiny_backbone, tiny_model
 from sors.core.checkpoint import prepare_from_checkpoint, save_trained
 from sors.core.menu import reorder_menu, with_partners
@@ -74,10 +74,15 @@ def check(family, kind, feedback):
                       "loss": float(loss.detach()), "symmetry_max_abs": symmetry_error}), flush=True)
 
 
-if __name__ == "__main__":
-    if not torch.cuda.is_available():
-        raise SystemExit("CUDA is required; run this explicit validation on the GPU server")
+@pytest.fixture(autouse=True)
+def _memory_fraction(require_cuda):
     torch.cuda.set_per_process_memory_fraction(0.1)
-    run({f"test_cuda_{family}_{kind}_feedback_{feedback}":
-         (lambda family=family, kind=kind, feedback=feedback: check(family, kind, feedback))
-         for family in ("qwen3", "qwen35") for kind in ("minimal", "structural") for feedback in (False, True)})
+    yield
+    torch.cuda.set_per_process_memory_fraction(1.0)  # 同一进程里接着跑的测试不受这个上限约束
+
+
+@pytest.mark.parametrize("feedback", [False, True])
+@pytest.mark.parametrize("kind", ["minimal", "structural"])
+@pytest.mark.parametrize("family", ["qwen3", "qwen35"])
+def test_cuda(family, kind, feedback):
+    check(family, kind, feedback)

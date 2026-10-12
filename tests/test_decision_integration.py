@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import torch
 
-from _runner import run
 from test_decision import batch, examples, tiny_backbone, tiny_model
 from sors.core.checkpoint import load_trained, prepare_from_checkpoint, read_checkpoint, save_trained
 from sors.core.decision import architecture_config
@@ -292,7 +291,3 @@ def test_complete_state_save_rejects_datasets_outside_the_resume_contract_before
                 else:
                     raise AssertionError("created a full state the recovery entry point refuses")
             assert not out.exists()
-
-
-if __name__ == "__main__":
-    run(globals())

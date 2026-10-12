@@ -1,9 +1,8 @@
 """sors.training.schedule 的测试.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_schedule.py
+跑:  .venv/bin/pytest tests/test_schedule.py
 """
 
-import sys
 
 from sors.training.schedule import lr_scale
 
@@ -32,21 +31,3 @@ def test_zero_warmup_starts_at_full_lr():
 
 def test_beyond_total_stays_at_zero():
     assert lr_scale(1500, warmup=100, total=1000, kind="cosine") == 0.0
-
-
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        try:
-            fn()
-            print(f"PASS  {name}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL  {name}: {e}")
-        except Exception as e:
-            failed += 1
-            print(f"ERROR {name}: {type(e).__name__}: {e}")
-    print(f"\n{failed} failed")
-    sys.exit(1 if failed else 0)

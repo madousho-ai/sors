@@ -4,7 +4,7 @@
 EMD = Σ_j (CDF_p(j) - CDF_t(j))², j 取到倒数第二级. 一批的这一项 = 各评分题 EMD 之和 / 整批题数
 (按题数加权: 非评分题记 0), 所以分组反传时和交叉熵一样按行数折算即可.
 
-跑:  HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_type_losses.py
+跑:  HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_type_losses.py
 """
 
 import random
@@ -12,7 +12,6 @@ from dataclasses import replace
 
 import torch
 
-from _runner import run
 from sors.core.batch import collate, contrast_rows, group_contrasts, score_levels
 from sors.core.menu import MenuExample, reorder_menu, with_partners
 from sors.core.model import last_logits
@@ -146,7 +145,3 @@ def test_train_logs_the_score_emd_per_score_item_with_and_without_accumulation()
         train(m, tok, ids, lambda n, rng: list(exs), {},
               TrainConfig(steps=1, batch_size=4, k_max=3, loss="menu", eval_every=1, log_every=1), writer=w)
         assert not [t for t, _, _ in w.scalars if t == "train/score_emd"]
-
-
-if __name__ == "__main__":
-    run(globals())

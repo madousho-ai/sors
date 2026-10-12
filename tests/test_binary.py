@@ -1,9 +1,8 @@
 """sors.evaluation.metrics 里二元指标的测试 + BoolQ adapter.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_binary.py
+跑:  .venv/bin/pytest tests/test_binary.py
 """
 
-from _runner import run
 from sors.core.menu import MenuExample
 from sors.evaluation.metrics import auroc, binary_summary
 
@@ -52,7 +51,3 @@ def test_boolq_adapter_shapes():
     assert va.names == {0: "no", 1: "yes"} and va.context_label == "Passage"
     assert len(va.questions) == 3270 and va.questions[0].endswith("?")
     assert abs(sum(va.labels) / len(va.labels) - 0.6217) < 0.001
-
-
-if __name__ == "__main__":
-    run(globals())

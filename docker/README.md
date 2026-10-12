@@ -143,11 +143,11 @@ $ENGINE stop sors-offline
 ## 本地回归测试
 
 ```bash
-PYTHONPATH=src .venv/bin/python tests/test_container_kernels.py
-PYTHONPATH=src .venv/bin/python tests/test_container_entrypoint.py
-OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_container_serve.py
-PYTHONPATH=src .venv/bin/python tests/test_attention.py
-OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_serve_cli.py
+.venv/bin/pytest tests/test_container_kernels.py
+.venv/bin/pytest tests/test_container_entrypoint.py
+OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_container_serve.py
+.venv/bin/pytest tests/test_attention.py
+OMP_NUM_THREADS=2 .venv/bin/pytest tests/test_serve_cli.py
 ```
 
 前三项分别检查构建资源选择和校验、离线启动参数、真实本地模型的存档恢复与概率输出。
@@ -157,8 +157,9 @@ OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_serve_cli.py
 ```bash
 podman run --rm --device nvidia.com/gpu=all --security-opt label=disable \
   --network none --read-only --tmpfs /tmp:rw,exec,nosuid,size=2g \
-  -v "$PWD/tests:/tests:ro" -e PYTHONPATH=/app/src:/app/docker:/tests \
-  -e OMP_NUM_THREADS=2 --entrypoint python localhost/sors:sm8x /tests/test_container_gpu.py
+  -v "$PWD/tests:/tests:ro" -v "$PWD/docker/smoke_gpu.py:/smoke_gpu.py:ro" \
+  -e PYTHONPATH=/app/src:/app/docker:/tests \
+  -e OMP_NUM_THREADS=2 --entrypoint python localhost/sors:sm8x /smoke_gpu.py
 ```
 
 该测试覆盖 Qwen3 slots、Qwen3.5 candidate 的不同输入长度、重复请求和与 SDPA 的概率对照，

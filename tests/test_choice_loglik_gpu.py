@@ -1,19 +1,15 @@
 """scripts/choice-loglik-banking77.py 的 GPU 部分: 前缀算一次 KV cache, 选项分块接在后面 teacher-forced 打分.
 结果必须等于「前缀 + 这一个选项」整条前向读出的逐 token logprob.
 
-跑:  OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 .venv/bin/python tests/test_choice_loglik_gpu.py
+跑:  OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_choice_loglik_gpu.py --gpu
 fp32 下两条路径只差累加顺序, 容差 1e-3.
 """
 
 import importlib.util
 import pathlib
-import sys
 
 import numpy as np
 import torch
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from _runner import run  # noqa: E402
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "choice-loglik-banking77.py"
 _spec = importlib.util.spec_from_file_location("choice_loglik_banking77", _SCRIPT)
@@ -75,6 +71,3 @@ def test_first_position_logits_equal_prefix_last_logits():
         want = lm(input_ids=torch.tensor([prefix_ids], device="cuda")).logits[0, -1].float()
     assert torch.allclose(first, want, atol=1e-3), (first - want).abs().max().item()
 
-
-if __name__ == "__main__":
-    run(globals())

@@ -11,7 +11,6 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
-from _runner import run
 from test_decision import batch, tiny_model, tokenizer, tiny_backbone
 from sors.core.decision import DecisionConfig, architecture_config
 from sors.core.model import prepare_model
@@ -192,7 +191,3 @@ def test_complete_slot_model_preserves_the_language_model_readout():
         with torch.inference_mode():
             actual = last_logits(restored, data["input_ids"], data["attention_mask"])
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-
-
-if __name__ == "__main__":
-    run(globals())

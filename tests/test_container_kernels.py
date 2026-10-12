@@ -8,7 +8,6 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from _runner import run
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,7 +127,3 @@ def test_all_profiles_select_an_attention_kernel_and_the_shared_convolution():
         assert len(kernels) == 2
         assert any(k["repo"] == "kernels-community/causal-conv1d" for k in kernels)
         assert all(len(k["revision"]) == 40 for k in kernels)
-
-
-if __name__ == "__main__":
-    run(globals())

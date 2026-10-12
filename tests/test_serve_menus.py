@@ -1,9 +1,8 @@
 """sors.serve.menus 的测试: 一道 API 问题 -> 模型看到的菜单样本. 不碰模型.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_menus.py
+跑:  .venv/bin/pytest tests/test_serve_menus.py
 """
 
-from _runner import run
 from sors.core.prompt import render_menu
 from sors.serve.api import SystemOneRequest
 from sors.serve.menus import to_example
@@ -68,7 +67,3 @@ def test_object_state_and_instructions_are_written_as_indented_json_and_object_d
 def test_line_breaks_inside_an_option_become_spaces_so_each_option_stays_on_its_own_menu_line():
     q = _q({"type": "choice", "instructions": "Which?", "criteria": {"a": "first line\nsecond line", "b\r\nc": None}})
     assert to_example(q, STATE, "State").option_names == ["a: first line second line", "b c"]
-
-
-if __name__ == "__main__":
-    run(globals())

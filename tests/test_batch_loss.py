@@ -1,10 +1,9 @@
 """sors.core.tokens / batch / loss / metrics 的测试.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_batch_loss.py
+跑:  .venv/bin/pytest tests/test_batch_loss.py
 """
 
 import math
-import sys
 
 import torch
 
@@ -810,21 +809,3 @@ def test_scalar_items_flattens_nested_dicts_and_skips_none():
                                      "by_gold_slot": {"0-9": {"n": 2, "accuracy": 1.0}}})
     assert got == [("eval/seen/accuracy", 0.5), ("eval/seen/by_gold_slot/0-9/n", 2),
                    ("eval/seen/by_gold_slot/0-9/accuracy", 1.0)], got
-
-
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        try:
-            fn()
-            print(f"PASS  {name}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL  {name}: {e}")
-        except Exception as e:
-            failed += 1
-            print(f"ERROR {name}: {type(e).__name__}: {e}")
-    print(f"\n{failed} failed")
-    sys.exit(1 if failed else 0)

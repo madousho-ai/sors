@@ -6,7 +6,6 @@ import sys
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from _runner import run
 from sors.training.loss import consistency_js, training_loss
 
 
@@ -257,7 +256,3 @@ def test_output_coordinates_keep_original_bounds_and_avoid_an_extra_full_table_c
         except (IndexError, RuntimeError):
             continue
         raise AssertionError('out-of-vocabulary coordinate silently disappeared')
-
-
-if __name__ == '__main__':
-    run(globals())

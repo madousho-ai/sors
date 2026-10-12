@@ -9,7 +9,6 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from _runner import run
 from test_train_cli import _mod
 from test_synth_v5 import _data
 from sors.data.paths import datasets_root
@@ -79,7 +78,3 @@ else:
             assert result.returncode == 0, result.stderr.decode()
     finally:
         shutil.rmtree(fixture)
-
-
-if __name__ == "__main__":
-    run(globals())

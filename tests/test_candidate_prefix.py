@@ -5,7 +5,6 @@ from contextlib import contextmanager
 
 import torch
 
-from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples
 from sors.core.menu import reorder_menu
 
@@ -206,7 +205,3 @@ def test_one_token_suffix_uses_the_same_hybrid_state_as_full_forward():
         full = torch.cat((prefix.expand(2, -1), suffix), dim=1)
         want = m.decoder(input_ids=full, attention_mask=torch.ones_like(full), use_cache=False).last_hidden_state[:, -1]
     torch.testing.assert_close(cached, want, atol=3e-5, rtol=3e-4)
-
-
-if __name__ == "__main__":
-    run(globals())

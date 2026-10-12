@@ -3,7 +3,6 @@
 import copy
 import random
 
-from _runner import run
 from test_synth_v5 import TELECOM_C, TELECOM_Q, _data, _find, _paired, PAIR_GOALS
 from sors.core.menu import row_alignment, with_partners
 from sors.data.synth_v5 import V5Rounds, V5Sampler, item_example, load_synth_v5, parse_mix, parse_passes
@@ -119,7 +118,3 @@ def test_unknown_controls_keep_a_listed_hard_answer_after_augmentation():
         example = item_example(_find(items, cid, "service"), random.Random(0), 0.0, fallback_rate=1.0)
         assert len(example.options) == 4 and example.option_names[example.gold_idx] == "TV package"
         assert example.target is None
-
-
-if __name__ == "__main__":
-    run(globals())

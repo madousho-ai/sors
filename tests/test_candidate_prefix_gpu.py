@@ -1,10 +1,12 @@
 """CUDA equivalence of shared prefixes, optionally with cached real Qwen weights.
 
 No training run, model download or dependency installation. The real-model probe
-uses local_files_only and reports hidden-state and probability error separately.
+uses local_files_only and reports hidden-state and probability error separately:
+  .venv/bin/pytest tests/test_candidate_prefix_gpu.py --gpu -s
+  .venv/bin/pytest tests/test_candidate_prefix_gpu.py --gpu -s -k real_model \
+    --real-model Qwen/Qwen3.5-0.8B-Base --revision <sha> [--fa2-kernel-path DIR --conv-kernel-path DIR]
 """
 
-import argparse
 from dataclasses import asdict, replace
 from pathlib import Path
 import json
@@ -13,9 +15,9 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import torch
 
-from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples
 from test_candidate_prefix import trace
 from sors.core.batch import collate
@@ -111,44 +113,44 @@ def real_model(args):
         compare(m, data, f"real-{repeats}")
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--real-model")
-    parser.add_argument("--revision")
-    parser.add_argument("--attn-implementation", default="auto")
-    parser.add_argument("--allow-kernel-download", action="store_true")
-    parser.add_argument("--fa2-kernel-path", help="load an already built local FA2 kernel project")
-    parser.add_argument("--conv-kernel-path", help="load an already built local causal-conv1d kernel project")
-    args = parser.parse_args()
-    if not torch.cuda.is_available():
-        raise SystemExit("CUDA is required; run on the GPU server")
+@pytest.fixture(autouse=True)
+def _memory_fraction(require_cuda):
     torch.cuda.set_per_process_memory_fraction(0.2)
-    if args.real_model:
-        paths = {repo: Path(path) for repo, path in (
-            ("kernels-community/flash-attn2", args.fa2_kernel_path),
-            ("kernels-community/causal-conv1d", args.conv_kernel_path)) if path}
-        if paths:
-            import kernels
-            from kernels import _versions
-            modules = {repo: kernels.get_local_kernel(path) for repo, path in paths.items()}
-            original_resolve, original_get = _versions.resolve_version_spec_as_ref, kernels.get_kernel
-            def resolve(repo_id, version):
-                return SimpleNamespace(target_commit=paths[repo_id].name) if repo_id in paths else original_resolve(repo_id, version)
-            def get(repo_id, *a, **kw):
-                return modules[repo_id] if repo_id in modules else original_get(repo_id, *a, **kw)
-            print(json.dumps({"local_kernels": {repo: module.__file__ for repo, module in modules.items()}}), flush=True)
-            # Override selection only in this test process. The actual compiled
-            # functions run unchanged, without Hub version/snapshot downloads.
-            with ExitStack() as stack:
-                stack.enter_context(patch.object(_versions, "resolve_version_spec_as_ref", side_effect=resolve))
-                for name, attribute in (("kernels", "get_kernel"), ("kernels.layer.func", "get_kernel"),
-                                        ("kernels.layer.layer", "get_kernel"),
-                                        ("transformers.integrations.hub_kernels", "get_kernel_hub")):
-                    stack.enter_context(patch.object(importlib.import_module(name), attribute, side_effect=get))
-                real_model(args)
-        else:
-            real_model(args)
-    else:
-        run({f"test_prefix_cuda_{family}_{blocks}":
-             (lambda family=family, blocks=blocks: tiny(family, blocks))
-             for family in ("qwen3", "qwen35") for blocks in (0, 2)})
+    yield
+    torch.cuda.set_per_process_memory_fraction(1.0)  # 同一进程里接着跑的测试不受这个上限约束
+
+
+@pytest.mark.parametrize("blocks", [0, 2])
+@pytest.mark.parametrize("family", ["qwen3", "qwen35"])
+def test_prefix_cuda(family, blocks):
+    tiny(family, blocks)
+
+
+def test_real_model(gpu_options):
+    args = gpu_options
+    if not args.real_model:
+        pytest.skip("needs --real-model")
+    paths = {repo: Path(path) for repo, path in (
+        ("kernels-community/flash-attn2", args.fa2_kernel_path),
+        ("kernels-community/causal-conv1d", args.conv_kernel_path)) if path}
+    if not paths:
+        real_model(args)
+        return
+    import kernels
+    from kernels import _versions
+    modules = {repo: kernels.get_local_kernel(path) for repo, path in paths.items()}
+    original_resolve, original_get = _versions.resolve_version_spec_as_ref, kernels.get_kernel
+    def resolve(repo_id, version):
+        return SimpleNamespace(target_commit=paths[repo_id].name) if repo_id in paths else original_resolve(repo_id, version)
+    def get(repo_id, *a, **kw):
+        return modules[repo_id] if repo_id in modules else original_get(repo_id, *a, **kw)
+    print(json.dumps({"local_kernels": {repo: module.__file__ for repo, module in modules.items()}}), flush=True)
+    # Override selection only in this test process. The actual compiled
+    # functions run unchanged, without Hub version/snapshot downloads.
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(_versions, "resolve_version_spec_as_ref", side_effect=resolve))
+        for name, attribute in (("kernels", "get_kernel"), ("kernels.layer.func", "get_kernel"),
+                                ("kernels.layer.layer", "get_kernel"),
+                                ("transformers.integrations.hub_kernels", "get_kernel_hub")):
+            stack.enter_context(patch.object(importlib.import_module(name), attribute, side_effect=get))
+        real_model(args)

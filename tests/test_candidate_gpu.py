@@ -5,9 +5,9 @@ from pathlib import Path
 import random
 import tempfile
 
+import pytest
 import torch
 
-from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples, tiny_backbone
 from sors.core.checkpoint import prepare_from_checkpoint, save_trained
 from sors.core.menu import reorder_menu, with_partners
@@ -59,10 +59,14 @@ def check(family, blocks):
                       "symmetry_max_abs": error}), flush=True)
 
 
-if __name__ == "__main__":
-    if not torch.cuda.is_available():
-        raise SystemExit("CUDA is required; run this explicit validation on the GPU server")
+@pytest.fixture(autouse=True)
+def _memory_fraction(require_cuda):
     torch.cuda.set_per_process_memory_fraction(0.1)
-    run({f"test_cuda_candidate_{family}_blocks_{blocks}":
-         (lambda family=family, blocks=blocks: check(family, blocks))
-         for family in ("qwen3", "qwen35") for blocks in (0, 1, 2)})
+    yield
+    torch.cuda.set_per_process_memory_fraction(1.0)  # 同一进程里接着跑的测试不受这个上限约束
+
+
+@pytest.mark.parametrize("blocks", [0, 1, 2])
+@pytest.mark.parametrize("family", ["qwen3", "qwen35"])
+def test_cuda_candidate(family, blocks):
+    check(family, blocks)

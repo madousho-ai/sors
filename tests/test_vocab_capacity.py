@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
-from _runner import run
 from sors.core.checkpoint import prepare_from_checkpoint, save_trained
 from sors.core.model import prepare_model
 from sors.training.loop import TrainConfig
@@ -77,7 +76,3 @@ def test_expanded_checkpoint_reloads_with_a_different_initialization_seed():
             torch.manual_seed(987)
             restored, _ = prepare_from_checkpoint(fresh, ids, path)
             assert torch.equal(restored.eval()(input_ids=probe).logits, want)
-
-
-if __name__ == "__main__":
-    run(globals())

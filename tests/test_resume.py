@@ -10,7 +10,6 @@ from dataclasses import replace
 
 import torch
 
-from _runner import run
 from test_evaluate import _tiny, _uneven_questions, _Writer
 from sors.core.batch import collate
 from sors.core.menu import MenuExample, with_partners
@@ -343,7 +342,3 @@ def test_sampling_fingerprint_tracks_the_v51_dataset():
         before = sampling_fingerprint(root, root / "assets")
         data.write_text('{"domain":"telecom","contexts":[{"id":"telecom_changed"}]}')
         assert sampling_fingerprint(root, root / "assets") != before, "dataset edits must invalidate an old sampling fingerprint"
-
-
-if __name__ == "__main__":
-    run(globals())

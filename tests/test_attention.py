@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import torch
 
-from _runner import run
 
 
 def _module():
@@ -301,7 +300,3 @@ def test_both_clis_accept_attention_selection_and_explicit_kernel_downloads():
         except SystemExit as exc:
             raise AssertionError(f"{script} rejected attention flags") from exc
         assert args.attn_implementation == "flash_attention_2" and args.allow_kernel_download
-
-
-if __name__ == "__main__":
-    run(globals())

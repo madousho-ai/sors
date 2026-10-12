@@ -1,6 +1,6 @@
 """sors.data.synth_v3 的测试: datasets/synth-intents-v3 读成逐题的 MenuExample, 以及训练时的抽题.
 
-跑:  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_synth_v3.py
+跑:  PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/test_synth_v3.py
 """
 
 import collections
@@ -16,7 +16,6 @@ import random
 import shutil
 import tempfile
 
-from _runner import run
 from sors.data.synth_v3 import load_synth_v3, sample_synth_v3
 from sors.data.paths import asset_path
 
@@ -198,6 +197,3 @@ def test_reference_answer_offline_summary_needs_no_endpoint():
     observed, refusal, output = _reference_endpoint(summary=True)
     assert observed == [] and refusal is None
     assert output.strip(), "offline summary did not produce statistics"
-
-if __name__ == "__main__":
-    run(globals())

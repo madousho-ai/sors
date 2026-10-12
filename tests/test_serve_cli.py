@@ -1,6 +1,6 @@
 """scripts/serve.py 的参数与默认值. 不加载模型、不起服务.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_cli.py
+跑:  .venv/bin/pytest tests/test_serve_cli.py
 """
 
 import importlib.util
@@ -10,7 +10,6 @@ import pathlib
 import tempfile
 from unittest.mock import patch
 
-from _runner import run
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "serve.py"
 _spec = importlib.util.spec_from_file_location("serve_cli", _SCRIPT)
@@ -122,7 +121,3 @@ def test_complete_model_directory_sets_its_own_name_and_needs_no_base_model():
             assert "--base-model" in str(exc)
         else:
             raise AssertionError("a complete model accepted a separate base model")
-
-
-if __name__ == "__main__":
-    run(globals())

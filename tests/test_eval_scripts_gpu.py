@@ -1,7 +1,7 @@
 """scripts/eval-massive.py 与 scripts/eval-invariance.py 端到端: 喂一份 r4 alpha8 的存档,
 脚本得照档里记的形状搭 LoRA 空壳, 不靠命令行复述. 每个脚本只评几道题. 要 0.6B 和 GPU.
 
-跑:  OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_eval_scripts_gpu.py
+跑:  OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_eval_scripts_gpu.py --gpu
 """
 
 import json
@@ -12,9 +12,6 @@ import sys
 import tempfile
 
 import torch
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from _runner import run  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MODEL = "Qwen/Qwen3-0.6B-Base"
@@ -66,6 +63,3 @@ def test_eval_invariance_evaluates_a_checkpoint_trained_with_rank_4():
     got = json.loads(out.read_text())
     assert got["records"][0]["variant"] == "base" and len(got["gold"]) == 2
 
-
-if __name__ == "__main__":
-    run(globals())

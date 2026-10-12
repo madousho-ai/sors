@@ -10,7 +10,6 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from _runner import run
 from sors.training import resume
 
 SOURCES = ("scripts/train.py", "src/sors/data/synth_v5.py", "src/sors/core/menu.py",
@@ -164,7 +163,3 @@ def test_resume_resolves_both_environment_names_before_the_saved_dataset_path():
                 else:
                     raise AssertionError("resume skipped sampling verification")
             assert selected[-1] == expected, (selected[-1], expected)
-
-
-if __name__ == "__main__":
-    run(globals())

@@ -1,6 +1,6 @@
 """sors.data.download.fetch 的测试: 原始包缺了就下载, 下载与盘上的文件都核对 md5.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_download.py
+跑:  .venv/bin/pytest tests/test_download.py
 不联网: urllib.request.urlretrieve 换成往目标路径写字节的假函数.
 """
 
@@ -9,7 +9,6 @@ import pathlib
 import tempfile
 import urllib.request
 
-from _runner import run
 from sors.data.download import fetch
 
 BODY = b"the archive"
@@ -99,7 +98,3 @@ def test_a_download_that_breaks_off_leaves_nothing_behind():
         else:
             raise AssertionError("the error was swallowed")
         assert list(pathlib.Path(d).iterdir()) == []
-
-
-if __name__ == "__main__":
-    run(globals())

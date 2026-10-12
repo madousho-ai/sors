@@ -1,6 +1,6 @@
 """scripts/train.py 的数据组装 (build_data) 测试. 只读数据集, 不加载模型.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_train_cli.py
+跑:  .venv/bin/pytest tests/test_train_cli.py
 """
 
 import argparse
@@ -10,7 +10,6 @@ import json
 import pathlib
 import random
 
-from _runner import run
 from sors.core.menu import row_alignment
 from sors.data.jevbench import load_jevbench
 from sors.data.paths import asset_path
@@ -798,7 +797,3 @@ def test_checkpoint_path_sorts_by_step():
     assert _mod.checkpoint_path(out, 250) == out / "checkpoints" / "step-00250.safetensors"
     assert sorted([_mod.checkpoint_path(out, s) for s in (1000, 250, 500)]) \
         == [_mod.checkpoint_path(out, s) for s in (250, 500, 1000)]
-
-
-if __name__ == "__main__":
-    run(globals())

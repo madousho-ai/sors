@@ -3,7 +3,6 @@
 import importlib.util
 from pathlib import Path
 
-from _runner import run
 
 
 def load(name, path):
@@ -35,7 +34,3 @@ def test_container_defaults_to_one_complete_model_directory():
     assert args.init == "/models", "container still requires a separate training checkpoint"
     assert args.base_model is None, "container still ships a separate base model"
     assert args.local_files_only and args.warmup and not args.allow_kernel_download
-
-
-if __name__ == "__main__":
-    run(globals())

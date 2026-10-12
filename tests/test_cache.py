@@ -1,11 +1,10 @@
 """sors.core.cache 的测试: 上下文算一次 KV cache, 多个问题的分支接在后面一次前向, 结果必须等于各自整条前向.
 
 CPU 上的几条用两层的随机 Qwen3 (fp32), 要求逐位接近; GPU 上的几条用 0.6B (bf16), 比 D 槽的 logits.
-跑:  OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_cache.py
+跑:  OMP_NUM_THREADS=2 .venv/bin/pytest tests/test_cache.py
 """
 
-import sys
-
+import pytest
 import torch
 
 from sors.core.cache import branch_logits, prefix_cache
@@ -15,6 +14,12 @@ from sors.core.prompt import render_menu, split_prompt
 from sors.core.tokens import install_d_tokens
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
+
+
+@pytest.fixture(autouse=True)
+def _release_cuda_cache():
+    yield
+    torch.cuda.empty_cache()
 
 
 def _tiny():
@@ -108,22 +113,3 @@ def test_branch_logits_match_full_forward_on_d_slots_on_the_real_model():
         a, b = got[i, d_ids[:k]], want[d_ids[:k]]
         assert torch.allclose(a, b, atol=0.25, rtol=0.0), (a.tolist(), b.tolist())
         assert a.argmax().item() == b.argmax().item(), (a.tolist(), b.tolist())
-
-
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        try:
-            fn()
-            print(f"PASS  {name}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL  {name}: {e}")
-        except Exception as e:
-            failed += 1
-            print(f"ERROR {name}: {type(e).__name__}: {e}")
-        torch.cuda.empty_cache()
-    print(f"\n{failed} failed")
-    sys.exit(1 if failed else 0)

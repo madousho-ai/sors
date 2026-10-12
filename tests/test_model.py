@@ -1,11 +1,10 @@
 """sors.core.model 的测试. 要加载 0.6B, 走 GPU.
 
-跑:  OMP_NUM_THREADS=2 PYTHONPATH=src .venv/bin/python tests/test_model.py
+跑:  OMP_NUM_THREADS=2 .venv/bin/pytest tests/test_model.py
 """
 
 import torch
 
-from _runner import run
 from sors.core.batch import collate
 from sors.core.menu import MenuExample
 from sors.core.model import SlotEmbedding, SlotHead, last_logits, prepare_model, trainable_param_groups
@@ -199,7 +198,3 @@ def test_vocab_loss_step_lowers_the_answer_positions_non_d_mass_without_touching
     assert end < start - 0.1, (start, end)
     del m, lm
     torch.cuda.empty_cache()
-
-
-if __name__ == "__main__":
-    run(globals())

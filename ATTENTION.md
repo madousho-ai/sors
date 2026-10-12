@@ -117,18 +117,18 @@ HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<r
 
 ```bash
 # 硬件选择、缺依赖、下载授权和 CLI 参数测试
-PYTHONPATH=src .venv/bin/python tests/test_attention.py
+.venv/bin/pytest tests/test_attention.py
 
 # 在训练服务器运行真实 CUDA 对照，要求显式 FA2 成功加载
-HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python tests/test_attention_gpu.py \
+HF_HUB_OFFLINE=0 .venv/bin/pytest tests/test_attention_gpu.py --gpu \
   --attn-implementation flash_attention_2 --allow-kernel-download
 
 # 词表扩容与 Qwen3.5 的 CPU 接口测试
-PYTHONPATH=src .venv/bin/python tests/test_vocab_capacity.py
-PYTHONPATH=src .venv/bin/python tests/test_qwen35.py
+.venv/bin/pytest tests/test_vocab_capacity.py
+.venv/bin/pytest tests/test_qwen35.py
 
 # Qwen3.5 的 CUDA 卷积加速、模式切换与重载测试
-HF_HUB_OFFLINE=0 PYTHONPATH=src .venv/bin/python tests/test_qwen35_gpu.py
+HF_HUB_OFFLINE=0 .venv/bin/pytest tests/test_qwen35_gpu.py --gpu
 ```
 
 GPU 对照覆盖 GQA、左 padding、全参、LoRA 与梯度 checkpoint；比较 SDPA 和 FlashAttention

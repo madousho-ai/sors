@@ -1,6 +1,6 @@
 """sors.serve.app 的测试: 路由、鉴权、错误码与响应格式. 引擎换成假的, 不碰模型.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_app.py
+跑:  .venv/bin/pytest tests/test_serve_app.py
 """
 
 import pathlib
@@ -8,7 +8,6 @@ import tempfile
 
 from fastapi.testclient import TestClient
 
-from _runner import run
 from sors.serve.app import create_app
 from sors.serve.engine import Evaluation, RequestTooLong
 
@@ -165,7 +164,3 @@ def test_prompts_checks_the_model_and_the_key_like_the_api_and_is_off_without_th
     assert c.post("/demo/prompts", json={**BODY, "model": "jev-latest"}, headers=ok).status_code == 422
     assert c.post("/demo/prompts", json=BODY, headers=ok).status_code == 200
     assert _client().post("/demo/prompts", json=BODY).status_code == 404
-
-
-if __name__ == "__main__":
-    run(globals())

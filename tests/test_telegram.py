@@ -1,6 +1,6 @@
 """sors.data.telegram 的测试: arashdn/telegram-research 的 v2 (Telegram 频道的走红消息, 波斯语, 带类别与情感标注).
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_telegram.py
+跑:  .venv/bin/pytest tests/test_telegram.py
 读语料的那几项要用 data/telegram/tg_v2_public.zip; 不在盘上时第一次用到会自动下载 (54MB, md5 钉死).
 """
 
@@ -9,7 +9,6 @@ import shutil
 import tempfile
 import urllib.request
 
-from _runner import run
 from sors.data.spam import DEFAULT_DATA_DIR
 from sors.data.telegram import URL, ZIP, cache_path, load_telegram_viral, merge_copies, post_text
 
@@ -133,7 +132,3 @@ def test_a_missing_dump_is_downloaded_from_the_authors_dropbox_link():
         assert (pathlib.Path(d) / ZIP).exists()
     assert urls == [URL] and URL.startswith("https://www.dropbox.com/s/sokcxz35e4ta91l/tg_v2_public.zip")
     assert c == load_telegram_viral()
-
-
-if __name__ == "__main__":
-    run(globals())

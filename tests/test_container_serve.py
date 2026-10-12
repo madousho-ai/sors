@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import torch
 
-from _runner import run
 from test_decision import tiny_model, tiny_backbone
 from sors.core.checkpoint import save_trained
 from sors.serve.api import Choice
@@ -69,7 +68,3 @@ def test_complete_model_payload_restores_and_answers_with_downloads_blocked():
                                      allow_kernel_download=False, local_files_only=True)
                 result = engine.evaluate("red context", question)
             assert result.probs == expected.probs
-
-
-if __name__ == "__main__":
-    run(globals())

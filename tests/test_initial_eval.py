@@ -1,10 +1,9 @@
-"""--no-initial-eval: 跳过开训前 (step 0) 那次评估. 直接 python tests/test_initial_eval.py."""
+"""--no-initial-eval: 跳过开训前 (step 0) 那次评估. 跑: .venv/bin/pytest tests/test_initial_eval.py."""
 
 import importlib.util
 import pathlib
 from dataclasses import asdict, replace
 
-from _runner import run
 from test_evaluate import _tiny
 from test_resume import _Sampler, _training_config
 from sors.training.loop import TrainConfig, train
@@ -42,7 +41,3 @@ def test_the_initial_eval_switch_may_change_on_resume():
     saved = {"step": 2, "config": asdict(cfg)}
     tok, ids, m = _tiny()
     train(m, tok, ids, _Sampler(), {}, replace(cfg, initial_eval=False), resume=saved)
-
-
-if __name__ == "__main__":
-    run(globals())

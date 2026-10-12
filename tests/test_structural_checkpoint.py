@@ -9,7 +9,6 @@ from unittest.mock import patch
 import torch
 from torch.utils.checkpoint import set_checkpoint_early_stop
 
-from _runner import run
 from test_decision import batch, examples, tiny_backbone, tiny_model, tokenizer
 from sors.core.batch import length_groups
 from sors.core.decision import DecisionConfig
@@ -341,7 +340,3 @@ def test_structural_capture_ignores_other_thread_option_and_common_replays():
             handle.remove()
         assert not worker.is_alive() and not errors, errors
         torch.testing.assert_close(result[0], expected, atol=3e-6, rtol=3e-5)
-
-
-if __name__ == '__main__':
-    run(globals())

@@ -1,11 +1,10 @@
 """sors.serve.api 的测试: 请求体按 TypeSafe API (POST /v1/systemone) 的规范校验. 不碰模型.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_serve_api.py
+跑:  .venv/bin/pytest tests/test_serve_api.py
 """
 
 from pydantic import ValidationError
 
-from _runner import run
 from sors.serve.api import Choice, Noul, Score, SystemOneRequest, answer, confidence
 
 
@@ -159,7 +158,3 @@ def test_a_score_answer_is_the_expected_level_with_a_legend_of_the_level_descrip
 def test_a_noul_answer_is_the_probability_of_yes_and_carries_no_confidence():
     """菜单上 no 在前、yes 在后, 模型的分布也按这个顺序."""
     assert answer(_q({"type": "noul", "instructions": "Urgent?"}), [0.05, 0.95]) == {"type": "noul", "noul": 0.95}
-
-
-if __name__ == "__main__":
-    run(globals())

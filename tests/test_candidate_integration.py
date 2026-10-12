@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import torch
 
-from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples, joint_text, tiny_backbone
 from test_decision_integration import config, sampler, train_cli
 from sors.core.checkpoint import load_trained, prepare_from_checkpoint, read_checkpoint, save_trained
@@ -182,7 +181,3 @@ def test_candidate_actual_cli_exports_complete_state_and_loadable_service():
             train(restored, tok, d, sampler, {}, TrainConfig(**state["config"]), resume=state)
             data = candidate_batch(tok, d)
             torch.testing.assert_close(restored.eval().forward_batch(data), engine.lm.forward_batch(data), atol=0, rtol=0)
-
-
-if __name__ == "__main__":
-    run(globals())

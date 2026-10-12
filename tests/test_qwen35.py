@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
-from _runner import run
 from sors.core.attention import load_causal_lm
 from sors.core.checkpoint import prepare_from_checkpoint, save_trained
 from sors.core.model import adapter_config, last_logits, prepare_model
@@ -68,7 +67,3 @@ def test_attn_mlp_linear_puts_lora_on_every_layers_attention():
     for name in ("in_proj_qkv", "in_proj_z", "out_proj"):
         assert any(f"linear_attn.{name}.lora_" in n for n in lora), name
     assert adapter_config(m) == {"trainable": "attn-mlp-linear", "lora_r": 4, "lora_alpha": 8}
-
-
-if __name__ == "__main__":
-    run(globals())

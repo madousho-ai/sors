@@ -1,13 +1,12 @@
 """scripts/baseline-banking77.py 里纯函数的测试.
 
-零依赖, 直接跑:  .venv/bin/python tests/test_banking77_metrics.py
+跑:  .venv/bin/pytest tests/test_banking77_metrics.py
 每个期望值都是手算的, 写在各自的 docstring 里.
 """
 
 import importlib.util
 import math
 import pathlib
-import sys
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "baseline-banking77.py"
 _spec = importlib.util.spec_from_file_location("baseline_banking77", _SCRIPT)
@@ -218,21 +217,3 @@ def test_result_paths_keep_dots_in_model_id_and_encode_run():
     want = "results/20260921-200000-banking77-Qwen_Qwen3-1.7B-Base-menu-perm3-n3080"
     assert str(j) == want + ".json", str(j)
     assert str(n) == want + ".npz", str(n)
-
-
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        try:
-            fn()
-            print(f"PASS  {name}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL  {name}: {e}")
-        except Exception as e:
-            failed += 1
-            print(f"ERROR {name}: {type(e).__name__}: {e}")
-    print(f"\n{failed} failed")
-    sys.exit(1 if failed else 0)

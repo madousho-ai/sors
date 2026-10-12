@@ -1,12 +1,11 @@
 """sors.core.menu + sors.core.prompt 的测试.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_data.py
+跑:  .venv/bin/pytest tests/test_data.py
 """
 
 import random
 from dataclasses import replace
 
-from _runner import run
 from sors.core.menu import (LabeledSet, MenuExample, RandomCodes, arrangements, class_split, compose_menu,
                                     menu_k_range, partner, random_arrangement, random_rows, reassigned_codes, reorder_menu,
                                     row_alignment, shuffled_rows, top_rows, with_partners)
@@ -580,7 +579,3 @@ def test_context_marker_wraps_the_context_after_the_menu_in_menu_first():
 
 def test_context_marker_default_is_off():
     assert "<|context_start|>" not in render_menu(_ex("p")) and "<|context_end|>" not in render_menu(_ex("p"))
-
-
-if __name__ == "__main__":
-    run(globals())

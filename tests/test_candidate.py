@@ -4,7 +4,6 @@ from dataclasses import replace
 
 import torch
 
-from _runner import run
 from test_decision import examples, tiny_backbone, tokenizer
 from sors.core.batch import collate
 from sors.core.decision import DecisionConfig
@@ -226,7 +225,3 @@ def test_candidate_real_tokenizer_preserves_joint_text_and_protects_reserved_tok
         assert tok.decode(ids) == want
         assert not set(ids) & set(d)
         assert ids.count(t[0]) == 1 and ids.count(c[0]) == 1 and ids.count(c[1]) == 1
-
-
-if __name__ == "__main__":
-    run(globals())

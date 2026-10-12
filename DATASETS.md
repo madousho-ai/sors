@@ -158,9 +158,9 @@ Asset-backed integration tests use the same root setting:
 
 ```bash
 SORS_DATASETS_DIR=../decidophobia-dataset \
-  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_train_cli.py
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_dataset_paths.py
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_external_resume.py
+  PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/test_train_cli.py
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/test_dataset_paths.py
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/test_external_resume.py
 ```
 
 Schema and authoring-tool tests are maintained in the dataset repository.

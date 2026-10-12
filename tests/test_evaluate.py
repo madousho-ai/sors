@@ -1,13 +1,12 @@
 """scoring.evaluate 与 training.loop 的评估点的测试. 一层、hidden 16 的随机 Qwen3 配真的 tokenizer, 走真的 prepare_model / collate, CPU 上跑.
 
-跑:  HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_evaluate.py
+跑:  HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_evaluate.py
 """
 
 import random
 
 import torch
 
-from _runner import run
 from sors.core.batch import collate, pair_alignment
 from sors.core.menu import MenuExample, arrangements, with_partners
 from sors.core.model import grouped_last_logits, last_logits, prepare_model
@@ -345,7 +344,3 @@ def test_train_groups_rows_by_padded_token_budget():
             assert shapes == expected, (name, shapes, expected)
     assert abs(losses["whole"] - losses["tokens"]) < 1e-5, losses
     assert abs(losses["whole"] - losses["tokens-accumulate"]) < 1e-5, losses
-
-
-if __name__ == "__main__":
-    run(globals())

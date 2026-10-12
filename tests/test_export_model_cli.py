@@ -7,7 +7,6 @@ import tempfile
 
 import torch
 
-from _runner import run
 from test_decision import batch, tiny_backbone, tiny_model
 from sors.core.checkpoint import save_trained
 from sors.training.loop import TrainConfig
@@ -47,7 +46,3 @@ def test_export_command_restores_and_saves_one_complete_model():
         again = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
                                env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "HF_HUB_OFFLINE": "1"}, timeout=60)
         assert again.returncode != 0 and "exist" in (again.stdout + again.stderr).lower()
-
-
-if __name__ == "__main__":
-    run(globals())

@@ -1,12 +1,11 @@
 """sors.data.banking77 的测试: 菜单上显示原始 label 名或 description.
 
-跑:  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_banking77.py
+跑:  PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/test_banking77.py
 需要 data/banking77/{train,test}.csv (第一次跑会从上游钉死的 commit 下载).
 """
 
 import json
 
-from _runner import run
 from sors.data.banking77 import load_banking77
 from sors.data.paths import asset_path
 
@@ -37,7 +36,3 @@ def test_an_unknown_label_style_is_refused():
     except ValueError:
         return
     raise AssertionError("labels='human' accepted")
-
-
-if __name__ == "__main__":
-    run(globals())

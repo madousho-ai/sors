@@ -1,6 +1,6 @@
 """sors.data.jevbench 的测试: JevBench 的三档公开题 (下载到 data/jevbench) 读成部署形态的评估集.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_jevbench.py
+跑:  .venv/bin/pytest tests/test_jevbench.py
 """
 
 import json
@@ -11,7 +11,6 @@ import urllib.request
 
 from pydantic import TypeAdapter
 
-from _runner import run
 from sors.core.prompt import state_text
 from sors.data.jevbench import COMMIT, DEFAULT_DIR, TIERS, load_jevbench, to_eval_example
 from sors.serve.api import Question
@@ -159,7 +158,3 @@ def test_a_file_that_differs_from_the_pinned_sha256_is_refused():
             assert "sha256" in str(e) and "easy.jsonl" in str(e), e
             return
     raise AssertionError("an edited easy.jsonl was accepted")
-
-
-if __name__ == "__main__":
-    run(globals())

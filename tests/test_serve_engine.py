@@ -3,7 +3,7 @@
 要钉住的是: 服务端的路 (state 算一次 KV cache、各问题的分支接在后面分组前向) 给每道题的菜单分布,
 与评估的路 (evaluation.scoring.score_examples: 整条提示、左填充成批、一次前向) 对同一份菜单给的相同.
 
-跑:  HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_serve_engine.py
+跑:  HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_serve_engine.py
 """
 
 import json
@@ -12,7 +12,6 @@ import tempfile
 
 import torch
 
-from _runner import run
 from sors.core.checkpoint import save_trained
 from sors.core.model import prepare_model
 from sors.core.prompt import render_menu
@@ -249,7 +248,3 @@ def test_the_base_model_is_read_from_the_result_json_of_the_run_the_checkpoint_b
     assert recorded_base_model(run_dir / "trained.safetensors") == "Qwen/Qwen3-1.7B-Base"
     assert recorded_base_model(run_dir / "checkpoints" / "step-00100.safetensors") == "Qwen/Qwen3-1.7B-Base"
     assert recorded_base_model(pathlib.Path(tempfile.mkdtemp()) / "trained.safetensors") is None
-
-
-if __name__ == "__main__":
-    run(globals())

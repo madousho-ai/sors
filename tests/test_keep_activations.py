@@ -2,7 +2,6 @@
 
 import torch
 
-from _runner import run
 from test_decision import batch, tiny_backbone, tiny_model, tokenizer
 
 
@@ -92,7 +91,3 @@ def test_keeping_layers_is_refused_where_it_would_change_the_computation():
         except ValueError:
             continue
         raise AssertionError(f"keep={keep} accepted for {m.decision_config}")
-
-
-if __name__ == "__main__":
-    run(globals())

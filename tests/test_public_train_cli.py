@@ -7,7 +7,6 @@ import pathlib
 import random
 import tempfile
 
-from _runner import run
 from test_public_decisions import _contract, _tools, _web, _conditional_rows
 from sors.core.menu import row_alignment
 
@@ -142,7 +141,3 @@ def test_dataset_weights_reject_missing_repeated_unknown_or_nonpositive_values()
     except ValueError:
         return
     raise AssertionError("duplicate alias weights accepted")
-
-
-if __name__ == "__main__":
-    run(globals())

@@ -1,4 +1,4 @@
-"""--optimizer: adamw (默认, 旧 run 不变) 与 adamw8bit (bitsandbytes, 只在 CUDA 上). 直接 python tests/test_optimizer.py."""
+"""--optimizer: adamw (默认, 旧 run 不变) 与 adamw8bit (bitsandbytes, 只在 CUDA 上). 跑: .venv/bin/pytest tests/test_optimizer.py."""
 
 import copy
 import importlib.util
@@ -7,7 +7,6 @@ from dataclasses import asdict, replace
 
 import torch
 
-from _runner import run
 from test_evaluate import _tiny
 from test_resume import _Sampler, _training_config
 from sors.training.loop import TrainConfig, train
@@ -162,7 +161,3 @@ def test_8bit_resume_matches_uninterrupted_training_on_cuda():
     train(resumed, tok, ids, _Sampler(), {}, cfg, resume=saved)
     for a, b in zip(reference.parameters(), resumed.parameters()):
         torch.testing.assert_close(a, b, rtol=0, atol=0)
-
-
-if __name__ == "__main__":
-    run(globals())

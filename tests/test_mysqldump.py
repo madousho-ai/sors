@@ -1,9 +1,8 @@
 """sors.data.mysqldump 的测试: 从 mysqldump 导出的 .sql 里读出表的行, 不需要 MySQL.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_mysqldump.py
+跑:  .venv/bin/pytest tests/test_mysqldump.py
 """
 
-from _runner import run
 from sors.data.mysqldump import dump_tables, sql_rows
 
 
@@ -37,7 +36,3 @@ def test_dump_tables_collects_the_named_tables_across_insert_lines_and_skips_the
 
 def test_dump_tables_gives_an_empty_list_for_a_named_table_with_no_rows():
     assert dump_tables([], ("posts",)) == {"posts": []}
-
-
-if __name__ == "__main__":
-    run(globals())

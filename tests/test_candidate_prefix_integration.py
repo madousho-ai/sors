@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import torch
 
-from _runner import run
 from test_candidate import candidate_batch, candidate_model, examples, tiny_backbone
 from test_candidate_integration import requests
 from test_candidate_prefix import set_mode, trace
@@ -129,7 +128,3 @@ def test_service_cache_budget_reserves_the_original_prefix_and_fork_workspace():
                 assert prefix + count * (prefix + suffix) <= budget
                 if count > 1:
                     assert (count + 2) * prefix <= budget, "deepcopy/reorder temporary cache exceeded the budget"
-
-
-if __name__ == "__main__":
-    run(globals())

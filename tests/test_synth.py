@@ -1,12 +1,11 @@
 """sors.data.synth 的测试: datasets/synth-intents-v2.5 读成菜单题与二元题两个 LabeledSet.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_synth.py
+跑:  .venv/bin/pytest tests/test_synth.py
 """
 
 import collections
 import random
 
-from _runner import run
 from sors.data.synth import load_synth, load_synth_binary, sample_domain_menus
 
 
@@ -75,7 +74,3 @@ def test_domain_menus_shorter_than_the_domain_still_stay_inside_it():
     exs = sample_domain_menus(s, domains, (10, 10), 200, random.Random(1))
     assert {len(e.options) for e in exs} == {10}
     assert all({domains[c] for c in e.options} == {domains[e.label]} for e in exs)
-
-
-if __name__ == "__main__":
-    run(globals())

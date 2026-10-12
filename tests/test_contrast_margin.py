@@ -4,7 +4,7 @@
 d = log p(B) - log p(A); 损失 softplus(m - (d 在答 B 的行上的平均 - d 在答 A 的行上的平均)), 按组平均.
 两份材料共有的套路特征在差里抵消, 梯度只能来自那处改动.
 
-跑:  HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python tests/test_contrast_margin.py
+跑:  HF_HUB_OFFLINE=1 .venv/bin/pytest tests/test_contrast_margin.py
 """
 
 import math
@@ -14,7 +14,6 @@ from dataclasses import replace
 import torch
 import torch.nn.functional as F
 
-from _runner import run
 from sors.core.batch import collate, contrast_rows, group_contrasts, token_groups
 from sors.core.menu import MenuExample, with_partners
 from sors.core.model import last_logits
@@ -144,7 +143,3 @@ def test_token_budget_accumulation_keeps_contrast_pairs_together_and_matches_who
     for k, p in m.named_parameters():
         if k in expected:
             torch.testing.assert_close(p.grad, expected[k], rtol=2e-4, atol=2e-5)
-
-
-if __name__ == "__main__":
-    run(globals())

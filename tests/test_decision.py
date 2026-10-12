@@ -5,7 +5,6 @@ import importlib.util
 
 import torch
 
-from _runner import run
 
 
 def decision_module():
@@ -459,7 +458,3 @@ def test_minimal_encoder_rejects_uninstalled_template_markers():
             assert "not installed" in str(exc)
         else:
             raise AssertionError("an uninstalled template marker was silently encoded")
-
-
-if __name__ == "__main__":
-    run(globals())

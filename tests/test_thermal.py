@@ -1,9 +1,8 @@
 """sors.training.thermal 的测试.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_thermal.py
+跑:  .venv/bin/pytest tests/test_thermal.py
 """
 
-import sys
 
 from sors.training.thermal import ThermalGuard
 
@@ -36,21 +35,3 @@ def test_default_reader_returns_float_or_none():
     g = ThermalGuard(max_c=80.0, cooldown_s=5.0)
     t = g.read()
     assert t is None or 10.0 < t < 120.0, t
-
-
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        try:
-            fn()
-            print(f"PASS  {name}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL  {name}: {e}")
-        except Exception as e:
-            failed += 1
-            print(f"ERROR {name}: {type(e).__name__}: {e}")
-    print(f"\n{failed} failed")
-    sys.exit(1 if failed else 0)

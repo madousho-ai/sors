@@ -29,8 +29,7 @@ def assert_convolution_kernel(model):
     assert count > 0, "the optimized function must be bound to a model layer"
 
 
-def main():
-    assert torch.cuda.is_available(), "a training GPU is required"
+def test_kernel_dispatch_padding_checkpointed_backward_and_reload():
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory) / "base"
         tiny_qwen35().save_pretrained(base)
@@ -87,6 +86,3 @@ def main():
         assert delta / scale < 0.06, (delta.item(), scale.item())
         print(f"PASS qwen35 accelerated/reference gradient relative L2={delta / scale:.6g}", flush=True)
 
-
-if __name__ == "__main__":
-    main()

@@ -1,6 +1,7 @@
 """Offline container GPU smoke: complete local models, real serving, no downloads.
 
-Run inside a runtime image with /tests mounted and /app/docker on PYTHONPATH.
+Run inside a runtime image with this file and /tests mounted, /tests and /app/docker on PYTHONPATH
+(see docker/README.md). Kept as a plain script: the runtime image ships no pytest.
 --payload-dir also exports test-only assets for checking the real HTTP entrypoint.
 """
 

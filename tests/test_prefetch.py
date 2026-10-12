@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import torch
 
-from _runner import run
 from test_evaluate import _tiny, _Writer
 from test_resume import _Sampler, _training_config
 from sors.training import loop
@@ -404,7 +403,3 @@ def test_device_prefetch_copies_ahead_onto_the_gpu_with_identical_values():
             assert torch.equal(batch["mask"].cpu(), expected[i] > 500)
             seen.append(i)
         assert seen == list(range(5))
-
-
-if __name__ == "__main__":
-    run(globals())

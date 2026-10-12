@@ -200,26 +200,26 @@ PYTHONPATH=src .venv/bin/python scripts/resume.py --run runs/<run>
 ## 验证
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_decision.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_minimal_checkpoint.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_feedback_checkpoint.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_structural_checkpoint.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_sync_reduction.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_decision_integration.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_candidate.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_candidate_integration.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_candidate_prefix.py
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_candidate_prefix_integration.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_decision.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_minimal_checkpoint.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_feedback_checkpoint.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_structural_checkpoint.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_sync_reduction.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_decision_integration.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_candidate.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_candidate_integration.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_candidate_prefix.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_candidate_prefix_integration.py
 ```
 
 测试使用小型真实 Qwen3/Qwen3.5 模型，覆盖非零回写后的换序等变性、跨层回写效果、梯度、混合精度、
@@ -233,12 +233,12 @@ structural 的独立回归覆盖上述数值对照、双精度 AdamW 连续两�
 服务器 CUDA 检查：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_decision_gpu.py
-CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_candidate_gpu.py
-CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=src \
-  .venv/bin/python tests/test_candidate_prefix_gpu.py
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_decision_gpu.py --gpu
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_candidate_gpu.py --gpu
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  .venv/bin/pytest tests/test_candidate_prefix_gpu.py --gpu
 ```
 
 A100 已通过 Qwen3/Qwen3.5 × minimal/structural × 回写开/关的 8 组小模型检查：bf16 主干、fp32 新层、

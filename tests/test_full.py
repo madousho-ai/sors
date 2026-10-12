@@ -1,12 +1,11 @@
 """--trainable full (主干全参微调) 的测试. 一层、hidden 16 的随机 Qwen3, CPU 上跑.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_full.py
+跑:  .venv/bin/pytest tests/test_full.py
 """
 
 import torch
 from torch import nn
 
-from _runner import run
 from sors.core.checkpoint import checkpoint_adapter, prepare_from_checkpoint
 from sors.core.model import prepare_model
 from sors.training.loop import Fp32Master, TrainConfig, train
@@ -70,7 +69,3 @@ def test_fp32_master_leaves_fp32_params_as_they_are():
     """LoRA 权重本来就是 fp32: 优化器拿到的是参数本身, LoRA 的 run 与加主权重之前逐位相同."""
     p = nn.Parameter(torch.ones(3))
     assert Fp32Master([p]).params[0] is p
-
-
-if __name__ == "__main__":
-    run(globals())

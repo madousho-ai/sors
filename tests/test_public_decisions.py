@@ -1,4 +1,4 @@
-"""Offline fixtures in the official schemas; run with PYTHONPATH=src python tests/test_public_decisions.py."""
+"""Offline fixtures in the official schemas; run with .venv/bin/pytest tests/test_public_decisions.py."""
 
 import copy
 import importlib
@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 
-from _runner import run
 from sors.core.menu import row_alignment, with_partners
 from sors.core.prompt import render_menu
 
@@ -547,7 +546,3 @@ def test_official_mcq_duplicate_options_are_counted_and_excluded_as_whole_questi
     raw[0]["options"][2] = raw[0]["options"][3]
     out = _api().logiqa2(raw)
     assert out.ids == ["1/4554"] and out.skipped == {"duplicate_options": 1}
-
-
-if __name__ == "__main__":
-    run(globals())

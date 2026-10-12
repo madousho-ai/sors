@@ -4,7 +4,6 @@ import pathlib
 import tempfile
 from unittest.mock import patch
 
-from _runner import run
 from test_serve_cli import _args, _mod
 
 REPO = "example/Sors-demo"
@@ -154,7 +153,3 @@ def test_main_serves_a_cached_hf_model_through_the_real_http_app():
             except SystemExit as exc:
                 raise AssertionError(f"cached HF CLI startup failed: {exc}") from exc
         assert len(responses) == 1
-
-
-if __name__ == "__main__":
-    run(globals())

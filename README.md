@@ -126,6 +126,16 @@ and returns the probability of "yes"; `score` is an ordered scale (supported by 
 
 The same model directory can be mounted into a container; see [docker/README.md](docker/README.md) for building and running it.
 
+## Tests
+
+```bash
+uv sync
+SORS_DATASETS_DIR=../decidophobia-dataset HF_HUB_OFFLINE=1 .venv/bin/pytest
+```
+
+Runs in parallel on every core by default (pytest-xdist); add `-n0` to run serially while debugging one test.
+`tests/*_gpu.py` are skipped unless you pass `--gpu`, which needs CUDA.
+
 ## License
 
 Code is [MIT](LICENSE). Model weights follow Qwen's Apache-2.0. The API shape follows TypeSafe's

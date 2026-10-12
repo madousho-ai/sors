@@ -8,7 +8,6 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from _runner import run
 from sors.data import label_names as names_module
 
 
@@ -104,7 +103,3 @@ def test_legacy_dataset_environment_remains_a_fallback_to_sors():
             os.environ["SORS_DATASETS_DIR"] = b
             assert datasets_root() == pathlib.Path(b)
             assert datasets_root(a) == pathlib.Path(a)
-
-
-if __name__ == "__main__":
-    run(globals())

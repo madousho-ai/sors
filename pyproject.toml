@@ -19,6 +19,8 @@ dependencies = [
 dev = [
     "httpx>=0.28.1",
     "netcal>=1.4.0",
+    "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "scikit-learn>=1.9.1",
     "tensorboard>=2.21.0",
     "torchmetrics>=1.9.0",
@@ -32,3 +34,9 @@ gpu-fa4 = [
     "apache-tvm-ffi",
     "nvidia-cutlass-dsl",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-p no:cacheprovider -n auto --dist worksteal"
+markers = ["gpu: needs a CUDA GPU (and usually network to fetch weights)"]

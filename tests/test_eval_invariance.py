@@ -1,12 +1,11 @@
 """scripts/eval-invariance.py 里不碰模型的部分: 从原菜单造变体.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_eval_invariance.py
+跑:  .venv/bin/pytest tests/test_eval_invariance.py
 """
 
 import importlib.util
 import pathlib
 
-from _runner import run
 from sors.data.synth import synth_eval_examples
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "eval-invariance.py"
@@ -45,7 +44,3 @@ def test_variants_are_the_same_questions_with_one_thing_changed():
 def test_variants_depend_only_on_the_seed():
     a, b, c = _mod.variants(BASE, seed=0), _mod.variants(BASE, seed=0), _mod.variants(BASE, seed=1)
     assert a == b and a["codes_only"] != c["codes_only"]
-
-
-if __name__ == "__main__":
-    run(globals())

@@ -1,18 +1,15 @@
 """scripts/choice-loglik-banking77.py 里纯函数的测试.
 
-零依赖 (numpy 除外), 直接跑:  .venv/bin/python tests/test_choice_loglik.py
+跑:  .venv/bin/pytest tests/test_choice_loglik.py
 每个期望值都是手算的, 写在各自的 docstring 里.
 """
 
 import importlib.util
 import math
 import pathlib
-import sys
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from _runner import run  # noqa: E402
 
 _SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "choice-loglik-banking77.py"
 _spec = importlib.util.spec_from_file_location("choice_loglik_banking77", _SCRIPT)
@@ -191,7 +188,3 @@ def test_length_profile_groups_classes_by_name_token_count():
     assert math.isclose(r1["label_share"], 0.0) and math.isclose(r2["label_share"], 1.0), got
     assert math.isclose(r1["mass_share"], 0.3) and math.isclose(r2["mass_share"], 0.7), got
     assert math.isclose(r1["pred_share"], 0.5) and math.isclose(r2["pred_share"], 0.5), got
-
-
-if __name__ == "__main__":
-    run(globals())

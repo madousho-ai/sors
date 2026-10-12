@@ -1,6 +1,6 @@
 """sors.data.massive 的测试: 只做评估的留出数据集, 训练里一条都不出现.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_massive.py
+跑:  .venv/bin/pytest tests/test_massive.py
 data/massive/amazon-massive-dataset-1.0.tar.gz 不在盘上时第一次用到会自动下载 (39.5MB).
 """
 
@@ -11,7 +11,6 @@ import shutil
 import tempfile
 import urllib.request
 
-from _runner import run
 from sors.data.paths import asset_path
 from sors.data.massive import DEFAULT_DIR, TARBALL, URL, load_massive
 
@@ -68,7 +67,3 @@ def test_a_missing_tarball_is_downloaded_from_amazon():
         assert (pathlib.Path(d) / "massive" / TARBALL).exists()
     assert urls == [URL] and URL.startswith("https://amazon-massive-nlu-dataset.s3.amazonaws.com/")
     assert te.queries == load_massive().queries
-
-
-if __name__ == "__main__":
-    run(globals())

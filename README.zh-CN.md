@@ -121,6 +121,16 @@ curl -s http://127.0.0.1:8000/v1/systemone \
 
 同一个模型目录可以挂进容器运行，构建与启动方法见 [docker/README.md](docker/README.md)。
 
+## 测试
+
+```bash
+uv sync
+SORS_DATASETS_DIR=../decidophobia-dataset HF_HUB_OFFLINE=1 .venv/bin/pytest
+```
+
+默认用 pytest-xdist 占满所有核并行跑；单独调一条测试时加 `-n0` 串行。
+`tests/*_gpu.py` 默认跳过，加 `--gpu` 才跑，需要 CUDA。
+
 ## License
 
 代码使用 [MIT](LICENSE)。模型权重沿用 Qwen 的 Apache-2.0。API 形状参照 TypeSafe 的

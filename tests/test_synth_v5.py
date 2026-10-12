@@ -2,7 +2,7 @@
 
 数据用临时目录现造 (复制仓库里的 schema.py, 再写两个小领域). 真实数据的读取见 tests/test_train_cli.py.
 
-跑:  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python tests/test_synth_v5.py
+跑:  PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/test_synth_v5.py
 """
 
 import collections
@@ -12,7 +12,6 @@ import random
 import shutil
 import tempfile
 
-from _runner import run
 from sors.core.menu import row_alignment, with_partners
 from sors.data.paths import asset_path
 from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, batch_quota, drop_categories, parse_type_quota, item_example, load_synth_v5, mix_at, parse_mix, pair_examples,
@@ -715,7 +714,3 @@ def test_dropping_categories_removes_those_items_and_keeps_the_links_of_the_rest
     except ValueError:
         return
     raise AssertionError("unknown category accepted")
-
-
-if __name__ == "__main__":
-    run(globals())

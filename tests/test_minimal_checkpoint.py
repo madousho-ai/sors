@@ -8,7 +8,6 @@ from unittest.mock import patch
 import torch
 from torch.utils.checkpoint import set_checkpoint_early_stop
 
-from _runner import run
 from test_decision import batch, examples, tiny_model
 from sors.core.menu import with_partners
 from sors.core.model import decision_logits, trainable_param_groups
@@ -154,7 +153,3 @@ def test_minimal_capture_ignores_another_threads_complete_backward_replay():
             handle.remove()
         assert not worker.is_alive() and not errors, errors
         torch.testing.assert_close(result[0], expected, atol=3e-6, rtol=3e-5)
-
-
-if __name__ == "__main__":
-    run(globals())

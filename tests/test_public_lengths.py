@@ -3,7 +3,6 @@
 import itertools
 from dataclasses import replace
 
-from _runner import run
 from test_batch_loss import _all_tokens
 from sors.core.menu import MenuExample, reorder_menu
 from sors.core.prompt import encode_prompts, prompt_pieces
@@ -33,7 +32,3 @@ def test_public_length_bound_includes_full_context_question_options_and_every_or
         longer = replace(example, query=example.query + " More evidence." * 100)
         assert public_decisions.max_menu_tokens(longer, length, type_marker=type_marker,
                                                 context_marker=context_marker) > bound
-
-
-if __name__ == "__main__":
-    run(globals())

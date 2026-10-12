@@ -1,6 +1,6 @@
 """checkpoint.save_trained / load_trained 的测试, 以及 train() 训练途中什么时候交出存档. 用假模型或一层的随机 Qwen3, 不碰 GPU.
 
-跑:  PYTHONPATH=src .venv/bin/python tests/test_checkpoint.py
+跑:  .venv/bin/pytest tests/test_checkpoint.py
 """
 
 import json
@@ -10,7 +10,6 @@ from dataclasses import asdict
 import torch
 from torch import nn
 
-from _runner import run
 from sors.core.checkpoint import checkpoint_adapter, load_trained, prepare_from_checkpoint, save_trained
 from sors.core.menu import MenuExample
 from sors.core.model import adapter_config
@@ -224,7 +223,3 @@ def test_train_hands_every_save_every_step_to_on_checkpoint_except_the_last():
 
 def test_train_with_save_every_0_saves_nothing_along_the_way():
     assert _train_tiny(steps=3, save_every=0) == []
-
-
-if __name__ == "__main__":
-    run(globals())

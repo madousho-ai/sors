@@ -10,7 +10,6 @@ from unittest.mock import patch
 import torch
 from torch.utils.checkpoint import set_checkpoint_early_stop
 
-from _runner import run
 from test_decision import batch, examples, tiny_model
 from sors.core.menu import with_partners
 from sors.core.model import decision_logits, trainable_param_groups
@@ -161,7 +160,3 @@ def test_feedback_backbone_copy_and_pickle_preserve_independent_checkpoint_funct
             expected = m.base(input_ids=data['input_ids'], attention_mask=data['attention_mask']).logits
             actual = clone(input_ids=data['input_ids'], attention_mask=data['attention_mask']).logits
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-
-
-if __name__ == '__main__':
-    run(globals())
