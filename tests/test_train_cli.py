@@ -42,33 +42,33 @@ def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
 
     item = _marked()
     with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
-        current, _, info = _mod.build_data(_args("synth-v5.7", eval="simple", fallback_rate=1.0))
+        current, _, info = _mod.build_data(_args("synth-v5.8", eval="simple", fallback_rate=1.0))
         legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
     assert current(8, random.Random(0)) == legacy(8, random.Random(0))
     assert info == old_info
-    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.7", "--fallback-rate", "1"])
+    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.8", "--fallback-rate", "1"])
     assert "-fallback1" in _mod.run_tag(args)
 
 
 def test_v51_and_its_legacy_alias_cannot_duplicate_the_dataset():
     try:
-        _mod.parse_datasets("synth-v5+synth-v5.7")
+        _mod.parse_datasets("synth-v5+synth-v5.8")
     except SystemExit:
         return
     raise AssertionError("the same dataset was accepted twice through aliases")
 
 
-def test_the_retired_v51_to_v56_names_point_to_v57():
+def test_the_retired_v51_to_v57_names_point_to_v58():
     """v5.1 改名 v5.2 加了难题, v5.2 改名 v5.3 加了 contrast, v5.3 改名 v5.4 加了 jevhard 题, v5.4 改名 v5.5 加了
-    contrast_of, v5.5 改名 v5.6 加了能力类别与 factread, v5.6 改名 v5.7 加了语义评分题 scoresem;
+    contrast_of, v5.5 改名 v5.6 加了能力类别与 factread, v5.6 改名 v5.7 加了语义评分题 scoresem, v5.7 改名 v5.8 加了分级计算题 curric;
     旧名字不能悄悄读到新数据."""
-    for old in ("synth-v5.1", "synth-v5.2", "synth-v5.3", "synth-v5.4", "synth-v5.5", "synth-v5.6"):
+    for old in ("synth-v5.1", "synth-v5.2", "synth-v5.3", "synth-v5.4", "synth-v5.5", "synth-v5.6", "synth-v5.7"):
         for parse in (lambda: _mod.parse_datasets(old),
                       lambda: _mod.parse_dataset_weights(f"{old}=1", ["synth-v5"])):
             try:
                 parse()
             except (SystemExit, ValueError) as exc:
-                assert "synth-v5.7" in str(exc), exc
+                assert "synth-v5.8" in str(exc), exc
                 continue
             raise AssertionError(f"{old} was accepted")
 
@@ -261,14 +261,14 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """v5.7 的七个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/7。
+    """v5.8 的七个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/7。
     intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 88695, info
+    assert info["synth_v5_items"] == 94453, info
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "contrast": 1.0,
                                          "edge_case": 1.0, "long_context": 1.0, "long_menu": 1.0})]
     full_menus = {}
-    for path in asset_path("synth-intents-v5.7").glob("*.questions.json"):
+    for path in asset_path("synth-intents-v5.8").glob("*.questions.json"):
         for question in json.loads(path.read_text())["questions"]:
             if len(question["options"]) == 256:
                 rows = frozenset(f"{key}: {description}" for key, description in question["options"].items())
@@ -281,7 +281,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
             sizes["256" if len(e.options) == 256 else "other"] += 1
             if len(e.options) == 256:
                 assert e.question in full_menus[frozenset(e.option_names)], e.question
-    data_labels = {c["label"] for path in asset_path("synth-intents-v5.7").glob("*.contexts.json")
+    data_labels = {c["label"] for path in asset_path("synth-intents-v5.8").glob("*.contexts.json")
                    for c in json.loads(path.read_text())["contexts"]}
     assert V5_LABELS <= data_labels and labels <= data_labels, labels - data_labels  # scoresem 的材料标题各式各样
     assert "" in labels and "Customer message" in labels, labels
@@ -410,15 +410,15 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """v5.7 有88695个绑定 (v5.5 的 86355、factread 的 1188、scoresem 的 1152)、742对菜单版本，一轮87953次抽取；
-    complex / edge_case / long_context 共9287个绑定各多出两遍 (scoresem 的硬标签 576 个是 complex)。改动题 (contrast_of) 每抽一次连原题多出一道题。"""
+    """v5.8 有94453个绑定 (v5.5 的 86355、factread 的 1188、scoresem 的 1152、curric 的 5758)、742对菜单版本，一轮93711次抽取；
+    complex / edge_case / long_context 共15045个绑定各多出两遍 (scoresem 的硬标签 576 个与 curric 的 5758 个是 complex)。改动题 (contrast_of) 每抽一次连原题多出一道题。"""
     from sors.data.synth_v5 import draw_of, load_synth_v5
     _, _, info = _mod.build_data(_args("synth-v5", eval="massive", passes="complex=3,edge_case=3,long_context=3"))
     items = load_synth_v5()
     passes = {"complex": 3, "edge_case": 3, "long_context": 3}
     extra = sum(passes.get(items[d[0][0]].goal, 1) for d in {draw_of(items, i) for i in range(len(items))} if len(d) == 2)
     assert extra > 1500 and info["synth_v5_contrast_draws"] == extra, (extra, info)
-    assert info["synth_v5_round"] == 87953 + 2 * 9287 + extra, info
+    assert info["synth_v5_round"] == 93711 + 2 * 15045 + extra, info
     assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "contrast": 1, "edge_case": 3,
                                        "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info

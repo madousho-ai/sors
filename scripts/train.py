@@ -10,11 +10,11 @@
   synth-v3    外部资产 synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 sors/data/synth_v3.py)
-  synth-v5.7  外部资产 synth-intents-v5.7: 客户消息、工单与规则材料统一成「材料 + 绑定的题」；synth-v5 保留为别名.
+  synth-v5.8  外部资产 synth-intents-v5.8: 客户消息、工单与规则材料统一成「材料 + 绑定的题」；synth-v5 保留为别名.
               v5.1 改名为 v5.2 加了难题, v5.2 改名为 v5.3 加了 contrast 目标, v5.3 改名为 v5.4 加了
               JevBench 难度风格的补充题, v5.4 改名为 v5.5 给反事实材料记下来源 (contrast_of, 原题与改动题同批),
               v5.5 改名为 v5.6 给每道题标了能力类别 (--exclude-categories) 并加了只考读事实的改动组 factread,
-              v5.6 改名为 v5.7 加了纯语义、带边界的评分题 scoresem;
+              v5.6 改名为 v5.7 加了纯语义、带边界的评分题 scoresem, v5.7 改名为 v5.8 加了分级计算题 curric;
               旧名字报错, 免得读到新数据.
               选项写成「键: 说明」, 与推理服务相同. 先按 --mix 的配比挑训练目标 (long_menu / breadth / complex /
               edge_case / long_context / ambiguous), 再领域、题型、材料各自均分; 或者给 --passes 按轮抽, 一轮每个绑定都出,
@@ -83,18 +83,20 @@ from sors.training.prefetch import validate_data_preparation
 from sors.training.loss import LOSSES
 from sors.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.7", "synth-v5", "massive") + PUBLIC_DATASETS
-RETIRED = {"synth-v5.1": "synth-v5.1 was renamed synth-v5.2 through synth-v5.7; use --dataset synth-v5.7",
-           "synth-v5.2": "synth-v5.2 was renamed synth-v5.3 when the contrast goal was added, then up to synth-v5.7; "
-                         "use --dataset synth-v5.7",
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.8", "synth-v5", "massive") + PUBLIC_DATASETS
+RETIRED = {"synth-v5.1": "synth-v5.1 was renamed synth-v5.2 through synth-v5.8; use --dataset synth-v5.8",
+           "synth-v5.2": "synth-v5.2 was renamed synth-v5.3 when the contrast goal was added, then up to synth-v5.8; "
+                         "use --dataset synth-v5.8",
            "synth-v5.3": "synth-v5.3 was renamed synth-v5.4 when the JevBench-style hard items were added, then up to "
-                         "synth-v5.7; use --dataset synth-v5.7",
+                         "synth-v5.8; use --dataset synth-v5.8",
            "synth-v5.4": "synth-v5.4 was renamed synth-v5.5 when counterfactual materials gained contrast_of, then up "
-                         "to synth-v5.7; use --dataset synth-v5.7",
+                         "to synth-v5.8; use --dataset synth-v5.8",
            "synth-v5.5": "synth-v5.5 was renamed synth-v5.6 when every question gained ability categories and the "
-                         "factread groups were added, then synth-v5.7; use --dataset synth-v5.7",
-           "synth-v5.6": "synth-v5.6 was renamed synth-v5.7 when the semantic score questions (scoresem) were added; "
-                         "use --dataset synth-v5.7"}
+                         "factread groups were added, then synth-v5.8; use --dataset synth-v5.8",
+           "synth-v5.6": "synth-v5.6 was renamed synth-v5.7 when the semantic score questions (scoresem) were added, "
+                         "then synth-v5.8; use --dataset synth-v5.8",
+           "synth-v5.7": "synth-v5.7 was renamed synth-v5.8 when the graded computation pairs (curric) were added; "
+                         "use --dataset synth-v5.8"}
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench")
 
 
@@ -111,9 +113,9 @@ def parse_datasets(spec: str) -> list[str]:
     if retired:
         raise SystemExit(f"--dataset: {retired[0]}")
     names = _parse_list("banking77+boolq" if spec == "both" else spec, KNOWN, "--dataset")
-    names = ["synth-v5" if name == "synth-v5.7" else name for name in names]
+    names = ["synth-v5" if name == "synth-v5.8" else name for name in names]
     if len(set(names)) != len(names):
-        raise SystemExit("--dataset: synth-v5.7 and synth-v5 refer to the same dataset; pick one")
+        raise SystemExit("--dataset: synth-v5.8 and synth-v5 refer to the same dataset; pick one")
     if {"synth", "synth-menu"} <= set(names):
         raise SystemExit("--dataset: synth already includes synth-menu's menu questions; pick one")
     return names
@@ -129,7 +131,7 @@ def parse_dataset_weights(spec: str | None, names: list[str]) -> dict[str, Fract
             name, value = (part.strip() for part in entry.split("="))
             if name in RETIRED:
                 raise ValueError(RETIRED[name])
-            name = "synth-v5" if name == "synth-v5.7" else name
+            name = "synth-v5" if name == "synth-v5.8" else name
             if name in weights:
                 raise ValueError(f"repeated dataset {name}")
             weight = Fraction(value)
@@ -246,10 +248,10 @@ def build_data(args):
     if not 0.0 <= fallback_rate <= 1.0:
         raise SystemExit(f"--fallback-rate must be a probability in 0..1; got {fallback_rate}")
     if requested_fallback is not None and "synth-v5" not in datasets:
-        raise SystemExit("--fallback-rate only applies to --dataset synth-v5.7 (legacy alias: synth-v5)")
+        raise SystemExit("--fallback-rate only applies to --dataset synth-v5.8 (legacy alias: synth-v5)")
     balance = getattr(args, "contrast_balance", False)
     if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes or balance):
-        raise SystemExit("--mix, --passes, --mask-descriptions and --contrast-balance only apply to --dataset synth-v5.7 "
+        raise SystemExit("--mix, --passes, --mask-descriptions and --contrast-balance only apply to --dataset synth-v5.8 "
                          "(legacy alias: synth-v5)")
     if args.mix and args.passes:
         raise SystemExit("--mix draws goals by weight and --passes draws in rounds; pick one")
@@ -417,13 +419,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_attention_arguments(ap)
     add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
-                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.7 / massive 用 + 连接; "
+                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.8 / massive 用 + 连接; "
                          "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / quality / reclor / logiqa2; "
-                         "synth-v5 是 synth-v5.7 的兼容别名; both = banking77+boolq")
+                         "synth-v5 是 synth-v5.8 的兼容别名; both = banking77+boolq")
     ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
                      help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")
     ap.add_argument("--dataset-weights", default=None,
-                    help="数据集相对抽题权重，须列出全部训练来源，如 synth-v5.7=3,sharc=1；"
+                    help="数据集相对抽题权重，须列出全部训练来源，如 synth-v5.8=3,sharc=1；"
                          "按最大余数法分配整题，JS配对前生效；默认沿用各sampler等份")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
@@ -687,7 +689,7 @@ def run_tag(args) -> str:
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
         + (f"-cw{args.contrast_weight:g}-cm{args.contrast_margin:g}" if getattr(args, "contrast_weight", 0.0) > 0 else "") \
         + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
-        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.7"} & set(args.dataset.split("+")) else "") \
+        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.8"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
@@ -734,8 +736,8 @@ def main() -> None:
     args.lr_decision = resolve_lr_decision(args)
     args.save_every = resolve_save_every(args)
     datasets = parse_datasets(args.dataset)
-    if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.7"):
-        raise SystemExit("--save-training-state requires --dataset synth-v5.7 (or synth-v5), matching the resume CLI contract")
+    if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.8"):
+        raise SystemExit("--save-training-state requires --dataset synth-v5.8 (or synth-v5), matching the resume CLI contract")
 
     tag = run_tag(args)
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
