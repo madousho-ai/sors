@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.8/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.9/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.8
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.9
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -42,9 +42,11 @@ soft materials between two adjacent levels; 48 held-out questions are kept out o
 added: 2,879 graded computation pairs (date deadlines and amount thresholds in five levels,
 from symbolic relations to cross-month dates and discount-plus-surcharge amounts), each an
 item plus a one-number flip with the opposite answer.
-`--dataset synth-v5.1` through `synth-v5.7` are rejected with a pointer to the new name; `synth-v5`
+`synth-intents-v5.8` became `synth-intents-v5.9` when every curric binding gained `cot`, the
+program-written working for that item; it is a training-only language-model target.
+`--dataset synth-v5.1` through `synth-v5.8` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.8. A `--mix` written for v5.2 must add a
+resume fingerprint check against v5.9. A `--mix` written for v5.2 must add a
 `contrast=` share, since every goal in the data keeps a positive share. Sors-2B was
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
 The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36; the v5.5
@@ -104,8 +106,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.8+sharc+toolace \
-  --dataset-weights synth-v5.8=27,sharc=6,toolace=3 \
+  --dataset synth-v5.9+sharc+toolace \
+  --dataset-weights synth-v5.9=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 
