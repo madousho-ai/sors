@@ -568,6 +568,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--score-emd", type=float, default=0.0,
                     help="评分题分级距离项的权重: 每道评分题按级别比累计分布的平方差, 按整批题数平均后加进损失. "
                          "0 = 评分题只用交叉熵. 写进目录名 (-emd<w>)")
+    ap.add_argument("--cot-weight", type=float, default=0.0,
+                    help="计算过程的语言模型损失权重 (training.cot): 带 cot 的题 (synth-v5.9 的 curric) 另走一遍主干, "
+                         "学着在 'Answer:' 之后写出程序给的计算过程; 不挂决策层, 推理永远不写. 0 = 不算. 写进目录名 (-cot<w>)")
     ap.add_argument("--contrast-qtypes", default=None,
                     help="成对损失只算这些题型的原题/改动题配对, 逗号分隔 (choice / bool / score); 不给 = 全部. "
                          "写进目录名 (-cq<题型>)")
@@ -699,6 +702,7 @@ def run_tag(args) -> str:
         + (f"-xc{'+'.join(sorted(set(args.exclude_categories.split(','))))}" if getattr(args, "exclude_categories", None) else "") \
         + (f"-tq{'.'.join(v.split('=')[1] for v in args.type_quota.split(','))}" if getattr(args, "type_quota", None) else "") \
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
+        + (f"-cot{args.cot_weight:g}" if getattr(args, "cot_weight", 0.0) > 0 else "") \
         + (f"-cq{args.contrast_qtypes.replace(',', '+')}" if getattr(args, "contrast_qtypes", None) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
@@ -718,6 +722,8 @@ def main() -> None:
         raise SystemExit(f"--micro-tokens is a padded-token budget per group, >= 0; got {args.micro_tokens}")
     if args.score_emd < 0:
         raise SystemExit(f"--score-emd is a weight, >= 0; got {args.score_emd}")
+    if args.cot_weight < 0:
+        raise SystemExit(f"--cot-weight is a weight, >= 0; got {args.cot_weight}")
     if args.contrast_qtypes and not set(args.contrast_qtypes.split(",")) <= {"choice", "bool", "score"}:
         raise SystemExit(f"--contrast-qtypes takes choice / bool / score, got {args.contrast_qtypes!r}")
     if args.contrast_weight > 0 and args.accumulate_gradients and args.micro_tokens <= 0 and args.micro_batches > 1:
@@ -788,7 +794,7 @@ def main() -> None:
         loss=args.loss, label_smoothing=args.label_smoothing, consistency=args.consistency,
         contrast_weight=args.contrast_weight, contrast_margin=args.contrast_margin,
         contrast_qtypes=tuple(args.contrast_qtypes.split(",")) if args.contrast_qtypes else None,
-        score_emd=args.score_emd,
+        score_emd=args.score_emd, cot_weight=args.cot_weight,
         eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,
@@ -800,7 +806,7 @@ def main() -> None:
     print(f"dataset={'+'.join(datasets)} architecture={args.architecture} prefix_cache={args.candidate_prefix_cache} trainable={args.trainable} layout={args.layout} loss={args.loss} "
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"consistency={args.consistency:g} contrast_weight={args.contrast_weight:g} contrast_margin={args.contrast_margin:g} "
-          f"contrast_qtypes={args.contrast_qtypes} score_emd={args.score_emd:g} "
+          f"contrast_qtypes={args.contrast_qtypes} score_emd={args.score_emd:g} cot_weight={args.cot_weight:g} "
           f"data_workers={cfg.data_workers} data_prefetch={cfg.data_prefetch} data_backend={cfg.data_backend} "
           f"device_prefetch={cfg.device_prefetch} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "

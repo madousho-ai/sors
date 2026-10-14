@@ -25,6 +25,7 @@ from sors.core.prompt import DEFAULT_LAYOUT
 from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate
 from sors.training.loss import (consistency_js, contrast_margin_loss, menu_hit_counts, score_emd_loss, smooth_target,
                                 training_loss)
+from sors.training.cot import cot_batch, cot_lm_loss
 from sors.training.prefetch import device_prefetch, prefetch_batches, validate_data_preparation
 from sors.training.schedule import lr_scale
 
@@ -54,6 +55,7 @@ class TrainConfig:
     contrast_margin: float = 2.0  # 成对损失要求的对数几率差间隔 m
     contrast_qtypes: tuple[str, ...] | None = None  # 成对损失只算这些题型的配对; None = 全部
     score_emd: float = 0.0  # 评分题分级距离项 (loss.score_emd_loss) 的权重; 0 = 不算
+    cot_weight: float = 0.0  # 计算过程语言模型损失 (training.cot) 的权重; 0 = 不算, 批里也不带 cot 张量
     eval_every: int = 100
     initial_eval: bool = True  # 开训前 (step 0) 先评一次; False 跳过. steps == 0 (只评估) 时照评
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
@@ -333,10 +335,14 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
 
 def _prepare_batch(spec: tuple, sample, tokenizer):
     """后台准备一批. 模块级函数配 functools.partial, 子进程才拿得到."""
-    d_ids, k_max, layout, max_length, type_marker, context_marker, architecture = spec
+    d_ids, k_max, layout, max_length, type_marker, context_marker, architecture, *rest = spec
+    cot_weight, paired = rest or (0.0, False)
     examples, after_sampling = sample
     batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
                     architecture=architecture)
+    if cot_weight > 0:  # 语言模型那一遍的张量也在后台准备, 随批一起拷进显存; 训练线程用之前从批里取走
+        batch.update(cot_batch(examples, tokenizer, d_ids, layout, max_length, type_marker, context_marker,
+                               paired=paired, architecture=architecture))
     # 每行真实长度在这里算成 CPU 整数, 训练线程按 token 预算分组时不必读设备
     return batch, examples, after_sampling, batch["attention_mask"].sum(1).tolist()
 
@@ -367,6 +373,7 @@ def train(
       train/js                      cfg.consistency > 0 时, 成对题的 JS (乘 λ 之前)
       train/contrast_margin         cfg.contrast_weight > 0 时, 原题/改动题成对损失 (乘权重之前)
       train/score_emd               cfg.score_emd > 0 时, 每道评分题的分级距离 EMD 平均 (乘权重、除整批题数之前)
+      train/cot_loss                cfg.cot_weight > 0 时, 计算过程的语言模型损失 (乘权重之前; 批里有带 cot 的题才算)
       consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
       eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
       consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
@@ -505,6 +512,7 @@ def train(
     running, running_js, running_hits, running_n = resume.get("running", [0.0, 0.0, 0, 0]) if resume else (0.0, 0.0, 0, 0)
     running_cm, running_cm_n = 0.0, 0
     running_emd, running_emd_n = 0.0, 0
+    running_cot, running_cot_n = 0.0, 0
     consumed_rng = rng.getstate()
 
     def samples():
@@ -513,8 +521,11 @@ def train(
             examples = sample_fn(cfg.batch_size, rng)
             yield examples, rng.getstate()
 
+    if cfg.cot_weight > 0 and architecture["kind"] not in ("minimal", "slots"):
+        raise ValueError("the cot loss supports the minimal and slots architectures")
     prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
-                                                 cfg.type_marker, cfg.context_marker, architecture["kind"]))
+                                                 cfg.type_marker, cfg.context_marker, architecture["kind"],
+                                                 cfg.cot_weight, cfg.consistency > 0))
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。
@@ -539,6 +550,7 @@ def train(
                 waited = time.perf_counter()
                 b, exs, consumed_rng, lengths = next(batches)
                 data_wait += time.perf_counter() - waited
+                cot = {k: b.pop(k) for k in [k for k in b if k.startswith("cot_")]}  # 决策分组按行切批, 不能带着它
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
                     ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(m, cfg, exs, b, d_ids, lengths)
@@ -556,6 +568,12 @@ def train(
                     js_value = js_value if js is not None else None
                     hits, n = int(hits), int(n)
                     del logits, loss, ce, js
+                cot_value = None
+                if cot:  # 语言模型那一遍单独反传, 梯度与决策项累加在同一次更新里
+                    cot_loss = cot_lm_loss(m, cot)
+                    (cfg.cot_weight * cot_loss).backward()
+                    cot_value = float(cot_loss.detach())
+                    del cot_loss
                 master.pull_grads()
                 opt.step()
                 master.push()
@@ -572,6 +590,8 @@ def train(
                     running_cm, running_cm_n = running_cm + cm_value, running_cm_n + 1
                 if emd_value is not None:  # 每道评分题的 EMD (乘权重之前), 同上只进日志
                     running_emd, running_emd_n = running_emd + emd_value, running_emd_n + 1
+                if cot_value is not None:  # 计算过程的语言模型损失 (乘权重之前), 只进日志
+                    running_cot, running_cot_n = running_cot + cot_value, running_cot_n + 1
                 if step % cfg.log_every == 0:
                     avg = running / cfg.log_every
                     avg_js = running_js / cfg.log_every
@@ -581,6 +601,7 @@ def train(
                           + (f"  acc {acc:.3f}" if acc is not None else "")
                           + (f"  cmargin {running_cm / running_cm_n:.4f}" if running_cm_n else "")
                           + (f"  emd {running_emd / running_emd_n:.4f}" if running_emd_n else "")
+                          + (f"  cot {running_cot / running_cot_n:.4f}" if running_cot_n else "")
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
                         writer.add_scalar("sys/data_wait_ms", 1e3 * data_wait / cfg.log_every, step)
@@ -593,6 +614,8 @@ def train(
                             writer.add_scalar("train/contrast_margin", running_cm / running_cm_n, step)
                         if running_emd_n:
                             writer.add_scalar("train/score_emd", running_emd / running_emd_n, step)
+                        if running_cot_n:
+                            writer.add_scalar("train/cot_loss", running_cot / running_cot_n, step)
                         for i, g in enumerate(opt.param_groups):
                             writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
                         if t is not None:
@@ -600,6 +623,7 @@ def train(
                     running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
                     running_cm, running_cm_n = 0.0, 0
                     running_emd, running_emd_n = 0.0, 0
+                    running_cot, running_cot_n = 0.0, 0
                     data_wait = 0.0
                 if step % cfg.eval_every == 0 or step == cfg.steps:
                     do_eval(step, ce_value, final=step == cfg.steps)

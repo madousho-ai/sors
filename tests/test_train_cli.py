@@ -797,3 +797,11 @@ def test_checkpoint_path_sorts_by_step():
     assert _mod.checkpoint_path(out, 250) == out / "checkpoints" / "step-00250.safetensors"
     assert sorted([_mod.checkpoint_path(out, s) for s in (1000, 250, 500)]) \
         == [_mod.checkpoint_path(out, s) for s in (250, 500, 1000)]
+
+
+def test_cot_weight_defaults_off_is_named_and_must_be_nonnegative():
+    """--cot-weight w: 计算过程的语言模型损失 (training.cot) 的权重, 写进目录名 (-cot<w>); 默认 0 不算."""
+    p = _mod.build_parser()
+    assert p.parse_args([]).cot_weight == 0.0
+    assert "-cot" not in _mod.run_tag(p.parse_args(["--dataset", "synth-v5"]))
+    assert "-cot1" in _mod.run_tag(p.parse_args(["--dataset", "synth-v5", "--cot-weight", "1"]))
