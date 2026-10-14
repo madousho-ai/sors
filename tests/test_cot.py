@@ -100,4 +100,51 @@ def test_training_with_cot_weight_logs_the_cot_loss_and_zero_weight_adds_nothing
                       accumulate_gradients=True, micro_tokens=4096, cot_weight=1.0, data_workers=0)
     train(m, tok, d, lambda n, rng: exs()[:n], {}, cfg)
     out = capsys.readouterr().out
-    assert "  cot " in out, out
+    assert "  cot " in out and "  cot_key " in out and "  cot_rest " in out, out
+
+
+KEYED = ("Adding them: 12.25 + 5.25 = 17.50, then 17.50 + 7.50 = 25.00.\n"
+         "Then 0.92 x 0.92 ≈ 0.85, and 0.8464, rounded to 0.85.\n"
+         "So the value is 25.00, and 25.00 >= 25.00. The condition holds.\n"
+         "That makes it yes.")
+
+
+def test_key_spans_are_results_comparisons_verdicts_and_the_chosen_option():
+    from sors.training.cot import key_spans
+    got = [KEYED[a:b] for a, b in key_spans(KEYED)]
+    assert got == ["17.50", "25.00", "0.85", "0.85", ">=", "holds", "yes"], got
+    other = "It does not hold.\nSo I choose level 2."
+    assert [other[a:b] for a, b in key_spans(other)] == ["does not hold", "2"]
+
+
+def test_cot_batch_marks_the_label_tokens_that_overlap_a_key_span():
+    from sors.training.cot import cot_batch
+    m, tok, d, _ = tiny_model(kind="minimal", feedback=True)
+    ex = MenuExample("red context", [10, 20], 1, 20, ["red", "blue"], question="Which color?", cot=KEYED)
+    b = cot_batch([ex], tok, d, "context-first", 512, False, False, paired=False)
+    key, labels = b["cot_key"][0], b["cot_labels"][0]
+    assert key.shape == labels.shape and key.dtype == torch.bool
+    assert not key[labels == -100].any(), "only working tokens can be key tokens"
+    work = " " + KEYED
+    offs = tok(work, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
+    first = int((labels != -100).nonzero()[0])  # 计算过程的第一个 token
+    marked = [work[a:e] for (a, e), k in zip(offs, key[first:first + len(offs)].tolist()) if k]
+    text = " ".join(marked)
+    for s in ("17", "50", "25", "00", "85", ">", "holds", "yes"):
+        assert s in marked or s in text, (s, marked)
+    assert "Adding" not in marked and "condition" not in marked and "+" not in marked, marked
+
+
+def test_cot_loss_splits_its_token_losses_into_key_and_rest():
+    from sors.training.cot import cot_batch, cot_lm_loss
+    m, tok, d, _ = tiny_model(kind="minimal", feedback=True, trainable="full")
+    m.eval()
+    ex = MenuExample("red context", [10, 20], 1, 20, ["red", "blue"], question="Which color?", cot=KEYED)
+    b = cot_batch([ex], tok, d, "context-first", 512, False, False, paired=False)
+    stats = {}
+    with torch.no_grad():
+        loss = cot_lm_loss(m, dict(b), stats)
+    (ks, kn), (rs, rn) = stats["key"], stats["rest"]
+    n = int((b["cot_labels"][0] != -100).sum())
+    assert kn == int(b["cot_key"][0].sum()) and kn + rn == n and kn > 0 and rn > 0
+    torch.testing.assert_close(torch.tensor((ks + rs) / n), loss.float().cpu(), atol=1e-4, rtol=1e-4)

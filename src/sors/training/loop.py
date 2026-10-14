@@ -374,6 +374,8 @@ def train(
       train/contrast_margin         cfg.contrast_weight > 0 时, 原题/改动题成对损失 (乘权重之前)
       train/score_emd               cfg.score_emd > 0 时, 每道评分题的分级距离 EMD 平均 (乘权重、除整批题数之前)
       train/cot_loss                cfg.cot_weight > 0 时, 计算过程的语言模型损失 (乘权重之前; 批里有带 cot 的题才算)
+      train/cot_key_loss            同上, 只算关键 token (算式结果、比较、条件成立与否、选中的选项; training.cot.key_spans)
+      train/cot_rest_loss           同上, 其余 token; 两项都按 token 平均, 只进日志
       consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
       eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
       consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
@@ -513,6 +515,7 @@ def train(
     running_cm, running_cm_n = 0.0, 0
     running_emd, running_emd_n = 0.0, 0
     running_cot, running_cot_n = 0.0, 0
+    cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}  # 每个日志窗口里 cot 关键 / 其余 token 的损失之和与个数
     consumed_rng = rng.getstate()
 
     def samples():
@@ -570,9 +573,13 @@ def train(
                     del logits, loss, ce, js
                 cot_value = None
                 if cot:  # 语言模型那一遍单独反传, 梯度与决策项累加在同一次更新里
-                    cot_loss = cot_lm_loss(m, cot)
+                    cot_stats = {}
+                    cot_loss = cot_lm_loss(m, cot, cot_stats)
                     (cfg.cot_weight * cot_loss).backward()
                     cot_value = float(cot_loss.detach())
+                    for part, (total, count) in cot_stats.items():  # 关键 token / 其余 token, 按 token 数加权
+                        cot_tokens[part][0] += total
+                        cot_tokens[part][1] += count
                     del cot_loss
                 master.pull_grads()
                 opt.step()
@@ -602,6 +609,7 @@ def train(
                           + (f"  cmargin {running_cm / running_cm_n:.4f}" if running_cm_n else "")
                           + (f"  emd {running_emd / running_emd_n:.4f}" if running_emd_n else "")
                           + (f"  cot {running_cot / running_cot_n:.4f}" if running_cot_n else "")
+                          + "".join(f"  cot_{k} {v[0] / v[1]:.4f}" for k, v in cot_tokens.items() if v[1])
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
                         writer.add_scalar("sys/data_wait_ms", 1e3 * data_wait / cfg.log_every, step)
@@ -616,6 +624,9 @@ def train(
                             writer.add_scalar("train/score_emd", running_emd / running_emd_n, step)
                         if running_cot_n:
                             writer.add_scalar("train/cot_loss", running_cot / running_cot_n, step)
+                        for k, v in cot_tokens.items():
+                            if v[1]:
+                                writer.add_scalar(f"train/cot_{k}_loss", v[0] / v[1], step)
                         for i, g in enumerate(opt.param_groups):
                             writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
                         if t is not None:
@@ -624,6 +635,7 @@ def train(
                     running_cm, running_cm_n = 0.0, 0
                     running_emd, running_emd_n = 0.0, 0
                     running_cot, running_cot_n = 0.0, 0
+                    cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}
                     data_wait = 0.0
                 if step % cfg.eval_every == 0 or step == cfg.steps:
                     do_eval(step, ce_value, final=step == cfg.steps)
