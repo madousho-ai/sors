@@ -65,6 +65,7 @@ class V5Item:
     fallback_bare: str | None = None
     fallback_correct: bool = False
     contrast: int | None = None  # 改动题: 原材料 (contrast_of) 上同一道题的绑定下标; 抽到它时原题一起出
+    cot: str | None = None  # 绑定的 cot: 程序写的计算过程 (只有 curric 有), 只作训练时的语言模型目标
     categories: tuple[str, ...] = ()  # 能力类别 (数据的 categories/<domain>.json, 多标签; 长材料多一个 long_context); 数据没标就是空
 
 
@@ -103,7 +104,7 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
                   asks=list(q["ask"]), rows=rows, bare=bare, qtype={"yes_no": "bool", "score": "score"}.get(kind, "choice"),
                   target=target, gold=gold, fallback_row=extra, fallback_bare=extra_bare,
                   fallback_correct=(fallback, b.get("uncertainty")) in
-                  (("other", "menu_missing"), ("unknown", "insufficient_evidence")))
+                  (("other", "menu_missing"), ("unknown", "insufficient_evidence")), cot=b.get("cot"))
 
 
 def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
@@ -186,7 +187,7 @@ def _example(it: V5Item, masked: bool, query: str, other: str | None, question: 
     k = len(rows)
     ex = MenuExample(query=query, options=list(range(k)), gold_idx=it.gold, label=it.gold, option_names=list(rows),
                      context_label=it.label, question=question, qtype=it.qtype, target=it.target,
-                     partner_query=other)
+                     partner_query=other, cot=it.cot)
     return reorder_menu(ex, rng.sample(range(k), k))
 
 
