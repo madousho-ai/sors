@@ -22,7 +22,7 @@ def test_curric_items_carry_cot_and_other_items_do_not():
     from sors.data.synth_v5 import item_example, load_synth_v5
     items = load_synth_v5()
     cur = [it for it in items if "_curric/" in it.context_id]
-    assert len(cur) == 5758 and all(it.cot and it.cot.startswith("Working: ") for it in cur)
+    assert len(cur) == 5758 and all(it.cot and it.cot.startswith("Let me work this out.") for it in cur)
     assert all(it.cot is None for it in items if "_curric/" not in it.context_id)
     ex = item_example(cur[0], random.Random(0), 0.5, fallback_rate=1.0)
     assert ex.cot == cur[0].cot and partner(ex, random.Random(1)).cot == cur[0].cot
