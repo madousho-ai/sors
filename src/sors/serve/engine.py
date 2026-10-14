@@ -11,7 +11,8 @@ prompts 给出第 1 步的两段文本 (模型读到的提示原文), 不跑模�
 GPU 同一时刻只跑一个请求 (一把锁), 并发的请求排队.
 
 load_engine 从基模 + 存档搭引擎: LoRA 照档里记的形状挂上再合并进权重 (部署形态, 比旁路挂法快),
-档里记的 type_marker、context_marker 照搬 (没记的是加这一项之前的档, 不包). menu-first 训的档没有可共享的 state 前缀, 拒收.
+档里记的 layout、type_marker、context_marker 照搬 (没记的是加这一项之前的档, context-first 不包).
+menu-first 训的档没有可共享的 state 前缀, 拒收; chat 布局 (官方 chat template) 与 context-first 一样 state 在前.
 调用方的 state、问句、选项名照 core.prompt.encode_prompts 编码: 里面写着的 <|D5|> 之类是普通文字.
 """
 
@@ -30,7 +31,7 @@ from sors.core.prompt import encode_prompts, prompt_pieces, split_prompt
 from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
 from sors.serve.menus import to_example
 
-LAYOUT = "context-first"  # state 在前才有可共享的前缀
+SHARED_PREFIX_LAYOUTS = ("context-first", "chat")  # state 在前才有可共享的前缀
 
 
 class RequestTooLong(ValueError):
@@ -46,7 +47,11 @@ class Evaluation:
 class Engine:
     def __init__(self, lm, tok, d_ids: list[int], context_label: str = "", type_marker: bool = False,
                  context_marker: bool = False, max_tokens: int = 8192, max_batch_tokens: int = 16384,
-                 candidate_prefix_cache: str | None = None):
+                 candidate_prefix_cache: str | None = None, layout: str = "context-first"):
+        if layout not in SHARED_PREFIX_LAYOUTS:
+            raise ValueError(f"the server needs a layout whose prompts share the state as a prefix "
+                             f"({', '.join(SHARED_PREFIX_LAYOUTS)}), not {layout!r}")
+        self.layout = layout
         self.lm = lm.eval()
         if candidate_prefix_cache is not None:
             if getattr(getattr(lm, "decision_config", None), "kind", None) != "candidate":
@@ -85,7 +90,8 @@ class Engine:
                 out[qid] = ("".join(memory), "\n\n".join(f"Independent option branch {i + 1}:\n{''.join(p)}"
                                                        for i, p in enumerate(options)))
             return out
-        return {qid: split_prompt(to_example(q, state, self.context_label), LAYOUT, self.type_marker, self.context_marker)
+        return {qid: split_prompt(to_example(q, state, self.context_label), self.layout, self.type_marker,
+                                  self.context_marker)
                 for qid, q in questions.items()}
 
     def evaluate(self, state, questions: dict) -> Evaluation:
@@ -93,7 +99,7 @@ class Engine:
         exs = {qid: to_example(q, state, self.context_label) for qid, q in questions.items()}
         if getattr(self.lm, "decision_config", None) is not None:
             return self._evaluate_decisions(exs)
-        pieces = {qid: prompt_pieces(ex, LAYOUT, self.type_marker, self.context_marker) for qid, ex in exs.items()}
+        pieces = {qid: prompt_pieces(ex, self.layout, self.type_marker, self.context_marker) for qid, ex in exs.items()}
         ctx, *branches = encode_prompts(self.tok, [next(iter(pieces.values()))[0]] + [q for _, q in pieces.values()])
         segs = dict(zip(pieces, branches))
         longest = max(len(s) for s in segs.values())
@@ -120,7 +126,7 @@ class Engine:
         batches, tokens = {}, 0
         for qid, ex in exs.items():
             try:
-                b = collate_decisions([ex], self.tok, self.d_ids, len(ex.options), LAYOUT, self.max_tokens,
+                b = collate_decisions([ex], self.tok, self.d_ids, len(ex.options), self.layout, self.max_tokens,
                                       self.type_marker, self.context_marker, self.lm.decision_config.kind,
                                       truncate=False)
             except ValueError as exc:
@@ -202,12 +208,12 @@ def load_engine(checkpoint, base_model=None, context_label: str = "", device: st
         lm, _ = load_causal_lm(base_model, device=device, dtype=dtype, attn_implementation=attn_implementation,
                                allow_kernel_download=allow_kernel_download, local_files_only=local_files_only)
         m, cfg = prepare_from_checkpoint(lm, train_ids, checkpoint)
-    layout = cfg.get("layout", LAYOUT)
-    if layout != LAYOUT:
-        raise ValueError(f"{checkpoint} was trained {layout}; the server needs a {LAYOUT} checkpoint, "
-                         "whose prompts share the state as a prefix")
+    layout = cfg.get("layout", "context-first")
+    if layout not in SHARED_PREFIX_LAYOUTS:
+        raise ValueError(f"{checkpoint} was trained {layout}; the server needs a checkpoint whose prompts share the "
+                         f"state as a prefix ({', '.join(SHARED_PREFIX_LAYOUTS)})")
     if hasattr(m, "merge_and_unload"):  # d-only 的档没有 LoRA, m 就是基模本身
         m = m.merge_and_unload()
     return Engine(m, tok, d_ids, context_label=context_label, type_marker=bool(cfg.get("type_marker", False)),
                   context_marker=bool(cfg.get("context_marker", False)), max_tokens=max_tokens, max_batch_tokens=max_batch_tokens,
-                  candidate_prefix_cache=candidate_prefix_cache)
+                  candidate_prefix_cache=candidate_prefix_cache, layout=layout)

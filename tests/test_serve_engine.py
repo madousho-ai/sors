@@ -12,6 +12,8 @@ import tempfile
 
 import torch
 
+from sors.core.prompt import state_text
+
 from sors.core.checkpoint import save_trained
 from sors.core.model import prepare_model
 from sors.core.prompt import render_menu
@@ -66,13 +68,13 @@ def _questions(qs=QUESTIONS):
     return SystemOneRequest.model_validate({"state": STATE, "model": "m", "questions": qs}).questions
 
 
-def _reference(lm, questions, label, type_marker, context_marker=False, state=STATE):
+def _reference(lm, questions, label, type_marker, context_marker=False, state=STATE, layout="context-first"):
     """评估的路: 每道题整条提示, 走 score_examples."""
     tok, d_ids, _ = _tok_and_ids()
     exs = [to_example(q, state, label) for q in questions.values()]
     k = max(len(e.options) for e in exs)
     q = score_examples(lm, tok, d_ids, exs, batch_size=len(exs), k_max=k, max_length=4096,
-                       layout="context-first", type_marker=type_marker, context_marker=context_marker)["q"]
+                       layout=layout, type_marker=type_marker, context_marker=context_marker)["q"]
     return {qid: row[: len(e.options)] for qid, row, e in zip(questions, q, exs)}
 
 
@@ -248,3 +250,21 @@ def test_the_base_model_is_read_from_the_result_json_of_the_run_the_checkpoint_b
     assert recorded_base_model(run_dir / "trained.safetensors") == "Qwen/Qwen3-1.7B-Base"
     assert recorded_base_model(run_dir / "checkpoints" / "step-00100.safetensors") == "Qwen/Qwen3-1.7B-Base"
     assert recorded_base_model(pathlib.Path(tempfile.mkdtemp()) / "trained.safetensors") is None
+
+
+def test_the_chat_layout_gets_the_distribution_the_evaluation_path_gives_and_shares_the_state_prefix():
+    """chat 布局: state 段是 user 开头加 state, 各题那段以官方不思考的 assistant 开头收尾; 分布与评估的路相同."""
+    tok, d_ids, _ = _tok_and_ids()
+    lm = _tiny_lm()
+    qs = _questions()
+    e = Engine(lm, tok, d_ids, context_label="State", layout="chat")
+    got = e.evaluate(STATE, qs).probs
+    assert _close(got, _reference(lm, qs, "State", False, layout="chat")), got
+    prompts = e.prompts(STATE, qs)
+    assert {s for s, _ in prompts.values()} == {"<|im_start|>user\nState: " + state_text(STATE) + "\n\n"}
+    assert all(q.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n") for _, q in prompts.values())
+
+
+def test_load_engine_takes_the_layout_a_chat_checkpoint_was_trained_with():
+    path, _ = _trained(layout="chat")
+    assert load_engine(path, _base_dir(), device="cpu", dtype=torch.float32).layout == "chat"

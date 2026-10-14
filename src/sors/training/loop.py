@@ -45,7 +45,7 @@ class TrainConfig:
     optimizer: str = "adamw"  # OPTIMIZERS: adamw 是 torch 的 AdamW; adamw8bit 是 bitsandbytes 的 8-bit 状态版, 只在 CUDA 上
     lr_schedule: str = "constant"  # constant | cosine
     warmup_steps: int = 0
-    layout: str = DEFAULT_LAYOUT  # context-first | menu-first
+    layout: str = DEFAULT_LAYOUT  # context-first | menu-first | chat
     type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
     context_marker: bool = False  # state 两头包 <|context_start|> <|context_end|>, 超长只截包裹里的 state
     loss: str = "all-slots"  # loss.LOSSES: vocab 整个词表; all-slots 全部 D 槽; menu 菜单 k 个槽. scripts/train.py 总是显式传, 默认 vocab
