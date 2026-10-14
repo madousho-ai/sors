@@ -579,3 +579,42 @@ def test_context_marker_wraps_the_context_after_the_menu_in_menu_first():
 
 def test_context_marker_default_is_off():
     assert "<|context_start|>" not in render_menu(_ex("p")) and "<|context_end|>" not in render_menu(_ex("p"))
+
+
+# --------------------------------------------------------------------------
+# chat 布局: 官方 chat template 的不思考形态
+# --------------------------------------------------------------------------
+
+CHAT_TAIL = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def test_chat_layout_wraps_the_prompt_in_the_official_non_thinking_turn():
+    """上下文进 user 消息开头, 问句和菜单接在后面, 收尾是官方模板不思考时的 assistant 开头;
+    决策读最后那个 '\\n\\n' (官方模型开始写回答的位置)."""
+    ex = _ex("I lost my card", options=(7, 2), gold_idx=1, question="which one?")
+    ctx, q = split_prompt(ex, layout="chat")
+    assert ctx == "<|im_start|>user\nCustomer message: I lost my card\n\n", repr(ctx)
+    assert q.startswith("Question: which one?\nOptions:\n<|D0|>. ") and q.endswith(CHAT_TAIL), repr(q)
+
+
+def test_chat_layout_keeps_the_context_as_a_shared_prefix():
+    a = _ex("q", options=(0, 1), gold_idx=0)
+    b = _ex("q", options=(3, 4, 5), gold_idx=2, qtype="score")
+    assert split_prompt(a, layout="chat")[0] == split_prompt(b, layout="chat")[0]
+
+
+def test_chat_layout_puts_one_instruction_per_question_type_before_the_turn_ends():
+    """每种题型一句指令, 放在菜单之后、<|im_end|> 之前; 三种互不相同, 都要求回答选项的代码."""
+    seen = set()
+    for qtype in ("choice", "bool", "score"):
+        q = split_prompt(_ex("p", qtype=qtype), layout="chat")[1]
+        menu_end = q.index("<|D1|>")
+        instruction = q[q.index("\n\n", menu_end) + 2:q.index("<|im_end|>")]
+        assert "code" in instruction and "\n" not in instruction, (qtype, instruction)
+        seen.add(instruction)
+    assert len(seen) == 3, seen
+
+
+def test_chat_layout_takes_the_context_marker_inside_the_user_turn():
+    s = split_prompt(_ex("hp 3", context_label=""), layout="chat", context_marker=True)[0]
+    assert s == "<|im_start|>user\n<|context_start|>hp 3<|context_end|>\n\n", repr(s)

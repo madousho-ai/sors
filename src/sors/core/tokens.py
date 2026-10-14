@@ -22,7 +22,14 @@ CONTEXT_TOKENS = ["<|context_start|>", "<|context_end|>"]
 
 
 def install_d_tokens(tokenizer) -> list[int]:
-    """把 256 个 D-token 加进 tokenizer (已有则跳过), 返回它们的 id, 顺序与 D_TOKENS 一致."""
+    """把 256 个 D-token 加进 tokenizer (已有则跳过), 返回它们的 id, 顺序与 D_TOKENS 一致.
+    顺带把基模自带、却没标 special 的 added token (Qwen 的 <think> </think> <tool_call> 等) 改标 special:
+    不标的话 split_special_tokens 切不开它们, 调用方文字里写着 <think> 就会编成模板的 <think>. id 不变."""
+    from tokenizers import AddedToken
+
+    plain = [t.content for t in getattr(tokenizer, "added_tokens_decoder", {}).values() if not t.special]
+    if plain:
+        tokenizer.add_tokens([AddedToken(c, special=True, normalized=False) for c in plain], special_tokens=True)
     tokenizer.add_tokens(D_TOKENS, special_tokens=True)
     return tokenizer.convert_tokens_to_ids(D_TOKENS)
 

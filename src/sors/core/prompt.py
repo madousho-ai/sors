@@ -5,6 +5,10 @@
                  前缀只含上下文, N 个问题共用它的 KV cache, 每个问题只喂自己那段. 默认.
   menu-first     Question: <q>\\nOptions:\\n<menu>\\n\\n<ctx>\\nAnswer:
                  答案位置读上下文时已经知道选项. 对照组, 没有可共享的前缀.
+  chat           <|im_start|>user\\n<ctx>\\n\\n | Question: <q>\\nOptions:\\n<menu>\\n\\n<指令><|im_end|>\\n
+                 <|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n
+                 Qwen3.5 post-train 版官方 chat template 的不思考形态, 决策读最后那个 \\n\\n (官方模型开始写回答处).
+                 <指令> 每种题型一句 (CHAT_INSTRUCTIONS). 前缀同 context-first 一样只含上下文 (外加 user 开头).
 <ctx> 是「<label>: <query>」; 标签为空串时 <query> 原样放进去, 不带「: 」: 推理服务默认这样,
 要标签的调用方自己写在 state 开头. 训练数据的标签都不为空.
 context_marker=True 时 <ctx> 两头包上 <|context_start|> <|context_end|>, 标签照旧在包裹里面.
@@ -28,9 +32,14 @@ import json
 from sors.core.menu import MenuExample
 from sors.core.tokens import CONTEXT_TOKENS, D_TOKENS
 
-LAYOUTS = ("context-first", "menu-first")
+LAYOUTS = ("context-first", "menu-first", "chat")
 DEFAULT_LAYOUT = "context-first"
 DEFAULT_QUESTION = "Which option best describes the message?"
+CHAT_INSTRUCTIONS = {  # chat 布局里菜单之后的一句, 按题型
+    "choice": "Pick the one option that best answers the question. Reply with the code of that option.",
+    "bool": "Answer the question by picking yes or no. Reply with the code of that option.",
+    "score": "The options are levels on a scale; pick the level that fits. Reply with the code of that option.",
+}
 
 
 class Special(str):
@@ -70,6 +79,10 @@ def prompt_pieces(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: bo
         return [*ctx, "\n\n"], [*qb, "\n\nAnswer:"]
     if layout == "menu-first":
         return [], [*qb, "\n\n", *ctx, "\nAnswer:"]
+    if layout == "chat":
+        return ([Special("<|im_start|>"), "user\n", *ctx, "\n\n"],
+                [*qb, "\n\n", CHAT_INSTRUCTIONS[ex.qtype], Special("<|im_end|>"), "\n", Special("<|im_start|>"),
+                 "assistant\n", Special("<think>"), "\n\n", Special("</think>"), "\n\n"])
     raise ValueError(f"unknown layout {layout!r}; expected one of {LAYOUTS}")
 
 
