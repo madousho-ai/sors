@@ -148,3 +148,11 @@ def test_cot_loss_splits_its_token_losses_into_key_and_rest():
     n = int((b["cot_labels"][0] != -100).sum())
     assert kn == int(b["cot_key"][0].sum()) and kn + rn == n and kn > 0 and rn > 0
     torch.testing.assert_close(torch.tensor((ks + rs) / n), loss.float().cpu(), atol=1e-4, rtol=1e-4)
+
+
+def test_the_chat_layout_has_no_cot_yet():
+    """chat 布局的计算过程该写进 <think> 里, 还没做; 先拒收, 免得接在 </think> 之后学成回答."""
+    from sors.training.cot import cot_batch
+    m, tok, d, _ = tiny_model(kind="minimal", feedback=True)
+    with pytest.raises(ValueError, match="chat"):
+        cot_batch(exs(), tok, d, "chat", 512, False, False, paired=False)

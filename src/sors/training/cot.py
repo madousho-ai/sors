@@ -62,6 +62,8 @@ def cot_batch(examples, tok, d_ids, layout, max_length, type_marker, context_mar
     """语言模型那一遍的张量 cot_input_ids / cot_attention_mask / cot_labels (左填充, 标签 -100 = 不算),
     cot_key (与标签同形, True = 关键 token, 只进日志).
     paired: 批是 [a, a', b, b', ...] 的一致性配对, 每道题只取第一份. 批里没有 cot 时返回 {}."""
+    if layout == "chat":
+        raise ValueError("the cot loss does not support the chat layout yet: its working belongs inside <think>")
     picked = [ex for i, ex in enumerate(examples) if ex.cot and (not paired or i % 2 == 0)]
     if not picked:
         return {}
