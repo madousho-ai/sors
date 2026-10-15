@@ -349,6 +349,21 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     return ce_sum, js_sum if paired else None, hits_sum, n_sum, margin_sum, emd_mean
 
 
+BRANCH_STATE_TOKENS = 128  # DeltaNet 每个分支段至少占一份递归状态 (头数 x 128 x 128), 约合 128 个 token 的激活
+
+
+def batch_costs(batch: dict, architecture: str) -> list[int]:
+    """每行按 token 计的前向开销, 供 token_groups 控显存. candidate 的 attention_mask 只覆盖前缀,
+    分支 token 与每个分支的递归状态另算; 其余架构就是真实长度."""
+    lengths = batch["attention_mask"].sum(1).tolist()
+    if architecture != "candidate":
+        return lengths
+    suffix = batch["suffix_attention_mask"].sum(-1)
+    branches = (batch["slot_ids"] >= 0).sum(1)
+    return [int(p) + int(s) + int(k) * BRANCH_STATE_TOKENS
+            for p, s, k in zip(batch["prefix_lengths"].tolist(), suffix.sum(1).tolist(), branches.tolist())]
+
+
 def _prepare_batch(spec: tuple, sample, tokenizer):
     """后台准备一批. 模块级函数配 functools.partial, 子进程才拿得到."""
     d_ids, k_max, layout, max_length, type_marker, context_marker, architecture, *rest = spec
@@ -360,7 +375,7 @@ def _prepare_batch(spec: tuple, sample, tokenizer):
         batch.update(cot_batch(examples, tokenizer, d_ids, layout, max_length, type_marker, context_marker,
                                paired=paired, architecture=architecture))
     # 每行真实长度在这里算成 CPU 整数, 训练线程按 token 预算分组时不必读设备
-    return batch, examples, after_sampling, batch["attention_mask"].sum(1).tolist()
+    return batch, examples, after_sampling, batch_costs(batch, architecture)
 
 
 def train(

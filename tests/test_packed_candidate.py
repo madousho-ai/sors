@@ -131,3 +131,19 @@ def test_cli_accepts_packed_prefix_cache_for_candidate():
     spec.loader.exec_module(cli)
     args = cli.build_parser().parse_args(["--architecture", "candidate", "--candidate-prefix-cache", "packed"])
     assert cli.resolve_candidate_prefix_cache(args, None) == "packed"
+
+
+def test_candidate_batch_cost_counts_every_branch_for_token_grouping():
+    """训练按每行的 token 数分组控显存. candidate 的 attention_mask 只有前缀, 要把各分支 (连同 DeltaNet
+    每段一份递归状态的开销) 算进去, 否则 256 个选项的意图题只按前缀长度计, 一组塞进几千个分支."""
+    from dataclasses import replace
+    from sors.training.loop import batch_costs, BRANCH_STATE_TOKENS
+
+    _, tok, d, _ = candidate_model(0)
+    few = examples()[0]
+    b = candidate_batch(tok, d, [few])
+    prefix = int(b["prefix_lengths"][0])
+    suffix = int(b["suffix_attention_mask"][0].sum())
+    k = int((b["slot_ids"][0] >= 0).sum())
+    assert batch_costs(b, "candidate") == [prefix + suffix + k * BRANCH_STATE_TOKENS]
+    assert batch_costs(b, "minimal") == b["attention_mask"].sum(1).tolist()
