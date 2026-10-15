@@ -54,8 +54,10 @@ class DecisionConfig:
             raise ValueError(f"unknown decision architecture {self.kind!r}")
         if self.dim < 2 or min(self.heads, self.option_batch_size) < 1 or self.dim % self.heads:
             raise ValueError("decision dim must be >= 2 and divisible by positive heads; batch count must be positive")
-        if self.blocks < (0 if self.kind == "candidate" else 1):
-            raise ValueError("candidate set-block count must be >= 0; other decision architectures need >= 1")
+        if self.blocks < (1 if self.kind == "structural" else 0):
+            raise ValueError("decision block count must be >= 0 (structural needs >= 1)")
+        if self.kind == "minimal" and self.blocks == 0 and self.feedback:
+            raise ValueError("minimal with zero decision blocks has nothing to write back; turn feedback off")
         if self.layers is not None:
             object.__setattr__(self, "layers", tuple(self.layers))
         if self.kind == "candidate" and (self.feedback or self.layers):
@@ -381,6 +383,9 @@ class DecisionModel(nn.Module):
             finally:
                 for handle in handles:
                     handle.remove()
+            if not len(self.blocks):  # 0 块: 选项直接取最后一层在说明末尾 token 上的隐藏状态
+                dtype = self.option_proj.weight.dtype
+                u = self.option_proj(h.gather(1, positions[..., None].expand(-1, -1, h.shape[-1])).to(dtype))
             for j in range(len(self.blocks)):
                 args = (j, u, states[j], positions, valid, mask)
                 if self.checkpoint_forward and self.training and torch.is_grad_enabled():
