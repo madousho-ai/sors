@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="state 加最长那道题的 token 上限, 超了 422. 训练时的提示最长 4096")
     ap.add_argument("--max-batch-tokens", type=int, default=16384,
                      help="一次前向的 KV cache 预算: 同组问题数 × (state + 组内最长的问题). 显存紧就调小")
-    ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off"], default=None,
+    ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off", "packed"], default=None,
                     help="覆盖 candidate 存档的共享前缀执行方式；默认继承存档，旧存档保持 off")
     ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 SORS_API_KEY, 也没有就不查")
     ap.add_argument("--demo", action="store_true", help="把 demos/ 下的演示页挂在 /demo/ (手填请求在 /demo/playground/, 贪吃蛇在 /demo/snake/)")

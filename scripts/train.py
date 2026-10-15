@@ -444,8 +444,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--architecture", choices=["slots", "minimal", "structural", "candidate"], default=None,
                     help="slots 原 D 码读出 (默认); minimal 串行菜单顶部决策块; structural 独立选项与中后层支路; "
                          "candidate 逐项联合编码完整上下文/问题/选项，再做集合交互")
-    ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off"], default=None,
-                    help="candidate 前缀共享：auto 在推理/编码器冻结时启用（新模型默认）；on 强制且拒绝丢弃编码器梯度；off 完整前向对照。配 --init 默认继承")
+    ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off", "packed"], default=None,
+                    help="candidate 前缀共享：auto 在推理/编码器冻结时启用（新模型默认）；on 强制且拒绝丢弃编码器梯度；off 完整前向对照；packed 前缀算一次、全部分支同一次前向接着跑，可训（仅 Qwen3.5）。配 --init 默认继承")
     ap.add_argument("--decision-feedback", action=argparse.BooleanOptionalAction, default=None,
                     help="独立开启/关闭选项向主干回写，默认关闭；新增分支的回写投影从零起步")
     ap.add_argument("--decision-dim", type=int, default=None, help="决策支路宽度，默认128")
@@ -653,8 +653,8 @@ def resolve_candidate_prefix_cache(args, saved_config) -> str:
         return "off"
     if mode is None:
         mode = (saved_config or {}).get("candidate_prefix_cache", "off") if args.init else "auto"
-    if mode not in ("auto", "on", "off"):
-        raise SystemExit("candidate prefix cache mode must be auto, on or off")
+    if mode not in ("auto", "on", "off", "packed"):
+        raise SystemExit("candidate prefix cache mode must be auto, on, off or packed")
     return mode
 
 

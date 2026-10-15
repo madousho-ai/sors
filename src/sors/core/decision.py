@@ -290,8 +290,8 @@ class DecisionModel(nn.Module):
         return logits.float()
 
     def set_candidate_prefix_cache(self, mode: str):
-        if mode not in ("auto", "on", "off"):
-            raise ValueError("candidate prefix cache mode must be auto, on or off")
+        if mode not in ("auto", "on", "off", "packed"):
+            raise ValueError("candidate prefix cache mode must be auto, on, off or packed")
         if self.decision_config.kind != "candidate" and mode != "off":
             raise ValueError("prefix sharing is only available for the candidate architecture")
         self.candidate_prefix_cache = mode
@@ -483,6 +483,23 @@ class DecisionModel(nn.Module):
             return self._forward_read_only(batch, option_batch_size)
         if self._layerwise_feedback and self.training and torch.is_grad_enabled():
             return self._forward_feedback(batch)
+        if self.decision_config.kind == "candidate" and self.candidate_prefix_cache == "packed":
+            # 前缀算一次, 全部分支同一次前向接着跑, 可训 (sors.core.packed)
+            from sors.core.packed import packed_candidate_hidden, supports_packed
+            if not supports_packed(self.decoder):
+                raise ValueError("packed candidate encoding supports Qwen3.5 text backbones only")
+            if "prefix_lengths" not in batch:
+                raise ValueError("packed candidate encoding needs a candidate batch with token boundaries")
+            valid = batch["slot_ids"] >= 0
+            if not valid.any(1).all():
+                raise ValueError("candidate batch needs at least one option per example")
+            option_rows = valid.flatten().nonzero().flatten()
+            with self._forward_lock:
+                encoded = packed_candidate_hidden(
+                    self.decoder, batch, valid,
+                    checkpointed=self.checkpoint_forward and self.training and torch.is_grad_enabled(),
+                ).to(self.option_norm.weight.dtype)
+            return self._candidate_output(encoded, batch["slot_ids"], option_rows)
         if self.decision_config.kind == "candidate":
             shared = self.uses_shared_prefix(batch)
             if self._encoder_frozen_for_batch(batch):
