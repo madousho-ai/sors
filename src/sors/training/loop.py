@@ -349,7 +349,10 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     return ce_sum, js_sum if paired else None, hits_sum, n_sum, margin_sum, emd_mean
 
 
-BRANCH_STATE_TOKENS = 128  # DeltaNet 每个分支段至少占一份递归状态 (头数 x 128 x 128), 约合 128 个 token 的激活
+# 每个分支额外按几个 token 计. DeltaNet 每段至少一个 64-token 块, 每块一份递归状态 (16 头 x 128 x 128),
+# 约合 128 个 token 的隐藏状态; 但梯度检查点下状态只在重算的那一层里短暂存在, 而 token 预算管的是 24 层
+# 都要留下的层输入, 所以按 128 / 24 摊薄, 取 8. 取 128 时一步被切成 15 组 (minimal 5 组), 慢了约 3 倍.
+BRANCH_STATE_TOKENS = 8
 
 
 def batch_costs(batch: dict, architecture: str) -> list[int]:
