@@ -43,6 +43,7 @@ class TrainConfig:
     lr_embed: float = 1e-3
     lr_decision: float | None = None  # 新增决策层单独的学习率; None = 跟主干共用 lr_lora (旧行为)
     weight_decay: float = 0.0
+    max_grad_norm: float | None = None  # 全局梯度范数上限, 见 clip_gradients; None = 不裁剪 (旧行为)
     optimizer: str = "adamw"  # OPTIMIZERS: adamw 是 torch 的 AdamW; adamw8bit 是 bitsandbytes 的 8-bit 状态版, 只在 CUDA 上
     lr_schedule: str = "constant"  # constant | cosine
     warmup_steps: int = 0
@@ -140,6 +141,20 @@ class Fp32Master:
     def push(self) -> None:
         for p, w in self.pairs:
             p.copy_(w)
+
+def clip_gradients(params, max_norm: float | None) -> float:
+    """全部参数的梯度合起来算一个 L2 范数; 给了上限且超过时按同一比例缩到上限. 返回裁剪前的范数.
+    在主权重上做 (pull_grads 之后), 与更新看到的是同一份梯度."""
+    grads = [p.grad for p in params if p.grad is not None]
+    if not grads:
+        return 0.0
+    norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g.float()) for g in grads]))
+    if max_norm is not None:
+        scale = (max_norm / (norm + 1e-6)).clamp(max=1.0)
+        for g in grads:
+            g.mul_(scale.to(g.dtype))
+    return float(norm)
+
 
 def scalar_items(prefix: str, d: dict) -> list[tuple[str, float]]:
     """把 evaluate() 的结果拍平成 TensorBoard 标量: 嵌套 dict 接成 a/b/c, None 丢掉."""
@@ -522,6 +537,7 @@ def train(
     running_cm, running_cm_n = 0.0, 0
     running_emd, running_emd_n = 0.0, 0
     running_cot, running_cot_n = 0.0, 0
+    running_gn, running_gn_n = 0.0, 0  # 裁剪前的全局梯度范数, 每个日志窗口取平均
     cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}  # 每个日志窗口里 cot 关键 / 其余 token 的损失之和与个数
     consumed_rng = rng.getstate()
 
@@ -589,6 +605,8 @@ def train(
                         cot_tokens[part][1] += count
                     del cot_loss
                 master.pull_grads()
+                grad_norm = clip_gradients([p for g in opt.param_groups for p in g["params"]], cfg.max_grad_norm)
+                running_gn, running_gn_n = running_gn + grad_norm, running_gn_n + 1
                 opt.step()
                 master.push()
                 sched.step()
@@ -621,6 +639,8 @@ def train(
                     if writer:
                         writer.add_scalar("sys/data_wait_ms", 1e3 * data_wait / cfg.log_every, step)
                         writer.add_scalar("train/loss", avg, step)
+                        if running_gn_n:
+                            writer.add_scalar("train/grad_norm", running_gn / running_gn_n, step)
                         if acc is not None:
                             writer.add_scalar("train/accuracy", acc, step)
                         if js_value is not None:
@@ -650,6 +670,7 @@ def train(
                     running_cm, running_cm_n = 0.0, 0
                     running_emd, running_emd_n = 0.0, 0
                     running_cot, running_cot_n = 0.0, 0
+                    running_gn, running_gn_n = 0.0, 0
                     cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}
                     data_wait = 0.0
                 if step % cfg.eval_every == 0 or step == cfg.steps:

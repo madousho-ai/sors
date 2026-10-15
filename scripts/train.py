@@ -472,6 +472,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--lr-decision", type=float, default=None,
                     help="新增决策层单独的学习率 (minimal / structural / candidate); 不给 = 跟主干共用 --lr-lora. "
                          "给了写进目录名")
+    ap.add_argument("--max-grad-norm", type=float, default=None,
+                    help="全局梯度范数上限 (全部可训参数合起来); 不给 = 不裁剪. 给了写进目录名")
     ap.add_argument("--lr-schedule", default="cosine", choices=["constant", "cosine"])
     ap.add_argument("--warmup", type=int, default=100, help="线性 warmup 步数")
     ap.add_argument("--weight-decay", type=float, default=0.0)
@@ -656,6 +658,13 @@ def resolve_candidate_prefix_cache(args, saved_config) -> str:
     return mode
 
 
+def resolve_max_grad_norm(args) -> float | None:
+    """--max-grad-norm 只接受正数."""
+    if args.max_grad_norm is not None and args.max_grad_norm <= 0:
+        raise SystemExit(f"--max-grad-norm must be > 0; got {args.max_grad_norm}")
+    return args.max_grad_norm
+
+
 def resolve_lr_decision(args) -> float | None:
     """决策层单独的学习率. 不给就是 None, 决策层照旧跟主干同组; 只有带决策层的架构能给, 且须 >= 0."""
     if args.lr_decision is None:
@@ -690,6 +699,7 @@ def run_tag(args) -> str:
         + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
         + (f"-lr{args.lr_lora:g}" if args.lr_lora != 1e-4 else "") \
         + (f"-lrd{args.lr_decision:g}" if getattr(args, "lr_decision", None) is not None else "") \
+        + (f"-clip{args.max_grad_norm:g}" if getattr(args, "max_grad_norm", None) is not None else "") \
         + ("-adam8" if getattr(args, "optimizer", "adamw") == "adamw8bit" else "") \
         + (f"-kfull{args.k_max}" if args.k_min is None else f"-k{args.k_min}-{args.k_max}") \
         + ("-klog" if args.k_log else "") \
@@ -746,6 +756,7 @@ def main() -> None:
     if args.trainable == "decision-only" and args.architecture == "slots":
         raise SystemExit("--trainable decision-only requires --architecture minimal, structural or candidate")
     args.lr_decision = resolve_lr_decision(args)
+    args.max_grad_norm = resolve_max_grad_norm(args)
     args.save_every = resolve_save_every(args)
     datasets = parse_datasets(args.dataset)
     if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.11"):
@@ -791,7 +802,7 @@ def main() -> None:
         data_workers=args.data_workers, data_prefetch=args.data_prefetch,
         data_backend=args.data_backend, device_prefetch=args.device_prefetch,
         max_length=args.max_length,
-        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, weight_decay=args.weight_decay,
+        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, max_grad_norm=args.max_grad_norm, weight_decay=args.weight_decay,
         optimizer=args.optimizer,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,

@@ -775,6 +775,22 @@ def test_decision_learning_rate_flag_needs_decision_layers_and_names_the_run():
             raise AssertionError(f"accepted {bad}")
 
 
+def test_max_grad_norm_flag_defaults_off_names_the_run_and_rejects_non_positive_limits():
+    p = _mod.build_parser()
+    assert p.parse_args([]).max_grad_norm is None
+    assert "-clip" not in _mod.run_tag(p.parse_args([]))
+    args = p.parse_args(["--max-grad-norm", "1"])
+    assert _mod.resolve_max_grad_norm(args) == 1.0
+    assert "-clip1-" in _mod.run_tag(args)
+    for bad in ("0", "-1"):
+        try:
+            _mod.resolve_max_grad_norm(p.parse_args(["--max-grad-norm", bad]))
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"accepted --max-grad-norm {bad}")
+
+
 def test_save_every_defaults_to_every_eval_point():
     """不给 --save-every 时每个评估点存一次, 与 --eval-every 同步; 给了就照给的步数, 0 = 途中不存."""
     p = _mod.build_parser()
