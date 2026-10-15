@@ -27,10 +27,17 @@ def supports_packed(decoder) -> bool:
 
 
 class _Plan:
-    """流的布局. 段的顺序: 每个例子先前缀, 再各个分支 (按 valid.nonzero() 的顺序)."""
+    """流的布局. 段的顺序: 每个例子先前缀, 再各个分支 (按 valid.nonzero() 的顺序).
 
-    def __init__(self, batch, valid, device):
-        rows = [tuple(x) for x in valid.nonzero().tolist()]
+    全部在 CPU 上算好 (批里的小张量一次拷回), 每层要用的下标都是现成的设备张量:
+    逐段切片在反传时每段都要分配一份整流大小的零张量, 段一多 (意图题 77~256 个分支) 就成了平方级开销.
+    """
+
+    def __init__(self, batch, valid, device, conv_width=3):
+        cpu = {k: batch[k].cpu() for k in ("input_ids", "attention_mask", "prefix_lengths",
+                                            "suffix_input_ids", "suffix_attention_mask")}
+        valid_cpu = valid.cpu()
+        rows = [tuple(x) for x in valid_cpu.nonzero().tolist()]
         by_row: dict[int, list[int]] = {}
         for r, c in rows:
             by_row.setdefault(r, []).append(c)
@@ -40,33 +47,65 @@ class _Plan:
         readout = {}
         start = 0
         for r in sorted(by_row):
-            prefix = batch["input_ids"][r][batch["attention_mask"][r].bool()][:int(batch["prefix_lengths"][r])]
+            prefix = cpu["input_ids"][r][cpu["attention_mask"][r].bool()][:int(cpu["prefix_lengths"][r])]
             p = len(prefix)
             ex_start, prefix_seg = start, -1
             if p:
                 tokens.append(prefix)
-                pos.append(torch.arange(p, device=device))
+                pos.append(torch.arange(p))
                 prefix_seg = len(self.seg_len)
                 self.seg_len.append(p), self.seg_kind.append(0), self.branch_prefix.append(-1)
                 start += p
+            lengths = cpu["suffix_attention_mask"][r].sum(-1).tolist()
             for c in by_row[r]:
-                n = int(batch["suffix_attention_mask"][r, c].sum())
+                n = int(lengths[c])
                 if n < 1:
                     raise ValueError("candidate continuation needs a readout token")
-                tokens.append(batch["suffix_input_ids"][r, c, -n:])
-                pos.append(torch.arange(p, p + n, device=device))
+                tokens.append(cpu["suffix_input_ids"][r, c, -n:])
+                pos.append(torch.arange(p, p + n))
                 self.seg_len.append(n), self.seg_kind.append(1), self.branch_prefix.append(prefix_seg)
                 start += n
                 readout[(r, c)] = start - 1
             self.example_len.append(start - ex_start)
-        self.ids = torch.cat(tokens)
-        self.pos = torch.cat(pos)
-        self.readout = torch.tensor([readout[k] for k in rows], device=device)
-        lens = torch.tensor(self.seg_len, device=device)
+        T = start
+        lens = torch.tensor(self.seg_len)
         self.seg_start = torch.cat([lens.new_zeros(1), lens.cumsum(0)[:-1]]).tolist()
-        self.seg_id = torch.repeat_interleave(torch.arange(len(self.seg_len), device=device), lens)
         self.prefix_segs = [i for i, k in enumerate(self.seg_kind) if k == 0]
         self.branch_segs = [i for i, k in enumerate(self.seg_kind) if k == 1]
+
+        def span(segs):
+            return torch.cat([torch.arange(self.seg_start[s], self.seg_start[s] + self.seg_len[s]) for s in segs]) \
+                if segs else torch.zeros(0, dtype=torch.long)
+
+        def cu(segs):
+            return torch.tensor([0] + [self.seg_len[s] for s in segs]).cumsum(0)
+
+        # 短卷积: 每段前接 conv_width 列上下文; -1 = 零 (指向追加在末尾的零行)
+        conv_index, conv_keep, at = [], [], 0
+        for s, (st, n) in enumerate(zip(self.seg_start, self.seg_len)):
+            p = self.branch_prefix[s]
+            ctx = [T] * conv_width
+            if p >= 0:
+                end = self.seg_start[p] + self.seg_len[p]
+                tail = list(range(max(self.seg_start[p], end - conv_width), end))
+                ctx = [T] * (conv_width - len(tail)) + tail
+            conv_index += ctx + list(range(st, st + n))
+            conv_keep += range(at, at + n)  # conv 输出第 j 行对应 stream 第 j + width 列
+            at += conv_width + n
+        prefix_slot = {sg: i for i, sg in enumerate(self.prefix_segs)}
+        branch_init = [prefix_slot.get(self.branch_prefix[s], len(self.prefix_segs)) for s in self.branch_segs]
+
+        put = lambda t: t.to(device, non_blocking=True)
+        self.ids = put(torch.cat(tokens))
+        self.pos = put(torch.cat(pos))
+        self.readout = put(torch.tensor([readout[k] for k in rows]))
+        self.seg_id = put(torch.repeat_interleave(torch.arange(len(self.seg_len)), lens))
+        self.conv_index = put(torch.tensor(conv_index))
+        self.conv_keep = put(torch.tensor(conv_keep))
+        self.prefix_idx, self.prefix_cu = put(span(self.prefix_segs)), put(cu(self.prefix_segs))
+        self.branch_idx, self.branch_cu = put(span(self.branch_segs)), put(cu(self.branch_segs))
+        self.branch_init = put(torch.tensor(branch_init, dtype=torch.long))
+        self.conv_width = conv_width
         self._rows = None
 
     def rows(self, device):
@@ -110,28 +149,15 @@ def _full_attention(attn, h, cos, sin, plan):
 
 
 def _conv_with_context(layer, qkv, plan):
-    """每段的因果短卷积 + SiLU, 段前接上下文 (前缀接零, 分支接本例前缀末尾). qkv: (T, C)."""
-    width = layer.conv_kernel_size - 1
+    """每段的因果短卷积 + SiLU, 段前接上下文 (前缀接零, 分支接本例前缀末尾). qkv: (T, C).
+    一次 gather 拼出带上下文的流, 一次卷积, 一次 gather 取回; 反传只有两次 index_add."""
+    if layer.conv_kernel_size - 1 != plan.conv_width:
+        raise ValueError("packed plan was built for a different conv kernel size")
     weight = layer.conv1d.weight  # (C, 1, k)
-    zeros = qkv.new_zeros(width, qkv.shape[1])
-    pieces = []
-    for s, (start, n) in enumerate(zip(plan.seg_start, plan.seg_len)):
-        p = plan.branch_prefix[s]
-        if p < 0:
-            ctx = zeros
-        else:
-            end = plan.seg_start[p] + plan.seg_len[p]
-            ctx = qkv[max(plan.seg_start[p], end - width):end]
-            if len(ctx) < width:
-                ctx = torch.cat([zeros[:width - len(ctx)], ctx])
-        pieces += [ctx, qkv[start:start + n]]
-    stream = torch.cat(pieces).T[None].to(weight.dtype)  # (1, C, T + width * 段数)
+    padded = torch.cat([qkv, qkv.new_zeros(1, qkv.shape[1])])
+    stream = padded.index_select(0, plan.conv_index).T[None].to(weight.dtype)
     out = F.conv1d(stream, weight, layer.conv1d.bias, groups=stream.shape[1])[0].T
-    chunks, at = [], 0  # 输出第 j 行对应 stream 第 j + width 列
-    for n in plan.seg_len:
-        chunks.append(out[at:at + n])
-        at += width + n
-    return F.silu(torch.cat(chunks)).to(qkv.dtype)
+    return F.silu(out.index_select(0, plan.conv_keep)).to(qkv.dtype)
 
 
 def _deltanet(layer, h, plan):
@@ -151,27 +177,22 @@ def _deltanet(layer, h, plan):
         rep = layer.num_v_heads // layer.num_k_heads
         q, k = q.repeat_interleave(rep, dim=1), k.repeat_interleave(rep, dim=1)
 
-    def run(segs, init):
-        idx = torch.cat([torch.arange(plan.seg_start[s], plan.seg_start[s] + plan.seg_len[s], device=h.device)
-                         for s in segs])
-        cu = torch.tensor([0] + [plan.seg_len[s] for s in segs], device=h.device).cumsum(0)
-        o, final = chunk_gated_delta_rule(q[idx][None], k[idx][None], v[idx][None], g=g[idx][None],
-                                          beta=beta[idx][None], initial_state=init, output_final_state=True,
-                                          use_qk_l2norm_in_kernel=True, cu_seqlens=cu)
-        return idx, o[0], final
+    def run(idx, cu, init):
+        pick = lambda t: t.index_select(0, idx)[None]
+        o, final = chunk_gated_delta_rule(pick(q), pick(k), pick(v), g=pick(g), beta=pick(beta), initial_state=init,
+                                          output_final_state=True, use_qk_l2norm_in_kernel=True, cu_seqlens=cu)
+        return o[0], final
 
     out = v.new_zeros(v.shape)
-    finals = {}
+    shape = (v.shape[1], q.shape[-1], v.shape[-1])
+    finals = v.new_zeros((1, *shape), dtype=torch.float32)
     if plan.prefix_segs:
-        idx, o, final = run(plan.prefix_segs, None)
-        out = out.index_put((idx,), o.to(out.dtype))
-        finals = {s: final[i] for i, s in enumerate(plan.prefix_segs)}
+        o, final = run(plan.prefix_idx, plan.prefix_cu, None)
+        out = out.index_copy(0, plan.prefix_idx, o.to(out.dtype))
+        finals = torch.cat([final.float(), finals])  # 最后一行是零状态, 给没有前缀的分支
     if plan.branch_segs:
-        shape = (v.shape[1], q.shape[-1], v.shape[-1])
-        zero = v.new_zeros(shape, dtype=torch.float32)
-        init = torch.stack([finals[p] if p >= 0 else zero for p in (plan.branch_prefix[s] for s in plan.branch_segs)])
-        idx, o, _ = run(plan.branch_segs, init)
-        out = out.index_put((idx,), o.to(out.dtype))
+        o, _ = run(plan.branch_idx, plan.branch_cu, finals.index_select(0, plan.branch_init))
+        out = out.index_copy(0, plan.branch_idx, o.to(out.dtype))
     core = layer.norm(out.reshape(-1, layer.head_v_dim), z.reshape(-1, layer.head_v_dim))
     return layer.out_proj(core.reshape(T, -1))
 
@@ -191,7 +212,8 @@ def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False):
     """每个有效选项读出 token 上的最后一层隐藏状态 (final norm 之后), 顺序同 valid.nonzero()."""
     if not supports_packed(decoder):
         raise ValueError("packed candidate encoding supports Qwen3.5 text backbones only")
-    plan = _Plan(batch, valid, batch["input_ids"].device)
+    linear = [l.linear_attn for l in decoder.layers if getattr(l, "block_type", "") == "linear_attention"]
+    plan = _Plan(batch, valid, batch["input_ids"].device, linear[0].conv_kernel_size - 1 if linear else 3)
     h = decoder.embed_tokens(plan.ids)  # (T, hidden)
     cos, sin = decoder.rotary_emb(h[None], plan.pos[None, None].expand(3, 1, -1))
     cos, sin = cos[0], sin[0]  # (T, rotary dim)
