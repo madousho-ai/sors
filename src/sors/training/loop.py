@@ -26,6 +26,7 @@ from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate
 from sors.training.loss import (consistency_js, contrast_margin_loss, menu_hit_counts, score_emd_loss, smooth_target,
                                 training_loss)
 from sors.training.cot import cot_batch, cot_lm_loss
+from sors.training.monitor import ParamDrift, writeback_blocks
 from sors.training.prefetch import device_prefetch, prefetch_batches, validate_data_preparation
 from sors.training.schedule import lr_scale
 
@@ -438,8 +439,10 @@ def train(
         since_eval[:] = [0, 0]
         rec = {"step": step, "train_loss": train_loss, "train_accuracy": hits / n if n else None,
                "train_accuracy_n": n, "t": round(time.time() - t0, 1), "tctl_c": tctl(), "thermal_waits": waits}
+        rec["drift"] = drift.ratios()
         rec.update(eval_record(m, tok, d_ids, eval_sets, probes, cfg, final))
         if writer:
+            writer.add_scalar("train/drift/backbone", rec["drift"]["backbone"], step)
             for group in ("consistency", "eval", "consistency_full"):
                 for name, r in rec.get(group, {}).items():
                     for tag, v in scalar_items(f"{group}/{name}", r):
@@ -458,6 +461,7 @@ def train(
     elapsed = resume.get("elapsed", history[-1].get("t", 0) if history else 0) if resume else 0
     t0 = time.time() - elapsed
     m.train()
+    drift = None if resume else ParamDrift(m)  # 新训练的起点在第 0 步评估之前; 续训的等拷回权重后再建
     if resume is None and (cfg.initial_eval or cfg.steps == 0):
         do_eval(0, None, final=cfg.steps == 0)
     if cfg.steps == 0:
@@ -476,6 +480,9 @@ def train(
                     raise ValueError(f"resume parameter shape or dtype mismatch: {name}")
                 p.copy_(resume["model"][name])
     groups = trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed, cfg.lr_decision)
+    if drift is None:  # 续训: 起点是拷回续训权重之后
+        drift = ParamDrift(m)
+    feedback_blocks = writeback_blocks(m)
     # 主干那一组 (LoRA 或 full 的主干) 与单独成组的决策层共用一份主权重; rows 那一组照旧
     n_body = len(groups[0]["params"])
     master = Fp32Master(groups[0]["params"] + (groups[2]["params"] if len(groups) > 2 else []))
@@ -627,11 +634,19 @@ def train(
                         for k, v in cot_tokens.items():
                             if v[1]:
                                 writer.add_scalar(f"train/cot_{k}_loss", v[0] / v[1], step)
+                        for role, v in drift.ratios([r for r in drift.params if r != "backbone"]).items():
+                            writer.add_scalar(f"train/drift/{role}", v, step)
+                        for j, blk in enumerate(feedback_blocks):
+                            ratio = blk.pop_writeback_ratio()
+                            if ratio is not None:
+                                writer.add_scalar(f"train/writeback/block{j}", ratio, step)
                         for i, g in enumerate(opt.param_groups):
                             writer.add_scalar(f"train/lr_group{i}", g["lr"], step)
                         if t is not None:
                             writer.add_scalar("sys/tctl_c", t, step)
                     running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
+                    for blk in feedback_blocks:  # 没有 writer 时也要清, 否则累加的统计一直涨
+                        blk.pop_writeback_ratio()
                     running_cm, running_cm_n = 0.0, 0
                     running_emd, running_emd_n = 0.0, 0
                     running_cot, running_cot_n = 0.0, 0

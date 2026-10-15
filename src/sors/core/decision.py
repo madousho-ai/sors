@@ -112,6 +112,19 @@ class DecisionBlock(nn.Module):
         self.write_out = nn.Linear(dim, hidden, bias=False) if feedback else None
         if self.write_out is not None:
             nn.init.zeros_(self.write_out.weight)
+        self._writeback = None  # None = 不记; 否则 [sum ||写回||^2, sum ||文本流||^2], 只在 train 模式累加
+
+    def track_writeback(self, on: bool = True) -> None:
+        """训练监控: 记回写幅度相对它写进去的文本流有多大. 梯度检查点重算会把分子分母同时加倍, 比值不变."""
+        self._writeback = [] if on else None
+
+    def pop_writeback_ratio(self) -> float | None:
+        """上次读取以来的 ||写回|| / ||文本流||; 期间没有训练前向就是 None. 读完清零."""
+        if not self._writeback:
+            return None
+        delta, text = (sum(x) for x in zip(*self._writeback))
+        self._writeback.clear()
+        return float((delta / text).sqrt()) if float(text) > 0 else None
 
     def forward(self, u, h, option_mask, text_mask):
         memory = self.memory(self.memory_norm(h))
@@ -123,7 +136,12 @@ class DecisionBlock(nn.Module):
         u = (u + self.ff(self.ff_norm(u))).masked_fill(~option_mask[..., None], 0)
         if self.write is not None:
             write, _ = self.write(memory, u, u, key_padding_mask=~option_mask, need_weights=False)
-            h = h + self.write_out(write).masked_fill(~text_mask[..., None], 0)
+            delta = self.write_out(write).masked_fill(~text_mask[..., None], 0)
+            if self._writeback is not None and self.training:
+                with torch.no_grad():
+                    self._writeback.append((delta.float().square().sum(),
+                                            h.float().masked_fill(~text_mask[..., None], 0).square().sum()))
+            h = h + delta
         return u, h
 
 
