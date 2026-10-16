@@ -26,6 +26,40 @@ def supports_packed(decoder) -> bool:
         set(getattr(cfg, "layer_types", ())) <= {"full_attention", "linear_attention"}
 
 
+class _Gather(torch.autograd.Function):
+    """x.index_select(0, idx), 反传不用原子加. index_select 的反传是 index_add: 下标重复得多时
+    (一题 256 个选项 = 512 个分支读同一份前缀末状态, 每份 16 x 128 x 128) 几百个线程原子加同一地址,
+    一层就要 ~36 ms, 占整步 GPU 时间四成. 这里把梯度按目标行排好序, 每个目标行连续求和 (fp32),
+    再按不重复的目标行写回."""
+
+    @staticmethod
+    def forward(ctx, x, idx, order, lengths, targets):
+        ctx.rows = x.shape[0]
+        ctx.save_for_backward(order, lengths, targets)
+        return x.index_select(0, idx)
+
+    @staticmethod
+    def backward(ctx, grad):
+        order, lengths, targets = ctx.saved_tensors
+        flat = grad.index_select(0, order).flatten(1)
+        sums = torch.segment_reduce(flat.float() if flat.dtype != torch.float64 else flat, "sum", lengths=lengths)
+        out = grad.new_zeros((ctx.rows, flat.shape[1]))
+        out.index_copy_(0, targets, sums.to(grad.dtype))
+        return out.view(ctx.rows, *grad.shape[1:]), None, None, None, None
+
+
+class _Index:
+    """一份 gather 下标及其反传用的排序 (CPU 上算好)."""
+
+    def __init__(self, idx: torch.Tensor, put):
+        order = torch.argsort(idx, stable=True)
+        targets, lengths = torch.unique_consecutive(idx[order], return_counts=True)
+        self.idx, self.order, self.lengths, self.targets = put(idx), put(order), put(lengths), put(targets)
+
+    def __call__(self, x):
+        return _Gather.apply(x, self.idx, self.order, self.lengths, self.targets)
+
+
 class _Plan:
     """流的布局. 段的顺序: 每个例子先前缀, 再各个分支 (按 valid.nonzero() 的顺序).
 
@@ -100,11 +134,11 @@ class _Plan:
         self.pos = put(torch.cat(pos))
         self.readout = put(torch.tensor([readout[k] for k in rows]))
         self.seg_id = put(torch.repeat_interleave(torch.arange(len(self.seg_len)), lens))
-        self.conv_index = put(torch.tensor(conv_index))
+        self.conv_gather = _Index(torch.tensor(conv_index), put)
         self.conv_keep = put(torch.tensor(conv_keep))
         self.prefix_idx, self.prefix_cu = put(span(self.prefix_segs)), put(cu(self.prefix_segs))
         self.branch_idx, self.branch_cu = put(span(self.branch_segs)), put(cu(self.branch_segs))
-        self.branch_init = put(torch.tensor(branch_init, dtype=torch.long))
+        self.branch_gather = _Index(torch.tensor(branch_init, dtype=torch.long), put)
         self.conv_width = conv_width
         self._rows = None
 
@@ -155,7 +189,7 @@ def _conv_with_context(layer, qkv, plan):
         raise ValueError("packed plan was built for a different conv kernel size")
     weight = layer.conv1d.weight  # (C, 1, k)
     padded = torch.cat([qkv, qkv.new_zeros(1, qkv.shape[1])])
-    stream = padded.index_select(0, plan.conv_index).T[None].to(weight.dtype)
+    stream = plan.conv_gather(padded).T[None].to(weight.dtype)
     out = F.conv1d(stream, weight, layer.conv1d.bias, groups=stream.shape[1])[0].T
     return F.silu(out.index_select(0, plan.conv_keep)).to(qkv.dtype)
 
@@ -191,7 +225,7 @@ def _deltanet(layer, h, plan):
         out = out.index_copy(0, plan.prefix_idx, o.to(out.dtype))
         finals = torch.cat([final.float(), finals])  # 最后一行是零状态, 给没有前缀的分支
     if plan.branch_segs:
-        o, _ = run(plan.branch_idx, plan.branch_cu, finals.index_select(0, plan.branch_init))
+        o, _ = run(plan.branch_idx, plan.branch_cu, plan.branch_gather(finals))
         out = out.index_copy(0, plan.branch_idx, o.to(out.dtype))
     core = layer.norm(out.reshape(-1, layer.head_v_dim), z.reshape(-1, layer.head_v_dim))
     return layer.out_proj(core.reshape(T, -1))
