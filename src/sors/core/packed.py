@@ -61,84 +61,110 @@ class _Index:
 
 
 class _Plan:
-    """流的布局. 段的顺序: 每个例子先前缀, 再各个分支 (按 valid.nonzero() 的顺序).
+    """流的布局: 一棵段树. 每个例子 = 前缀 (根) + 学生分支 (挂在前缀下); 带计算过程时再加
+    计算过程段 (挂在前缀下) + 老师分支 (挂在计算过程下). 段在流里先父后子.
+
+    - 全注意力: 段内因果, 另外看祖先链上的全部段.
+    - DeltaNet: 按深度一层一层跑变长 kernel, 每段从父段末尾的递归状态出发; 短卷积前接祖先链最后 conv_width 列.
+    - RoPE 位置从祖先链总长起算, 与把祖先链 + 本段单独编码一遍相同.
 
     全部在 CPU 上算好 (批里的小张量一次拷回), 每层要用的下标都是现成的设备张量:
     逐段切片在反传时每段都要分配一份整流大小的零张量, 段一多 (意图题 77~256 个分支) 就成了平方级开销.
     """
 
-    def __init__(self, batch, valid, device, conv_width=3):
-        cpu = {k: batch[k].cpu() for k in ("input_ids", "attention_mask", "prefix_lengths",
-                                            "suffix_input_ids", "suffix_attention_mask")}
+    def __init__(self, batch, valid, device, conv_width=3, traces=False):
+        keys = ["input_ids", "attention_mask", "prefix_lengths", "suffix_input_ids", "suffix_attention_mask"]
+        if traces:
+            keys += ["trace_input_ids", "trace_attention_mask"]
+        cpu = {k: batch[k].cpu() for k in keys}
         valid_cpu = valid.cpu()
         rows = [tuple(x) for x in valid_cpu.nonzero().tolist()]
         by_row: dict[int, list[int]] = {}
         for r, c in rows:
             by_row.setdefault(r, []).append(c)
         tokens, pos = [], []
-        self.seg_len, self.seg_kind, self.branch_prefix = [], [], []
+        self.seg_len, self.parent, self.depth = [], [], []
         self.example_len = []
-        readout = {}
+        readout, teacher = {}, {}
         start = 0
+
+        def add(seq, parent, offset):
+            nonlocal start
+            tokens.append(seq)
+            pos.append(torch.arange(offset, offset + len(seq)))
+            self.seg_len.append(len(seq)), self.parent.append(parent)
+            self.depth.append(0 if parent < 0 else self.depth[parent] + 1)
+            start += len(seq)
+            return len(self.seg_len) - 1
+
         for r in sorted(by_row):
             prefix = cpu["input_ids"][r][cpu["attention_mask"][r].bool()][:int(cpu["prefix_lengths"][r])]
             p = len(prefix)
-            ex_start, prefix_seg = start, -1
-            if p:
-                tokens.append(prefix)
-                pos.append(torch.arange(p))
-                prefix_seg = len(self.seg_len)
-                self.seg_len.append(p), self.seg_kind.append(0), self.branch_prefix.append(-1)
-                start += p
+            ex_start = start
+            prefix_seg = add(prefix, -1, 0) if p else -1
             lengths = cpu["suffix_attention_mask"][r].sum(-1).tolist()
+            suffix = []
             for c in by_row[r]:
                 n = int(lengths[c])
                 if n < 1:
                     raise ValueError("candidate continuation needs a readout token")
-                tokens.append(cpu["suffix_input_ids"][r, c, -n:])
-                pos.append(torch.arange(p, p + n))
-                self.seg_len.append(n), self.seg_kind.append(1), self.branch_prefix.append(prefix_seg)
-                start += n
+                suffix.append((c, cpu["suffix_input_ids"][r, c, -n:]))
+            for c, seq in suffix:
+                add(seq, prefix_seg, p)
                 readout[(r, c)] = start - 1
+            trace = cpu["trace_input_ids"][r][cpu["trace_attention_mask"][r].bool()] if traces else []
+            if len(trace):
+                trace_seg = add(trace, prefix_seg, p)
+                for c, seq in suffix:
+                    add(seq, trace_seg, p + len(trace))
+                    teacher[(r, c)] = start - 1
             self.example_len.append(start - ex_start)
         T = start
         lens = torch.tensor(self.seg_len)
         self.seg_start = torch.cat([lens.new_zeros(1), lens.cumsum(0)[:-1]]).tolist()
-        self.prefix_segs = [i for i, k in enumerate(self.seg_kind) if k == 0]
-        self.branch_segs = [i for i, k in enumerate(self.seg_kind) if k == 1]
 
-        def span(segs):
-            return torch.cat([torch.arange(self.seg_start[s], self.seg_start[s] + self.seg_len[s]) for s in segs]) \
-                if segs else torch.zeros(0, dtype=torch.long)
+        def chain(s):  # 祖先链 (根在前) 的段号, 不含自己
+            out = []
+            while self.parent[s] >= 0:
+                s = self.parent[s]
+                out.append(s)
+            return out[::-1]
 
-        def cu(segs):
-            return torch.tensor([0] + [self.seg_len[s] for s in segs]).cumsum(0)
-
-        # 短卷积: 每段前接 conv_width 列上下文; -1 = 零 (指向追加在末尾的零行)
+        # 短卷积: 每段前接 conv_width 列上下文 (祖先链的最后几列, 不够补零 = 指向追加在末尾的零行)
         conv_index, conv_keep, at = [], [], 0
         for s, (st, n) in enumerate(zip(self.seg_start, self.seg_len)):
-            p = self.branch_prefix[s]
-            ctx = [T] * conv_width
-            if p >= 0:
-                end = self.seg_start[p] + self.seg_len[p]
-                tail = list(range(max(self.seg_start[p], end - conv_width), end))
-                ctx = [T] * (conv_width - len(tail)) + tail
-            conv_index += ctx + list(range(st, st + n))
+            history = [i for a in chain(s) for i in range(self.seg_start[a], self.seg_start[a] + self.seg_len[a])]
+            tail = history[-conv_width:] if conv_width else []
+            conv_index += [T] * (conv_width - len(tail)) + tail + list(range(st, st + n))
             conv_keep += range(at, at + n)  # conv 输出第 j 行对应 stream 第 j + width 列
             at += conv_width + n
-        prefix_slot = {sg: i for i, sg in enumerate(self.prefix_segs)}
-        branch_init = [prefix_slot.get(self.branch_prefix[s], len(self.prefix_segs)) for s in self.branch_segs]
 
+        # DeltaNet 按深度分层; 每层的初始状态从之前各层的末状态表里取 (表末尾追加一行零 = 没有父段)
         put = lambda t: t.to(device, non_blocking=True)
+        slot, filled, self.levels = {}, 0, []
+        for d in range(max(self.depth) + 1 if self.depth else 0):
+            segs = [s for s in range(len(self.seg_len)) if self.depth[s] == d]
+            idx = torch.cat([torch.arange(self.seg_start[s], self.seg_start[s] + self.seg_len[s]) for s in segs])
+            cu = torch.tensor([0] + [self.seg_len[s] for s in segs]).cumsum(0)
+            init = None if d == 0 else _Index(torch.tensor([slot.get(self.parent[s], filled) for s in segs]), put)
+            self.levels.append((put(idx), put(cu), init))
+            for k, s in enumerate(segs):
+                slot[s] = filled + k
+            filled += len(segs)
+
+        # 全注意力: 段 s 能看段 t, 当且仅当 t 是 s 自己或祖先 (再叠上 token 级因果)
+        sees = torch.eye(len(self.seg_len), dtype=torch.bool)
+        for s in range(len(self.seg_len)):
+            sees[s, chain(s)] = True
         self.ids = put(torch.cat(tokens))
         self.pos = put(torch.cat(pos))
         self.readout = put(torch.tensor([readout[k] for k in rows]))
+        self.teacher_rows = put(torch.tensor([i for i, k in enumerate(rows) if k in teacher], dtype=torch.long))
+        self.teacher_readout = put(torch.tensor([teacher[k] for k in rows if k in teacher], dtype=torch.long))
         self.seg_id = put(torch.repeat_interleave(torch.arange(len(self.seg_len)), lens))
+        self.sees = put(sees)
         self.conv_gather = _Index(torch.tensor(conv_index), put)
         self.conv_keep = put(torch.tensor(conv_keep))
-        self.prefix_idx, self.prefix_cu = put(span(self.prefix_segs)), put(cu(self.prefix_segs))
-        self.branch_idx, self.branch_cu = put(span(self.branch_segs)), put(cu(self.branch_segs))
-        self.branch_gather = _Index(torch.tensor(branch_init, dtype=torch.long), put)
         self.conv_width = conv_width
         self._rows = None
 
@@ -151,12 +177,9 @@ class _Plan:
             col = torch.arange(width, device=device)
             index = (starts[:, None] + col[None]).clamp(max=len(self.ids) - 1)
             live = col[None] < lens[:, None]
-            seg = self.seg_id[index].masked_fill(~live, -1)
-            kind = torch.tensor(self.seg_kind, device=device)[seg.clamp_min(0)]
-            same = seg[:, :, None] == seg[:, None, :]
-            from_prefix = (kind[:, None, :] == 0) & live[:, None, :]
+            seg = self.seg_id[index]
             causal = col[:, None] >= col[None, :]
-            mask = causal[None] & (same | from_prefix) & live[:, None, :] & live[:, :, None]
+            mask = causal[None] & self.sees[seg[:, :, None], seg[:, None, :]] & live[:, None, :] & live[:, :, None]
             mask |= torch.eye(width, dtype=torch.bool, device=device)[None]  # 填充位自看, 免得整行被屏蔽
             self._rows = (index, live, mask[:, None])
         return self._rows
@@ -195,7 +218,7 @@ def _conv_with_context(layer, qkv, plan):
 
 
 def _deltanet(layer, h, plan):
-    """Qwen3_5GatedDeltaNet 的数学: 前缀跑一次, 分支从前缀末尾的递归状态出发."""
+    """Qwen3_5GatedDeltaNet 的数学: 按段树深度一层层跑, 每段从父段末尾的递归状态出发."""
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
     T = h.shape[0]
@@ -219,14 +242,13 @@ def _deltanet(layer, h, plan):
 
     out = v.new_zeros(v.shape)
     shape = (v.shape[1], q.shape[-1], v.shape[-1])
-    finals = v.new_zeros((1, *shape), dtype=torch.float32)
-    if plan.prefix_segs:
-        o, final = run(plan.prefix_idx, plan.prefix_cu, None)
-        out = out.index_copy(0, plan.prefix_idx, o.to(out.dtype))
-        finals = torch.cat([final.float(), finals])  # 最后一行是零状态, 给没有前缀的分支
-    if plan.branch_segs:
-        o, _ = run(plan.branch_idx, plan.branch_cu, plan.branch_gather(finals))
-        out = out.index_copy(0, plan.branch_idx, o.to(out.dtype))
+    zero = v.new_zeros((1, *shape), dtype=torch.float32)
+    table = []  # 已跑各层的末状态, 按层拼接; 下一层从这里按父段取初始状态
+    for idx, cu, init in plan.levels:
+        start = init(torch.cat(table + [zero])) if init is not None else None
+        o, final = run(idx, cu, start)
+        out = out.index_copy(0, idx, o.to(out.dtype))
+        table.append(final.float())
     core = layer.norm(out.reshape(-1, layer.head_v_dim), z.reshape(-1, layer.head_v_dim))
     return layer.out_proj(core.reshape(T, -1))
 
@@ -242,12 +264,14 @@ def _layer(layer, h, cos, sin, plan):
     return h + layer.mlp(layer.post_attention_layernorm(h))
 
 
-def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False):
-    """每个有效选项读出 token 上的最后一层隐藏状态 (final norm 之后), 顺序同 valid.nonzero()."""
+def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False, traces: bool = False):
+    """每个有效选项读出 token 上的最后一层隐藏状态 (final norm 之后), 顺序同 valid.nonzero().
+    traces=True (批里要有 trace_*): 返回 (学生, 老师); 老师只含带计算过程的例子的选项, 顺序同 valid.nonzero()
+    里这些行的顺序, 读的是 前缀 + 计算过程 + 选项 的最后一个 token."""
     if not supports_packed(decoder):
         raise ValueError("packed candidate encoding supports Qwen3.5 text backbones only")
     linear = [l.linear_attn for l in decoder.layers if getattr(l, "block_type", "") == "linear_attention"]
-    plan = _Plan(batch, valid, batch["input_ids"].device, linear[0].conv_kernel_size - 1 if linear else 3)
+    plan = _Plan(batch, valid, batch["input_ids"].device, linear[0].conv_kernel_size - 1 if linear else 3, traces)
     h = decoder.embed_tokens(plan.ids)  # (T, hidden)
     cos, sin = decoder.rotary_emb(h[None], plan.pos[None, None].expand(3, 1, -1))
     cos, sin = cos[0], sin[0]  # (T, rotary dim)
@@ -256,4 +280,7 @@ def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False):
             h = checkpoint(_layer, layer, h, cos, sin, plan, use_reentrant=False)
         else:
             h = _layer(layer, h, cos, sin, plan)
-    return decoder.norm(h)[plan.readout]
+    h = decoder.norm(h)
+    if traces:
+        return h[plan.readout], h[plan.teacher_readout]
+    return h[plan.readout]

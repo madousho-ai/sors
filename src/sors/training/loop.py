@@ -58,6 +58,8 @@ class TrainConfig:
     contrast_qtypes: tuple[str, ...] | None = None  # 成对损失只算这些题型的配对; None = 全部
     score_emd: float = 0.0  # 评分题分级距离项 (loss.score_emd_loss) 的权重; 0 = 不算
     cot_weight: float = 0.0  # 计算过程语言模型损失 (training.cot) 的权重; 0 = 不算, 批里也不带 cot 张量
+    distill_weight: float = 0.0  # 蒸馏式内化 (training.distill) 里学生读出贴老师读出的权重; 0 = 不蒸馏, 批里也不带 trace
+    teacher_weight: float = 1.0  # 蒸馏时老师分支 (前缀 + 计算过程 + 选项) 自己的答案损失权重
     eval_every: int = 100
     initial_eval: bool = True  # 开训前 (step 0) 先评一次; False 跳过. steps == 0 (只评估) 时照评
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
@@ -275,14 +277,18 @@ def planned_groups(cfg: TrainConfig, lengths: list[int] | None, b: dict, unit=1)
 
 
 def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids: list[int],
-                    lengths: list[int] | None = None):
+                    lengths: list[int] | None = None, stats: dict | None = None):
     """完整 JS 配对一起分组，每组立即反传；调用方整步只清一次梯度、更新一次。
 
     CE 按 prompt、JS 按 pair 取平均，完整配对使二者均可乘本组 prompt 数 / 整批 prompt 数。
     返回整步的 detached CE、JS、hits、n，各组的计算图在循环内释放。
     cfg.micro_tokens > 0 时按 token 预算分组 (见 planned_groups), 配对不拆开。
+    cfg.distill_weight > 0 时 (training.distill) 另加老师答案损失与学生贴老师的蒸馏项, 两者都按带计算过程的题数 /
+    整批题数折算; stats 给了就写入整步的 teacher_ce / distill (各按带计算过程的题平均), teacher_hits / teacher_n.
     """
     size = len(exs)
+    distilling = cfg.distill_weight > 0
+    teacher_parts = []
     paired = cfg.consistency > 0
     width = 2 if paired else 1
     if size == 0 or size % width or cfg.micro_batches < 1:
@@ -304,7 +310,23 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     n_groups = int(contrasts["group"].max()) + 1 if contrasts is not None else 0
     for rows, text_width in plan:
         units = rows[::width].div(width, rounding_mode="floor")
-        if getattr(m, "decision_config", None) is not None:
+        extra = None
+        if distilling:
+            from sors.training.distill import distill_outputs
+            out = distill_outputs(m, select_batch(b, rows, text_width))
+            logits = out["student_logits"]
+            n_t = len(out["teacher_rows"])
+            if n_t:
+                t_target = None if target is None else target[rows][out["teacher_rows"]]
+                t_ce = training_loss(cfg.loss, out["teacher_logits"], out["teacher_slots"],
+                                     b["gold"][rows][out["teacher_rows"]], d_ids, target=t_target)
+                t_metric = _metric_tensor(t_ce, None, out["teacher_logits"], out["teacher_slots"],
+                                          b["target"][rows][out["teacher_rows"]])
+                teacher_parts.append(torch.stack([t_ce.detach() * n_t, out["distill"].detach() * n_t,
+                                                  t_metric[2], t_metric[3]]))
+                extra = (cfg.teacher_weight * t_ce + cfg.distill_weight * out["distill"]) * (n_t / len(rows))
+            del out
+        elif getattr(m, "decision_config", None) is not None:
             logits = decision_logits(m, select_batch(b, rows, text_width))
         elif text_width is None:
             input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
@@ -317,6 +339,8 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         js = consistency_js(logits, slots, alignment[units]) if paired else None
         weight = len(rows) / size
         loss = ce if js is None else ce + cfg.consistency * js
+        if extra is not None:
+            loss = loss + extra
         if levels is not None:  # 组内按行平均, 乘 weight 后就是整批 Σ EMD / 整批行数
             emd = score_emd_loss(logits, slots, levels[rows], targets)
             emd_parts.append(emd.detach() * len(rows))  # 本组评分题 EMD 之和
@@ -334,8 +358,13 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         (weight * loss).backward()
         reports.append(_metric_tensor(ce, js, logits, slots, targets))
         weights.append(weight)
-        del logits, loss, ce, js, local
+        del logits, loss, ce, js, local, extra
     values = torch.stack(reports).cpu().tolist()
+    if stats is not None and distilling:
+        t = torch.stack(teacher_parts).sum(0).cpu().tolist() if teacher_parts else [0.0, 0.0, 0, 0]
+        n_t = sum(int((ex.trace or "") != "") for ex in exs)
+        stats.update(teacher_ce=t[0] / n_t if n_t else None, distill=t[1] / n_t if n_t else None,
+                     teacher_hits=int(t[2]), teacher_n=n_t)
     ce_sum, js_sum = 0.0, 0.0
     # Python 3.12+ sum uses compensated floating-point accumulation. Keep the
     # original sequential += rounding while batching the device readback.
@@ -363,18 +392,23 @@ def batch_costs(batch: dict, architecture: str) -> list[int]:
         return lengths
     suffix = batch["suffix_attention_mask"].sum(-1)
     branches = (batch["slot_ids"] >= 0).sum(1)
-    return [int(p) + int(s) + int(k) * BRANCH_STATE_TOKENS
-            for p, s, k in zip(batch["prefix_lengths"].tolist(), suffix.sum(1).tolist(), branches.tolist())]
+    costs = [int(p) + int(s) + int(k) * BRANCH_STATE_TOKENS
+             for p, s, k in zip(batch["prefix_lengths"].tolist(), suffix.sum(1).tolist(), branches.tolist())]
+    if "trace_attention_mask" in batch:  # 蒸馏: 计算过程一段 + 老师那套分支 (与学生分支同样多、同样长)
+        trace = batch["trace_attention_mask"].sum(1).tolist()
+        costs = [c + (t + int(s) + int(k) * BRANCH_STATE_TOKENS if t else 0)
+                 for c, t, s, k in zip(costs, trace, suffix.sum(1).tolist(), branches.tolist())]
+    return costs
 
 
 def _prepare_batch(spec: tuple, sample, tokenizer):
     """后台准备一批. 模块级函数配 functools.partial, 子进程才拿得到."""
     d_ids, k_max, layout, max_length, type_marker, context_marker, architecture, *rest = spec
-    cot_weight, paired, packed = (list(rest) + [0.0, False, False][len(rest):])[:3]
+    cot_weight, paired, packed, distill = (list(rest) + [0.0, False, False, False][len(rest):])[:4]
     examples, after_sampling = sample
     # 打包前向只读前缀与选项续写; 逐选项完整分支不必准备、序列化、拷进显存
     batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
-                    architecture=architecture, option_branches=not packed)
+                    architecture=architecture, option_branches=not packed, traces=distill)
     if cot_weight > 0:  # 语言模型那一遍的张量也在后台准备, 随批一起拷进显存; 训练线程用之前从批里取走
         batch.update(cot_batch(examples, tokenizer, d_ids, layout, max_length, type_marker, context_marker,
                                paired=paired, architecture=architecture))
@@ -568,10 +602,15 @@ def train(
 
     if cfg.cot_weight > 0 and architecture["kind"] not in ("minimal", "slots"):
         raise ValueError("the cot loss supports the minimal and slots architectures")
+    if cfg.distill_weight > 0 and (architecture["kind"] != "candidate" or cfg.candidate_prefix_cache != "packed"
+                                   or not cfg.accumulate_gradients):
+        raise ValueError("distillation needs the candidate architecture, the packed prefix cache and --accumulate-gradients")
+    distill_stats, running_distill = {}, [0.0, 0.0, 0, 0, 0]  # teacher_ce·n, distill·n, teacher_hits, teacher_n, 步数
     prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
                                                  cfg.type_marker, cfg.context_marker, architecture["kind"],
                                                  cfg.cot_weight, cfg.consistency > 0,
-                                                 architecture["kind"] == "candidate" and cfg.candidate_prefix_cache == "packed"))
+                                                 architecture["kind"] == "candidate" and cfg.candidate_prefix_cache == "packed",
+                                                 cfg.distill_weight > 0))
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。
@@ -599,7 +638,14 @@ def train(
                 cot = {k: b.pop(k) for k in [k for k in b if k.startswith("cot_")]}  # 决策分组按行切批, 不能带着它
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
-                    ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(m, cfg, exs, b, d_ids, lengths)
+                    ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(
+                        m, cfg, exs, b, d_ids, lengths, stats=distill_stats if cfg.distill_weight > 0 else None)
+                    if distill_stats.get("teacher_n"):
+                        k = distill_stats["teacher_n"]
+                        running_distill = [running_distill[0] + distill_stats["teacher_ce"] * k,
+                                           running_distill[1] + distill_stats["distill"] * k,
+                                           running_distill[2] + distill_stats["teacher_hits"], running_distill[3] + k,
+                                           running_distill[4] + 1]
                 else:
                     groups = planned_groups(cfg, lengths, b) or cfg.micro_batches
                     logits = (decision_logits(m, b, groups) if architecture["kind"] != "slots" else
@@ -654,6 +700,9 @@ def train(
                           + (f"  cmargin {running_cm / running_cm_n:.4f}" if running_cm_n else "")
                           + (f"  emd {running_emd / running_emd_n:.4f}" if running_emd_n else "")
                           + (f"  cot {running_cot / running_cot_n:.4f}" if running_cot_n else "")
+                          + (f"  teacher {running_distill[0] / running_distill[3]:.4f}  t_acc "
+                             f"{running_distill[2] / running_distill[3]:.3f}  distill {running_distill[1] / running_distill[3]:.4f}"
+                             if running_distill[3] else "")
                           + "".join(f"  cot_{k} {v[0] / v[1]:.4f}" for k, v in cot_tokens.items() if v[1])
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
@@ -671,6 +720,10 @@ def train(
                             writer.add_scalar("train/score_emd", running_emd / running_emd_n, step)
                         if running_cot_n:
                             writer.add_scalar("train/cot_loss", running_cot / running_cot_n, step)
+                        if running_distill[3]:
+                            writer.add_scalar("train/teacher_loss", running_distill[0] / running_distill[3], step)
+                            writer.add_scalar("train/teacher_accuracy", running_distill[2] / running_distill[3], step)
+                            writer.add_scalar("train/distill", running_distill[1] / running_distill[3], step)
                         for k, v in cot_tokens.items():
                             if v[1]:
                                 writer.add_scalar(f"train/cot_{k}_loss", v[0] / v[1], step)
@@ -690,6 +743,7 @@ def train(
                     running_cm, running_cm_n = 0.0, 0
                     running_emd, running_emd_n = 0.0, 0
                     running_cot, running_cot_n = 0.0, 0
+                    running_distill = [0.0, 0.0, 0, 0, 0]
                     running_gn, running_gn_n = 0.0, 0
                     cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}
                     data_wait = 0.0

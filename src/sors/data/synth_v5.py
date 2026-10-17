@@ -67,6 +67,16 @@ class V5Item:
     contrast: int | None = None  # 改动题: 原材料 (contrast_of) 上同一道题的绑定下标; 抽到它时原题一起出
     cot: str | None = None  # 绑定的 cot: 程序写的计算过程 (只有 curric 有), 只作训练时的语言模型目标
     categories: tuple[str, ...] = ()  # 能力类别 (数据的 categories/<domain>.json, 多标签; 长材料多一个 long_context); 数据没标就是空
+    traces: dict | None = None  # 蒸馏老师读的计算过程 {(说法下标, 问法下标): 文本} (attach_traces); None = 没有
+
+
+def attach_traces(items: list[V5Item], traces) -> list[V5Item]:
+    """把外部计算过程 (每条 {context_id, question_id, text, ask, cot}) 挂到对应绑定上; 对不上的条目忽略."""
+    by = {}
+    for t in traces:
+        by.setdefault((t["context_id"], t["question_id"]), {})[(int(t["text"]), int(t["ask"]))] = t["cot"]
+    return [replace(it, traces=by[(it.context_id, it.question_id)]) if (it.context_id, it.question_id) in by else it
+            for it in items]
 
 
 def _schema(data_dir: pathlib.Path):
@@ -185,9 +195,14 @@ def _choose(it: V5Item, rng: random.Random, mask_rate: float) -> tuple[bool, str
 def _example(it: V5Item, masked: bool, query: str, other: str | None, question: str, rng: random.Random) -> MenuExample:
     rows = it.bare if masked else it.rows
     k = len(rows)
+    trace = partner_trace = None
+    if it.traces:
+        ai = it.asks.index(question)
+        trace = it.traces.get((it.texts.index(query), ai))
+        partner_trace = it.traces.get((it.texts.index(other), ai)) if other is not None else None
     ex = MenuExample(query=query, options=list(range(k)), gold_idx=it.gold, label=it.gold, option_names=list(rows),
                      context_label=it.label, question=question, qtype=it.qtype, target=it.target,
-                     partner_query=other, cot=it.cot)
+                     partner_query=other, cot=it.cot, trace=trace, partner_trace=partner_trace)
     return reorder_menu(ex, rng.sample(range(k), k))
 
 

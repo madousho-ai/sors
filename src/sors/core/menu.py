@@ -48,6 +48,8 @@ class MenuExample:
     family: str | None = None  # 题目所属的类别 (JevBench 的 family), 评估时按它分开报; None = 不分
     contrast_group: int | None = None  # 同一批里原题与改动题 (只差一处事实) 共用的编号, 成对损失按它配对; None = 不成对
     cot: str | None = None  # 程序写的计算过程 (训练时的语言模型目标, 见 training.cot); 推理永远不用; None = 没有
+    trace: str | None = None  # 蒸馏老师读的计算过程 (training.distill): 老师分支 = 前缀 + trace + 选项; 推理不用
+    partner_trace: str | None = None  # partner_query 那种说法对应的 trace; 一致性配对的第二份读它
 
     def __post_init__(self):
         # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.
@@ -194,7 +196,7 @@ def partner(ex: MenuExample, rng: random.Random) -> MenuExample:
         rows = rng.sample(range(k), k)
     out = reorder_menu(ex, rows)
     if ex.partner_query is not None:
-        out = replace(out, query=ex.partner_query, partner_query=None)
+        out = replace(out, query=ex.partner_query, partner_query=None, trace=ex.partner_trace, partner_trace=None)
     return out
 
 

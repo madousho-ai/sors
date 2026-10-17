@@ -314,6 +314,12 @@ def build_data(args):
             except ValueError as e:
                 raise SystemExit(f"--exclude-categories: {e}") from None
             split_info["synth_v5_excluded_categories"] = excluded
+        if getattr(args, "distill_traces", None):
+            from sors.data.synth_v5 import attach_traces
+            with open(args.distill_traces) as stream:
+                v5 = attach_traces(v5, [json.loads(line) for line in stream if line.strip()])
+            split_info["synth_v5_traced_items"] = sum(it.traces is not None for it in v5)
+            split_info["distill_traces"] = args.distill_traces
         goals = {it.goal for it in v5}
         split_info["synth_v5_items"] = len(v5)
         split_info["synth_v5_contrast_items"] = sum(it.contrast is not None for it in v5)
@@ -577,6 +583,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cot-weight", type=float, default=0.0,
                     help="计算过程的语言模型损失权重 (training.cot): 带 cot 的题 (synth-v5.11 的 curric) 另走一遍主干, "
                          "学着在 'Answer:' 之后写出程序给的计算过程; 不挂决策层, 推理永远不写. 0 = 不算. 写进目录名 (-cot<w>)")
+    ap.add_argument("--distill-traces", default=None,
+                    help="蒸馏式内化 (training.distill) 的计算过程文件, jsonl, 每行 {context_id, question_id, text, ask, cot}: "
+                         "带计算过程的题另跑一套老师分支 (前缀 + 计算过程 + 选项), 学生读出贴老师读出. 只支持 candidate + packed")
+    ap.add_argument("--distill-weight", type=float, default=0.0,
+                    help="学生读出贴老师读出 (1 - cos) 的权重; 0 = 不蒸馏. 写进目录名 (-dist<w>)")
+    ap.add_argument("--teacher-weight", type=float, default=1.0,
+                    help="蒸馏时老师分支自己的答案损失权重. 写进目录名 (-tw<w>, 默认 1 不写)")
     ap.add_argument("--contrast-qtypes", default=None,
                     help="成对损失只算这些题型的原题/改动题配对, 逗号分隔 (choice / bool / score); 不给 = 全部. "
                          "写进目录名 (-cq<题型>)")
@@ -717,6 +730,8 @@ def run_tag(args) -> str:
         + (f"-tq{'.'.join(v.split('=')[1] for v in args.type_quota.split(','))}" if getattr(args, "type_quota", None) else "") \
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
         + (f"-cot{args.cot_weight:g}" if getattr(args, "cot_weight", 0.0) > 0 else "") \
+        + (f"-dist{args.distill_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 else "") \
+        + (f"-tw{args.teacher_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 and getattr(args, "teacher_weight", 1.0) != 1.0 else "") \
         + (f"-cq{args.contrast_qtypes.replace(',', '+')}" if getattr(args, "contrast_qtypes", None) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
         + {"all-slots": "-allslots", "vocab": "-vocab"}.get(args.loss, "") \
@@ -738,6 +753,10 @@ def main() -> None:
         raise SystemExit(f"--score-emd is a weight, >= 0; got {args.score_emd}")
     if args.cot_weight < 0:
         raise SystemExit(f"--cot-weight is a weight, >= 0; got {args.cot_weight}")
+    if args.distill_weight < 0 or args.teacher_weight < 0:
+        raise SystemExit("--distill-weight and --teacher-weight are weights, >= 0")
+    if args.distill_weight > 0 and not args.distill_traces:
+        raise SystemExit("--distill-weight needs --distill-traces")
     if args.contrast_qtypes and not set(args.contrast_qtypes.split(",")) <= {"choice", "bool", "score"}:
         raise SystemExit(f"--contrast-qtypes takes choice / bool / score, got {args.contrast_qtypes!r}")
     if args.contrast_weight > 0 and args.accumulate_gradients and args.micro_tokens <= 0 and args.micro_batches > 1:
@@ -810,6 +829,7 @@ def main() -> None:
         contrast_weight=args.contrast_weight, contrast_margin=args.contrast_margin,
         contrast_qtypes=tuple(args.contrast_qtypes.split(",")) if args.contrast_qtypes else None,
         score_emd=args.score_emd, cot_weight=args.cot_weight,
+        distill_weight=args.distill_weight, teacher_weight=args.teacher_weight,
         eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,
@@ -822,6 +842,7 @@ def main() -> None:
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"consistency={args.consistency:g} contrast_weight={args.contrast_weight:g} contrast_margin={args.contrast_margin:g} "
           f"contrast_qtypes={args.contrast_qtypes} score_emd={args.score_emd:g} cot_weight={args.cot_weight:g} "
+          f"distill_weight={args.distill_weight:g} teacher_weight={args.teacher_weight:g} "
           f"data_workers={cfg.data_workers} data_prefetch={cfg.data_prefetch} data_backend={cfg.data_backend} "
           f"device_prefetch={cfg.device_prefetch} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "

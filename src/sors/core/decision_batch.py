@@ -136,7 +136,7 @@ def _candidate_suffixes(prefixes, branches):
 
 
 def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
-                      architecture, *, truncate=True, option_branches=True):
+                      architecture, *, truncate=True, option_branches=True, traces=False):
     from sors.core.batch import targets
 
     if max_length < 1 or not examples or any(not e.options or len(e.options) > k_max for e in examples):
@@ -191,4 +191,17 @@ def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, typ
         suffix_mask = torch.zeros_like(suffix_ids)
         suffix_ids[valid], suffix_mask[valid] = si, sm
         out.update(prefix_lengths=torch.tensor(lengths), suffix_input_ids=suffix_ids, suffix_attention_mask=suffix_mask)
+        if traces:
+            # 老师读的计算过程: 接在前缀后面, 前后各空一行, 与选项续写 ("Option: ...") 隔开
+            seqs = [tokenizer(f"{ex.trace.strip()}\n\n", add_special_tokens=False)["input_ids"] if ex.trace else []
+                    for ex in examples]
+            width = max([len(s) for s in seqs] + [1])
+            trace_ids = torch.full((len(examples), width), pad, dtype=torch.long)
+            trace_mask = torch.zeros_like(trace_ids)
+            for i, s in enumerate(seqs):
+                if s:
+                    trace_ids[i, width - len(s):], trace_mask[i, width - len(s):] = torch.tensor(s), 1
+            out.update(trace_input_ids=trace_ids, trace_attention_mask=trace_mask)
+    elif traces:
+        raise ValueError("teacher traces need the candidate architecture")
     return out
