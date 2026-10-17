@@ -116,6 +116,22 @@ def test_packed_mode_trains_the_backbone_with_the_same_logits_as_full_encoding()
     assert results[1][1] > 0
 
 
+def test_packed_mode_trains_on_a_batch_without_full_option_branches():
+    m, tok, d, data = _setup(blocks=1)
+    exs = with_partners(examples(), random.Random(0))
+    compact = {k: v.cuda() for k, v in candidate_batch(tok, d, exs, option_branches=False).items()}
+    m.train()
+    m.set_candidate_prefix_cache("packed")
+    torch.manual_seed(0)
+    full = m.forward_batch(data)
+    torch.manual_seed(0)
+    logits = m.forward_batch(compact)
+    loss = training_loss("menu", logits, compact["slot_ids"], compact["gold"], d, compact["target"])
+    loss.backward()
+    assert torch.equal(logits, full)
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for n, p in m.named_parameters() if n.startswith("base."))
+
+
 def test_packed_mode_is_refused_for_backbones_without_deltanet_support():
     m, tok, d, ids = candidate_model(0, "qwen3", trainable="full")
     m.set_candidate_prefix_cache("packed")

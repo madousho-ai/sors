@@ -32,6 +32,7 @@ def collate(
     type_marker: bool = False,
     context_marker: bool = False,
     architecture: str = "slots",
+    option_branches: bool = True,
 ) -> dict[str, torch.Tensor]:
     """返回
       input_ids      (B, L)  左填充
@@ -42,11 +43,12 @@ def collate(
       target         (B, k_max)  菜单各行的目标概率: 样本带软标签 (MenuExample.target) 就是它, 否则 gold 那格 1;
                                  超出菜单长度的位置 0
     提示照 core.prompt 的片段编码: 文字里写着的保留 token 名是普通文字. 超长的截法见 fit.
+    option_branches=False (candidate): 不带逐选项完整分支 option_input_ids / option_attention_mask, 只给打包前向用.
     """
     if architecture != "slots":
         from sors.core.decision_batch import collate_decisions
         return collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker,
-                                 context_marker, architecture)
+                                 context_marker, architecture, option_branches=option_branches)
     pieces = [sum(prompt_pieces(ex, layout, type_marker, context_marker), []) for ex in examples]
     pad = tokenizer.pad_token_id
     bounds = tuple(tokenizer.convert_tokens_to_ids(CONTEXT_TOKENS)) if context_marker else None

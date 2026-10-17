@@ -370,10 +370,11 @@ def batch_costs(batch: dict, architecture: str) -> list[int]:
 def _prepare_batch(spec: tuple, sample, tokenizer):
     """后台准备一批. 模块级函数配 functools.partial, 子进程才拿得到."""
     d_ids, k_max, layout, max_length, type_marker, context_marker, architecture, *rest = spec
-    cot_weight, paired = rest or (0.0, False)
+    cot_weight, paired, packed = (list(rest) + [0.0, False, False][len(rest):])[:3]
     examples, after_sampling = sample
+    # 打包前向只读前缀与选项续写; 逐选项完整分支不必准备、序列化、拷进显存
     batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
-                    architecture=architecture)
+                    architecture=architecture, option_branches=not packed)
     if cot_weight > 0:  # 语言模型那一遍的张量也在后台准备, 随批一起拷进显存; 训练线程用之前从批里取走
         batch.update(cot_batch(examples, tokenizer, d_ids, layout, max_length, type_marker, context_marker,
                                paired=paired, architecture=architecture))
@@ -569,7 +570,8 @@ def train(
         raise ValueError("the cot loss supports the minimal and slots architectures")
     prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
                                                  cfg.type_marker, cfg.context_marker, architecture["kind"],
-                                                 cfg.cot_weight, cfg.consistency > 0))
+                                                 cfg.cot_weight, cfg.consistency > 0,
+                                                 architecture["kind"] == "candidate" and cfg.candidate_prefix_cache == "packed"))
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。

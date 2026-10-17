@@ -136,7 +136,7 @@ def _candidate_suffixes(prefixes, branches):
 
 
 def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
-                      architecture, *, truncate=True):
+                      architecture, *, truncate=True, option_branches=True):
     from sors.core.batch import targets
 
     if max_length < 1 or not examples or any(not e.options or len(e.options) > k_max for e in examples):
@@ -170,12 +170,16 @@ def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, typ
     if any(len(s) > max_length for s in opt):
         raise ValueError(f"{architecture} option branch exceeds max_length; increase the limit to preserve full input")
     ids, mask = _pad(memories, pad)
-    oi, om = _pad(opt, pad)
-    option_ids = torch.full((*out["slot_ids"].shape, oi.shape[1]), pad, dtype=torch.long)
-    option_mask = torch.zeros_like(option_ids)
+    out.update(input_ids=ids, attention_mask=mask)
     valid = out["slot_ids"] >= 0
-    option_ids[valid], option_mask[valid] = oi, om
-    out.update(input_ids=ids, attention_mask=mask, option_input_ids=option_ids, option_attention_mask=option_mask)
+    if option_branches or architecture != "candidate":
+        # 每个选项一份完整分支 (前缀 + 选项): 逐选项编码要它; 打包前向只读前缀与 suffix_*, 可以不带.
+        # 前缀抄 k 份, 长材料 + 256 项菜单时一批近 1 GB.
+        oi, om = _pad(opt, pad)
+        option_ids = torch.full((*out["slot_ids"].shape, oi.shape[1]), pad, dtype=torch.long)
+        option_mask = torch.zeros_like(option_ids)
+        option_ids[valid], option_mask[valid] = oi, om
+        out.update(option_input_ids=option_ids, option_attention_mask=option_mask)
     if architecture == "candidate":
         groups, start = [], 0
         for ex in examples:
