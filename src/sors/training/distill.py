@@ -8,8 +8,47 @@
   - distill = 1 - cos(学生 H, stop_grad(老师 H)), 只在带计算过程的题的各选项上取平均.
 """
 
+import re
+from dataclasses import replace
+
 import torch
 import torch.nn.functional as F
+
+_SENTENCE_END = re.compile(r"[.?!](?=\s)|\n")
+
+
+def trace_keep(step: int, total: int, schedule: tuple[float, float] | None) -> float:
+    """逐步内化的课程: 老师读到计算过程的前多少 (按字符). schedule = (a, b) 是总步数的比例:
+    a 之前读全文, b 之后一点不读, 中间线性下降. None = 全程读全文."""
+    if schedule is None:
+        return 1.0
+    a, b = schedule
+    t = step / total
+    if t <= a:
+        return 1.0
+    if t >= b:
+        return 0.0
+    return 1.0 - (t - a) / (b - a)
+
+
+def shorten_trace(text: str | None, keep: float) -> str | None:
+    """从右往左删: 保留前 keep 比例 (按字符) 以内的整句, 删掉的是结尾的比较与判断, 留下的是找规则、找数的前几步.
+    一句都放不下就返回 None (老师这道题不读计算过程, 也不参与蒸馏)."""
+    if text is None or keep >= 1.0:
+        return text
+    limit = keep * len(text)
+    ends = [m.start() + (m.group() != "\n") for m in _SENTENCE_END.finditer(text)] + [len(text)]
+    end = max((e for e in ends if e <= limit), default=0)
+    out = text[:end].strip()
+    return out or None
+
+
+def shorten_examples(examples, keep: float):
+    """每道题的 trace 与 partner_trace 都按 keep 截短; keep >= 1 时原样返回."""
+    if keep >= 1.0:
+        return examples
+    return [replace(ex, trace=shorten_trace(ex.trace, keep), partner_trace=shorten_trace(ex.partner_trace, keep))
+            if ex.trace is not None or ex.partner_trace is not None else ex for ex in examples]
 
 
 def distill_outputs(m, batch: dict) -> dict:

@@ -590,6 +590,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="学生读出贴老师读出 (1 - cos) 的权重; 0 = 不蒸馏. 写进目录名 (-dist<w>)")
     ap.add_argument("--teacher-weight", type=float, default=1.0,
                     help="蒸馏时老师分支自己的答案损失权重. 写进目录名 (-tw<w>, 默认 1 不写)")
+    ap.add_argument("--distill-fade", default=None,
+                    help="逐步内化: a,b (总步数的比例). a 之前老师读全部计算过程, 之后从右往左按整句删 (先删结尾的比较与判断), "
+                         "到 b 时一点不读. 不给 = 全程读全文. 写进目录名 (-fade<a>-<b>)")
     ap.add_argument("--contrast-qtypes", default=None,
                     help="成对损失只算这些题型的原题/改动题配对, 逗号分隔 (choice / bool / score); 不给 = 全部. "
                          "写进目录名 (-cq<题型>)")
@@ -703,6 +706,20 @@ def checkpoint_path(out: pathlib.Path, step: int) -> pathlib.Path:
     return out / "checkpoints" / f"step-{step:05d}.safetensors"
 
 
+def distill_fade(args):
+    """--distill-fade "a,b" -> (a, b), 0 <= a < b <= 1; 没给 -> None."""
+    raw = getattr(args, "distill_fade", None)
+    if not raw:
+        return None
+    try:
+        a, b = (float(x) for x in raw.split(","))
+    except ValueError:
+        raise SystemExit(f"--distill-fade needs two fractions a,b; got {raw!r}")
+    if not 0 <= a < b <= 1:
+        raise SystemExit(f"--distill-fade needs 0 <= a < b <= 1; got {raw!r}")
+    return a, b
+
+
 def run_tag(args) -> str:
     """run 目录名的后缀. 旧 loss 的写法保持不变 (all-slots -> -allslots, menu 不加), 旧 run 的名字照旧能复现.
     rank / alpha 离开 8 / 16 才写, 旧 run 全是 8 / 16; --lr-lora 离开 1e-4 才写, 旧 run 全是 1e-4."""
@@ -731,6 +748,7 @@ def run_tag(args) -> str:
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
         + (f"-cot{args.cot_weight:g}" if getattr(args, "cot_weight", 0.0) > 0 else "") \
         + (f"-dist{args.distill_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 else "") \
+        + (f"-fade{args.distill_fade.replace(',', '-')}" if getattr(args, "distill_fade", None) else "") \
         + (f"-tw{args.teacher_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 and getattr(args, "teacher_weight", 1.0) != 1.0 else "") \
         + (f"-cq{args.contrast_qtypes.replace(',', '+')}" if getattr(args, "contrast_qtypes", None) else "") \
         + (f"-dweights{hashlib.sha1(args.dataset_weights.encode()).hexdigest()[:6]}" if getattr(args, "dataset_weights", None) else "") \
@@ -757,6 +775,9 @@ def main() -> None:
         raise SystemExit("--distill-weight and --teacher-weight are weights, >= 0")
     if args.distill_weight > 0 and not args.distill_traces:
         raise SystemExit("--distill-weight needs --distill-traces")
+    if args.distill_fade and args.distill_weight <= 0:
+        raise SystemExit("--distill-fade needs --distill-weight > 0")
+    fade = distill_fade(args)
     if args.contrast_qtypes and not set(args.contrast_qtypes.split(",")) <= {"choice", "bool", "score"}:
         raise SystemExit(f"--contrast-qtypes takes choice / bool / score, got {args.contrast_qtypes!r}")
     if args.contrast_weight > 0 and args.accumulate_gradients and args.micro_tokens <= 0 and args.micro_batches > 1:
@@ -829,7 +850,7 @@ def main() -> None:
         contrast_weight=args.contrast_weight, contrast_margin=args.contrast_margin,
         contrast_qtypes=tuple(args.contrast_qtypes.split(",")) if args.contrast_qtypes else None,
         score_emd=args.score_emd, cot_weight=args.cot_weight,
-        distill_weight=args.distill_weight, teacher_weight=args.teacher_weight,
+        distill_weight=args.distill_weight, teacher_weight=args.teacher_weight, distill_fade=fade,
         eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,
@@ -842,7 +863,7 @@ def main() -> None:
           f"random_codes={args.random_codes:g} label_smoothing={args.label_smoothing:g} "
           f"consistency={args.consistency:g} contrast_weight={args.contrast_weight:g} contrast_margin={args.contrast_margin:g} "
           f"contrast_qtypes={args.contrast_qtypes} score_emd={args.score_emd:g} cot_weight={args.cot_weight:g} "
-          f"distill_weight={args.distill_weight:g} teacher_weight={args.teacher_weight:g} "
+          f"distill_weight={args.distill_weight:g} teacher_weight={args.teacher_weight:g} distill_fade={args.distill_fade} "
           f"data_workers={cfg.data_workers} data_prefetch={cfg.data_prefetch} data_backend={cfg.data_backend} "
           f"device_prefetch={cfg.device_prefetch} "
           f"k={menu_k_range(args.k_min, args.k_max)}{' log' if args.k_log else ''} params {n_train:,}  "

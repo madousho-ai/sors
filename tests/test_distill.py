@@ -190,3 +190,51 @@ def test_cli_attaches_traces_from_a_file_to_the_synth_data(tmp_path):
     _, _, info = cli.build_data(args)
     assert info["synth_v5_traced_items"] == 1
     assert "-dist0.5" in cli.run_tag(args)
+
+
+def test_trace_keep_fraction_falls_linearly_between_the_two_marks():
+    from sors.training.distill import trace_keep
+    assert trace_keep(1, 100, (0.2, 0.6)) == 1.0
+    assert trace_keep(20, 100, (0.2, 0.6)) == 1.0
+    assert trace_keep(40, 100, (0.2, 0.6)) == pytest.approx(0.5)
+    assert trace_keep(60, 100, (0.2, 0.6)) == 0.0
+    assert trace_keep(99, 100, (0.2, 0.6)) == 0.0
+    assert trace_keep(50, 100, None) == 1.0
+
+
+def test_shortening_drops_whole_sentences_from_the_end():
+    from sors.training.distill import shorten_trace
+    text = "Rule is 15 days. Paid on day 20.\nSo 20 > 15. Late."
+    assert shorten_trace(text, 1.0) == text
+    assert shorten_trace(text, 0.0) is None
+    assert shorten_trace(text, 0.7) == "Rule is 15 days. Paid on day 20."
+    assert shorten_trace(text, 0.35) == "Rule is 15 days."
+    assert shorten_trace(text, 0.1) is None  # 连第一句都放不下: 老师这道题不读计算过程
+    assert shorten_trace(None, 0.5) is None
+
+
+def test_shortened_examples_cut_both_wordings_and_leave_other_fields():
+    from sors.training.distill import shorten_examples
+    ex = replace(examples()[0], trace="First step here. Second step here.", partner_trace="Other first. Other second.")
+    [out] = shorten_examples([ex], 0.6)
+    assert out.trace == "First step here." and out.partner_trace == "Other first."
+    assert replace(out, trace=ex.trace, partner_trace=ex.partner_trace) == ex
+    assert shorten_examples([ex], 1.0)[0] is ex
+
+
+def test_cli_reads_the_trace_fade_schedule(tmp_path):
+    import importlib.util, pathlib
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts/train.py"
+    spec = importlib.util.spec_from_file_location("train_cli_fade", script)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    base = ["--dataset", "synth-v5.11", "--architecture", "candidate", "--candidate-prefix-cache", "packed",
+            "--distill-traces", "t.jsonl", "--distill-weight", "1"]
+    args = cli.build_parser().parse_args(base + ["--distill-fade", "0.2,0.6"])
+    assert cli.distill_fade(args) == (0.2, 0.6)
+    assert "-fade0.2-0.6" in cli.run_tag(args)
+    plain = cli.build_parser().parse_args(base)
+    assert cli.distill_fade(plain) is None and "-fade" not in cli.run_tag(plain)
+    for bad in ("0.6,0.2", "0.2", "-0.1,0.5", "0.2,1.5"):
+        with pytest.raises(SystemExit):
+            cli.distill_fade(cli.build_parser().parse_args(base + ["--distill-fade", bad]))

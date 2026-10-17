@@ -60,6 +60,7 @@ class TrainConfig:
     cot_weight: float = 0.0  # 计算过程语言模型损失 (training.cot) 的权重; 0 = 不算, 批里也不带 cot 张量
     distill_weight: float = 0.0  # 蒸馏式内化 (training.distill) 里学生读出贴老师读出的权重; 0 = 不蒸馏, 批里也不带 trace
     teacher_weight: float = 1.0  # 蒸馏时老师分支 (前缀 + 计算过程 + 选项) 自己的答案损失权重
+    distill_fade: tuple[float, float] | None = None  # 逐步内化 (distill.trace_keep): 老师读的计算过程从右往左删的起止 (总步数比例)
     eval_every: int = 100
     initial_eval: bool = True  # 开训前 (step 0) 先评一次; False 跳过. steps == 0 (只评估) 时照评
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
@@ -596,12 +597,17 @@ def train(
 
     def samples():
         # Keep all sampler state transitions on the training thread, in order.
-        for _ in range(start + 1, end + 1):
+        for step in range(start + 1, end + 1):
             examples = sample_fn(cfg.batch_size, rng)
+            if cfg.distill_fade is not None:  # 逐步内化: 按这一步的课程截短老师读的计算过程
+                from sors.training.distill import shorten_examples, trace_keep
+                examples = shorten_examples(examples, trace_keep(step, cfg.steps, cfg.distill_fade))
             yield examples, rng.getstate()
 
     if cfg.cot_weight > 0 and architecture["kind"] not in ("minimal", "slots"):
         raise ValueError("the cot loss supports the minimal and slots architectures")
+    if cfg.distill_fade is not None and cfg.distill_weight <= 0:
+        raise ValueError("distill_fade needs distill_weight > 0")
     if cfg.distill_weight > 0 and (architecture["kind"] != "candidate" or cfg.candidate_prefix_cache != "packed"
                                    or not cfg.accumulate_gradients):
         raise ValueError("distillation needs the candidate architecture, the packed prefix cache and --accumulate-gradients")
@@ -720,6 +726,9 @@ def train(
                             writer.add_scalar("train/score_emd", running_emd / running_emd_n, step)
                         if running_cot_n:
                             writer.add_scalar("train/cot_loss", running_cot / running_cot_n, step)
+                        if cfg.distill_fade is not None:
+                            from sors.training.distill import trace_keep
+                            writer.add_scalar("train/trace_keep", trace_keep(step, cfg.steps, cfg.distill_fade), step)
                         if running_distill[3]:
                             writer.add_scalar("train/teacher_loss", running_distill[0] / running_distill[3], step)
                             writer.add_scalar("train/teacher_accuracy", running_distill[2] / running_distill[3], step)
