@@ -212,3 +212,17 @@ def answer_mass(
     all_d = p[:, torch.tensor(d_ids, device=logits.device)].sum(1)
     top1_in = (logits.argmax(-1, keepdim=True) == slot_ids).any(1)
     return m, all_d - m, top1_in
+
+
+def branch_ce(lp1: torch.Tensor, lp2: torch.Tensor, target: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """逐分支的 D1 / D2 交叉熵 (dual 读出第一阶段): 选项 i 的目标是 t_i 份 D1、1 - t_i 份 D2.
+    lp1 / lp2: (B, K) 整个词表上的 log P(D1) / log P(D2); target: (B, K) 菜单上的目标概率; valid: (B, K).
+    每道题正、负两部分各自按权重归一后各占一半 (1 对 255 的意图题不会被 D2 压倒); 没有负部分的题 (单选项) 只算正部分.
+    返回各题平均."""
+    t = target.float() * valid
+    n = (1 - target.float()) * valid
+    pos = -(t * lp1).sum(-1) / t.sum(-1).clamp_min(1e-12)
+    neg_mass = n.sum(-1)
+    neg = -(n * lp2).sum(-1) / neg_mass.clamp_min(1e-12)
+    per = torch.where(neg_mass > 0, 0.5 * pos + 0.5 * neg, pos)
+    return per.mean()

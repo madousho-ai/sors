@@ -30,6 +30,8 @@ def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
         meta["architecture"] = architecture_config(m)
         if meta["architecture"]["kind"] == "candidate":
             meta["config"]["candidate_prefix_cache"] = m.candidate_prefix_cache
+        if meta["architecture"].get("readout") == "dual":  # 存档时在哪个阶段: 第一阶段的标量头还没接上
+            meta["head_active"] = bool(m.head_active)
     save_file(tensors, str(path), metadata={k: json.dumps(v) for k, v in meta.items()})
 
 
@@ -118,4 +120,6 @@ def load_trained(m, train_ids: list[int], path) -> dict:
             params[name].copy_(t.to(params[name].dtype))
         rows = m.get_input_embeddings().rows
         rows[:n].copy_(ck["d_embed"].to(rows.dtype).to(rows.device))
+    if architecture.get("readout") == "dual":
+        m.head_active = bool(ck.get("head_active", True))
     return ck["config"]

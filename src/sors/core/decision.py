@@ -49,7 +49,8 @@ class DecisionConfig:
     feedback: bool = False
     option_batch_size: int = 32
     # candidate 的读出: scorer = w · RMSNorm(H) (默认); token = 主干原来的 lm_head 上 log P(<|D1|>) - log P(<|D2|>),
-    # 不合适的选项把下一个词放到 <|D2|> 上 (见 DecisionModel._token_scores)
+    # 不合适的选项把下一个词放到 <|D2|> 上 (见 DecisionModel._token_scores);
+    # dual = 两阶段: 先用 lm_head 上逐分支 D1 / D2 的整词表交叉熵训主干, 再由标量头 (初值 e_D1 - e_D2) 读 H
     readout: str = "scorer"
 
     def __post_init__(self):
@@ -63,10 +64,10 @@ class DecisionConfig:
             raise ValueError("minimal with zero decision blocks has nothing to write back; turn feedback off")
         if self.layers is not None:
             object.__setattr__(self, "layers", tuple(self.layers))
-        if self.readout not in ("scorer", "token"):
-            raise ValueError(f"unknown decision readout {self.readout!r}; expected scorer or token")
-        if self.readout == "token" and (self.kind != "candidate" or self.blocks != 0):
-            raise ValueError("the token readout needs the candidate architecture with zero set blocks")
+        if self.readout not in ("scorer", "token", "dual"):
+            raise ValueError(f"unknown decision readout {self.readout!r}; expected scorer, token or dual")
+        if self.readout != "scorer" and (self.kind != "candidate" or self.blocks != 0):
+            raise ValueError(f"the {self.readout} readout needs the candidate architecture with zero set blocks")
         if self.kind == "candidate" and (self.feedback or self.layers):
             raise ValueError("candidate uses post-encoder SetBlocks; feedback and backbone layer indices are unsupported")
 
@@ -97,7 +98,7 @@ def architecture_config(model) -> dict:
 
 def option_marker(model) -> bool:
     """菜单里每个选项前要不要放 <|D1|>: token 读出的模型训练与推理都读这种菜单."""
-    return getattr(getattr(model, "decision_config", None), "readout", "scorer") == "token"
+    return getattr(getattr(model, "decision_config", None), "readout", "scorer") in ("token", "dual")
 
 
 def decision_config(record: dict | None) -> DecisionConfig | None:
@@ -231,6 +232,8 @@ class DecisionModel(nn.Module):
             if config.readout == "token":  # 标量头不参与 (仍建出来, 好让 dtype / 设备的约定照旧)
                 self.option_norm.requires_grad_(False)
                 self.scorer.requires_grad_(False)
+            elif config.readout == "dual":  # 标量头直接读 H (H 已过 final norm, 与 lm_head 看到的同一个向量)
+                self.option_norm.requires_grad_(False)
         else:
             self.option_proj = nn.Linear(hidden, config.dim)
             self.blocks = nn.ModuleList([DecisionBlock(config.dim, hidden, config.heads, feedback=config.feedback)
@@ -239,6 +242,11 @@ class DecisionModel(nn.Module):
             self.option_norm = nn.LayerNorm(config.dim)
             decision_layers = (self.option_proj, self.blocks, self.query, self.option_norm)
         self._token_mass = None  # token 读出: 训练前向里记下的 D1/D2 概率质量项, 由 pop_token_mass 取走
+        # dual 读出: head_active=False 是第一阶段 (分数 = lm_head 上的对数几率), True 是第二阶段 (标量头);
+        # 训练循环按步数切换, 存档记下当时的阶段. branch_in_head_stage: 第二阶段训练时是否还算逐分支 D1/D2 项
+        self.head_active = True
+        self.branch_in_head_stage = True
+        self._branch = None
         # Keep new decision parameters in fp32, just like PEFT adapters; the
         # training loop's master weights still handle a low-precision backbone.
         device = next(base.parameters()).device
@@ -348,6 +356,33 @@ class DecisionModel(nn.Module):
         mass, self._token_mass = self._token_mass, None
         return mass
 
+    def pop_branch(self):
+        """dual 读出在训练前向里记下的 (log P(D1), log P(D2)), 各 (B, K) 按菜单位置排, 菜单外为 0; 取走后清空."""
+        branch, self._branch = self._branch, None
+        return branch
+
+    @torch.no_grad()
+    def activate_head(self):
+        """进入第二阶段: 标量头取 e_D1 - e_D2, 第一阶段的分数 logit(D1) - logit(D2) 逐位接上."""
+        rows = self.get_input_embeddings().rows
+        self.scorer.weight[0].copy_((rows[1] - rows[2]).to(self.scorer.weight.dtype))
+        self.head_active = True
+
+    def _d1_d2_logp(self, h):
+        """h: (N, hidden) 走 lm_head, 整个词表上的 (log P(D1), log P(D2)); 逐 TOKEN_CHUNK 个选项, 训练时逐块重算."""
+        raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
+        head, ids = raw.lm_head, self.get_input_embeddings().ids
+        d1, d2 = int(ids[1]), int(ids[2])
+        dtype = head.base.weight.dtype
+
+        def chunk(x):
+            logp = head(x.to(dtype)).float().log_softmax(-1)
+            return logp[:, d1], logp[:, d2]
+
+        grad = self.training and torch.is_grad_enabled()
+        parts = [checkpoint(chunk, x, use_reentrant=False) if grad else chunk(x) for x in h.split(self.TOKEN_CHUNK)]
+        return torch.cat([p[0] for p in parts]), torch.cat([p[1] for p in parts])
+
     def _token_scores(self, h):
         """h: (N, hidden), 最后一层 final norm 之后. 返回 (log P(D1) - log P(D2), log(P(D1) + P(D2))), 概率都在
         整个词表上归一化. 分数取对数几率: 只用 log P(D1) 时上限是 0, 每个选项一起把 D1 抬到接近 1 就让分数全挤在 0、
@@ -370,6 +405,22 @@ class DecisionModel(nn.Module):
         valid = slots >= 0
         if option_rows is None:
             option_rows = valid.flatten().nonzero().flatten()
+        if self.decision_config.readout == "dual":
+            grad = self.training and torch.is_grad_enabled()
+            branch = (not self.head_active) or (grad and self.branch_in_head_stage)
+            if branch:
+                lp1, lp2 = self._d1_d2_logp(encoded)
+                if grad:
+                    pad = lp1.new_zeros(slots.shape)
+                    self._branch = (pad.flatten().index_copy(0, option_rows, lp1).view(slots.shape),
+                                    pad.flatten().index_copy(0, option_rows, lp2).view(slots.shape))
+            if self.head_active:
+                score = self.scorer(encoded.to(self.scorer.weight.dtype)).squeeze(-1)
+            else:
+                score = lp1 - lp2
+            u = score.new_zeros(slots.shape)
+            u.flatten().index_copy_(0, option_rows, score)
+            return self._output_logits(u, slots, valid, option_rows)
         if self.decision_config.readout == "token":
             score, pair = self._token_scores(encoded)
             self._token_mass = -pair.mean() if self.training and torch.is_grad_enabled() else None

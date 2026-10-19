@@ -458,9 +458,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--decision-heads", type=int, default=None, help="决策注意力头数，默认4")
     ap.add_argument("--decision-blocks", type=int, default=None, help="决策块数，默认2；candidate 支持0以单独测标量读出")
     ap.add_argument("--decision-layers", default=None, help="零起始主干层下标，用逗号分隔；默认按架构选择")
-    ap.add_argument("--decision-readout", choices=("scorer", "token"), default=None,
+    ap.add_argument("--decision-readout", choices=("scorer", "token", "dual"), default=None,
                     help="candidate 的读出: scorer = 标量头 w·RMSNorm(H) (默认); token = 主干原来的 lm_head, "
-                         "分数是 log P(<|D1|>) - log P(<|D2|>) (整个词表上归一化), 只支持 --decision-blocks 0")
+                         "分数是 log P(<|D1|>) - log P(<|D2|>) (整个词表上归一化); dual = 两阶段, 前 --head-start 步"
+                         "只训逐分支 D1/D2 的整词表交叉熵, 之后标量头 (初值 e_D1 - e_D2) 读 H. 只支持 --decision-blocks 0")
+    ap.add_argument("--head-start", type=int, default=None,
+                    help="dual 读出: 第一阶段的步数, 0 < n < --steps. 写进目录名 (-hs<n>)")
+    ap.add_argument("--branch-weight", type=float, default=1.0,
+                    help="dual 读出第二阶段里逐分支 D1/D2 项的权重; 0 = 只用选项间 softmax. 写进目录名 (-bw<w>)")
     ap.add_argument("--token-mass-weight", type=float, default=0.0,
                     help="token 读出时另加 -log(P(D1)+P(D2)) 的权重: 读出位置的下一个词只落在 D1 / D2 上. "
                          "写进目录名 (-tm<w>)")
@@ -690,10 +695,25 @@ def resolve_max_grad_norm(args) -> float | None:
     return args.max_grad_norm
 
 
+def resolve_head_start(args) -> int | None:
+    """--head-start 只给 dual 读出, 且 0 < n < --steps; dual 读出必须给."""
+    dual = getattr(args, "decision_readout", None) == "dual"
+    n = getattr(args, "head_start", None)
+    if not dual:
+        if n is not None:
+            raise SystemExit("--head-start requires --decision-readout dual")
+        return None
+    if n is None or not 0 < n < args.steps:
+        raise SystemExit(f"--decision-readout dual needs 0 < --head-start < --steps ({args.steps}); got {n}")
+    if args.branch_weight < 0:
+        raise SystemExit(f"--branch-weight is a weight, >= 0; got {args.branch_weight}")
+    return n
+
+
 def train_slot_rows(args) -> bool:
     """放开的 token 行要不要训练. candidate 的提示是选项原文, D token 从不出现; 只有 --type-marker /
     --context-marker 把类型行、上下文行放进提示时才有梯度. 其余架构的菜单靠 D 行, 照旧训练."""
-    if args.architecture != "candidate" or getattr(args, "decision_readout", None) == "token":
+    if args.architecture != "candidate" or getattr(args, "decision_readout", None) in ("token", "dual"):
         return True  # token 读出在 lm_head 上读 D1 / D2 两行
     return bool(args.type_marker or args.context_marker)
 
@@ -765,6 +785,7 @@ def run_tag(args) -> str:
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
         + (f"-cot{args.cot_weight:g}" if getattr(args, "cot_weight", 0.0) > 0 else "") \
         + (f"-tm{args.token_mass_weight:g}" if getattr(args, "token_mass_weight", 0.0) > 0 else "") \
+        + (f"-hs{args.head_start}-bw{args.branch_weight:g}" if getattr(args, "head_start", None) else "") \
         + (f"-dist{args.distill_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 else "") \
         + (f"-fade{args.distill_fade.replace(',', '-')}" if getattr(args, "distill_fade", None) else "") \
         + (f"-tw{args.teacher_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 and getattr(args, "teacher_weight", 1.0) != 1.0 else "") \
@@ -860,7 +881,8 @@ def main() -> None:
         data_workers=args.data_workers, data_prefetch=args.data_prefetch,
         data_backend=args.data_backend, device_prefetch=args.device_prefetch,
         max_length=args.max_length,
-        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, train_slot_rows=train_slot_rows(args), token_mass_weight=args.token_mass_weight, max_grad_norm=args.max_grad_norm, weight_decay=args.weight_decay,
+        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, train_slot_rows=train_slot_rows(args), token_mass_weight=args.token_mass_weight,
+        head_start=resolve_head_start(args), branch_weight=args.branch_weight, max_grad_norm=args.max_grad_norm, weight_decay=args.weight_decay,
         optimizer=args.optimizer,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,

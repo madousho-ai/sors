@@ -42,6 +42,8 @@ class TrainConfig:
     lr_lora: float = 1e-4
     lr_embed: float = 1e-3
     lr_decision: float | None = None  # 新增决策层单独的学习率; None = 跟主干共用 lr_lora (旧行为)
+    head_start: int | None = None  # dual 读出: 前 head_start 步只训逐分支 D1/D2 (第一阶段), 之后切到标量头
+    branch_weight: float = 1.0  # dual 读出第二阶段里逐分支 D1/D2 项的权重 (0 = 只用选项间 softmax)
     token_mass_weight: float = 0.0  # token 读出 (DecisionConfig.readout="token") 时 -log(P(D1)+P(D2)) 的权重; 0 = 不加
     train_slot_rows: bool = True  # 放开的 token 行 (D 行 + 类型 / 上下文行) 是否训练; candidate 提示里不用 D token 时关掉
     weight_decay: float = 0.0
@@ -309,11 +311,13 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         order = torch.argsort(lengths_t, descending=True, stable=True)
         plan = [((units[:, None] * width + torch.arange(width, device=units.device)).flatten(), None)
                 for units in torch.tensor_split(order, min(cfg.micro_batches, len(order)))]
-    reports, weights, margin_parts, emd_parts, mass_parts = [], [], [], [], []
+    reports, weights, margin_parts, emd_parts, mass_parts, branch_parts = [], [], [], [], [], []
+    dual = getattr(getattr(m, "decision_config", None), "readout", "scorer") == "dual"
+    stage_one = dual and not m.head_active
     n_groups = int(contrasts["group"].max()) + 1 if contrasts is not None else 0
     for rows, text_width in plan:
         units = rows[::width].div(width, rounding_mode="floor")
-        extra = None
+        extra = branch_loss = None
         if distilling:
             from sors.training.distill import distill_outputs
             out = distill_outputs(m, select_batch(b, rows, text_width))
@@ -331,6 +335,14 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
             del out
         elif getattr(m, "decision_config", None) is not None:
             logits = decision_logits(m, select_batch(b, rows, text_width))
+            branch = m.pop_branch() if dual else None
+            branch_loss = None
+            if branch is not None:
+                from sors.training.loss import branch_ce
+                branch_loss = branch_ce(*branch, b["target"][rows], b["slot_ids"][rows] >= 0)
+                branch_parts.append(branch_loss.detach() * len(rows))
+                if not stage_one and cfg.branch_weight > 0:
+                    extra = cfg.branch_weight * branch_loss
             mass = m.pop_token_mass() if hasattr(m, "pop_token_mass") else None
             if mass is not None:
                 mass_parts.append(mass.detach() * len(rows))
@@ -363,11 +375,15 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
                 margin_parts.append(share * local.detach())
                 # ce/js 乘了 weight 才反传, 成对项另按本组的配对数 / 整批配对数折算, 合起来与整批一次算相同
                 loss = loss + cfg.contrast_weight * local * (share / weight)
+        if stage_one:  # 第一阶段只有逐分支 D1/D2 项; 选项间 CE 照算, 只作日志
+            loss = branch_loss
         (weight * loss).backward()
         reports.append(_metric_tensor(ce, js, logits, slots, targets))
         weights.append(weight)
         del logits, loss, ce, js, local, extra
     values = torch.stack(reports).cpu().tolist()
+    if stats is not None and branch_parts:  # 逐分支 D1/D2 交叉熵, 各题平均
+        stats["branch"] = float(torch.stack(branch_parts).sum().cpu()) / size
     if stats is not None and mass_parts:  # 各选项 -log(P(D1)+P(D2)) 的整批平均 (按行数加权)
         stats["token_mass"] = float(torch.stack(mass_parts).sum().cpu()) / size
     if stats is not None and distilling:
@@ -623,10 +639,19 @@ def train(
                                    or not cfg.accumulate_gradients):
         raise ValueError("distillation needs the candidate architecture, the packed prefix cache and --accumulate-gradients")
     distill_stats, running_distill = {}, [0.0, 0.0, 0, 0, 0]  # teacher_ce·n, distill·n, teacher_hits, teacher_n, 步数
-    token_readout = getattr(getattr(m, "decision_config", None), "readout", "scorer") == "token"
-    if cfg.token_mass_weight > 0 and not (token_readout and cfg.accumulate_gradients):
+    readout = getattr(getattr(m, "decision_config", None), "readout", "scorer")
+    token_readout = readout in ("token", "dual")  # 两者都读带 <|D1|> 的菜单
+    if readout == "dual":
+        if cfg.head_start is None or not 0 < cfg.head_start < cfg.steps or not cfg.accumulate_gradients:
+            raise ValueError("the dual readout needs 0 < head_start < steps and --accumulate-gradients")
+        m.head_active = start >= cfg.head_start  # 续训时按已完成步数定阶段; 过了切换点的存档里标量头已是训过的值
+        m.branch_in_head_stage = cfg.branch_weight > 0
+    elif cfg.head_start is not None:
+        raise ValueError("head_start needs the dual readout")
+    if cfg.token_mass_weight > 0 and not (readout == "token" and cfg.accumulate_gradients):
         raise ValueError("token_mass_weight needs the candidate token readout and --accumulate-gradients")
     running_mass = [0.0, 0]  # 每个日志窗口里 -log(P(D1)+P(D2)) 之和与步数
+    running_branch = [0.0, 0]  # 每个日志窗口里逐分支 D1/D2 交叉熵之和与步数
     prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
                                                  cfg.type_marker, cfg.context_marker, architecture["kind"],
                                                  cfg.cot_weight, cfg.consistency > 0,
@@ -660,8 +685,14 @@ def train(
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
                     distill_stats.pop("token_mass", None)
+                    distill_stats.pop("branch", None)
+                    if readout == "dual" and not m.head_active and step > cfg.head_start:
+                        m.activate_head()  # 第二阶段: 标量头从 e_D1 - e_D2 起步
+                        print(f"step {step:5d}  dual readout: switched to the scalar head", flush=True)
                     ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(
                         m, cfg, exs, b, d_ids, lengths, stats=distill_stats if cfg.distill_weight > 0 or token_readout else None)
+                    if "branch" in distill_stats:
+                        running_branch = [running_branch[0] + distill_stats["branch"], running_branch[1] + 1]
                     if "token_mass" in distill_stats:
                         running_mass = [running_mass[0] + distill_stats["token_mass"], running_mass[1] + 1]
                     if distill_stats.get("teacher_n"):
@@ -728,6 +759,7 @@ def train(
                              f"{running_distill[2] / running_distill[3]:.3f}  distill {running_distill[1] / running_distill[3]:.4f}"
                              if running_distill[3] else "")
                           + (f"  d1d2 {running_mass[0] / running_mass[1]:.4f}" if running_mass[1] else "")
+                          + (f"  branch {running_branch[0] / running_branch[1]:.4f}" if running_branch[1] else "")
                           + "".join(f"  cot_{k} {v[0] / v[1]:.4f}" for k, v in cot_tokens.items() if v[1])
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
@@ -748,6 +780,10 @@ def train(
                         if cfg.distill_fade is not None:
                             from sors.training.distill import trace_keep
                             writer.add_scalar("train/trace_keep", trace_keep(step, cfg.steps, cfg.distill_fade), step)
+                        if running_branch[1]:
+                            writer.add_scalar("train/branch_ce", running_branch[0] / running_branch[1], step)
+                        if readout == "dual":
+                            writer.add_scalar("train/head_active", float(m.head_active), step)
                         if running_mass[1]:
                             writer.add_scalar("train/token_mass", running_mass[0] / running_mass[1], step)
                         if running_distill[3]:
@@ -775,6 +811,7 @@ def train(
                     running_cot, running_cot_n = 0.0, 0
                     running_distill = [0.0, 0.0, 0, 0, 0]
                     running_mass = [0.0, 0]
+                    running_branch = [0.0, 0]
                     running_gn, running_gn_n = 0.0, 0
                     cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}
                     data_wait = 0.0
