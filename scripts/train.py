@@ -681,6 +681,14 @@ def resolve_max_grad_norm(args) -> float | None:
     return args.max_grad_norm
 
 
+def train_slot_rows(args) -> bool:
+    """放开的 token 行要不要训练. candidate 的提示是选项原文, D token 从不出现; 只有 --type-marker /
+    --context-marker 把类型行、上下文行放进提示时才有梯度. 其余架构的菜单靠 D 行, 照旧训练."""
+    if args.architecture != "candidate":
+        return True
+    return bool(args.type_marker or args.context_marker)
+
+
 def resolve_lr_decision(args) -> float | None:
     """决策层单独的学习率. 不给就是 None, 决策层照旧跟主干同组; 只有带决策层的架构能给, 且须 >= 0."""
     if args.lr_decision is None:
@@ -842,7 +850,7 @@ def main() -> None:
         data_workers=args.data_workers, data_prefetch=args.data_prefetch,
         data_backend=args.data_backend, device_prefetch=args.device_prefetch,
         max_length=args.max_length,
-        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, max_grad_norm=args.max_grad_norm, weight_decay=args.weight_decay,
+        lr_lora=args.lr_lora, lr_embed=args.lr_embed, lr_decision=args.lr_decision, train_slot_rows=train_slot_rows(args), max_grad_norm=args.max_grad_norm, weight_decay=args.weight_decay,
         optimizer=args.optimizer,
         lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         context_marker=args.context_marker,

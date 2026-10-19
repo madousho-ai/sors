@@ -42,6 +42,7 @@ class TrainConfig:
     lr_lora: float = 1e-4
     lr_embed: float = 1e-3
     lr_decision: float | None = None  # 新增决策层单独的学习率; None = 跟主干共用 lr_lora (旧行为)
+    train_slot_rows: bool = True  # 放开的 token 行 (D 行 + 类型 / 上下文行) 是否训练; candidate 提示里不用 D token 时关掉
     weight_decay: float = 0.0
     max_grad_norm: float | None = None  # 全局梯度范数上限, 见 clip_gradients; None = 不裁剪 (旧行为)
     optimizer: str = "adamw"  # OPTIMIZERS: adamw 是 torch 的 AdamW; adamw8bit 是 bitsandbytes 的 8-bit 状态版, 只在 CUDA 上
@@ -538,6 +539,8 @@ def train(
             log_f.close()
         return history
 
+    if not cfg.train_slot_rows:  # 提示里不出现这些行: 梯度恒为零, 不进主权重, 也不占优化器状态
+        m.get_input_embeddings().rows.requires_grad_(False)
     params = {n: p for n, p in m.named_parameters() if p.requires_grad}
     full = resume is not None and "optimizer" in resume
     if full:
