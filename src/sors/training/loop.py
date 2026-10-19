@@ -42,6 +42,7 @@ class TrainConfig:
     lr_lora: float = 1e-4
     lr_embed: float = 1e-3
     lr_decision: float | None = None  # 新增决策层单独的学习率; None = 跟主干共用 lr_lora (旧行为)
+    token_mass_weight: float = 0.0  # token 读出 (DecisionConfig.readout="token") 时 -log(P(D1)+P(D2)) 的权重; 0 = 不加
     train_slot_rows: bool = True  # 放开的 token 行 (D 行 + 类型 / 上下文行) 是否训练; candidate 提示里不用 D token 时关掉
     weight_decay: float = 0.0
     max_grad_norm: float | None = None  # 全局梯度范数上限, 见 clip_gradients; None = 不裁剪 (旧行为)
@@ -308,7 +309,7 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         order = torch.argsort(lengths_t, descending=True, stable=True)
         plan = [((units[:, None] * width + torch.arange(width, device=units.device)).flatten(), None)
                 for units in torch.tensor_split(order, min(cfg.micro_batches, len(order)))]
-    reports, weights, margin_parts, emd_parts = [], [], [], []
+    reports, weights, margin_parts, emd_parts, mass_parts = [], [], [], [], []
     n_groups = int(contrasts["group"].max()) + 1 if contrasts is not None else 0
     for rows, text_width in plan:
         units = rows[::width].div(width, rounding_mode="floor")
@@ -330,6 +331,11 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
             del out
         elif getattr(m, "decision_config", None) is not None:
             logits = decision_logits(m, select_batch(b, rows, text_width))
+            mass = m.pop_token_mass() if hasattr(m, "pop_token_mass") else None
+            if mass is not None:
+                mass_parts.append(mass.detach() * len(rows))
+                if cfg.token_mass_weight > 0:
+                    extra = cfg.token_mass_weight * mass
         elif text_width is None:
             input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
             logits = last_logits(m, input_ids, mask)
@@ -362,6 +368,8 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         weights.append(weight)
         del logits, loss, ce, js, local, extra
     values = torch.stack(reports).cpu().tolist()
+    if stats is not None and mass_parts:  # 各选项 -log(P(D1)+P(D2)) 的整批平均 (按行数加权)
+        stats["token_mass"] = float(torch.stack(mass_parts).sum().cpu()) / size
     if stats is not None and distilling:
         t = torch.stack(teacher_parts).sum(0).cpu().tolist() if teacher_parts else [0.0, 0.0, 0, 0]
         n_t = sum(int((ex.trace or "") != "") for ex in exs)
@@ -615,6 +623,10 @@ def train(
                                    or not cfg.accumulate_gradients):
         raise ValueError("distillation needs the candidate architecture, the packed prefix cache and --accumulate-gradients")
     distill_stats, running_distill = {}, [0.0, 0.0, 0, 0, 0]  # teacher_ce·n, distill·n, teacher_hits, teacher_n, 步数
+    token_readout = getattr(getattr(m, "decision_config", None), "readout", "scorer") == "token"
+    if cfg.token_mass_weight > 0 and not (token_readout and cfg.accumulate_gradients):
+        raise ValueError("token_mass_weight needs the candidate token readout and --accumulate-gradients")
+    running_mass = [0.0, 0]  # 每个日志窗口里 -log(P(D1)+P(D2)) 之和与步数
     prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
                                                  cfg.type_marker, cfg.context_marker, architecture["kind"],
                                                  cfg.cot_weight, cfg.consistency > 0,
@@ -647,8 +659,11 @@ def train(
                 cot = {k: b.pop(k) for k in [k for k in b if k.startswith("cot_")]}  # 决策分组按行切批, 不能带着它
                 opt.zero_grad(set_to_none=True)
                 if cfg.accumulate_gradients:
+                    distill_stats.pop("token_mass", None)
                     ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(
-                        m, cfg, exs, b, d_ids, lengths, stats=distill_stats if cfg.distill_weight > 0 else None)
+                        m, cfg, exs, b, d_ids, lengths, stats=distill_stats if cfg.distill_weight > 0 or token_readout else None)
+                    if "token_mass" in distill_stats:
+                        running_mass = [running_mass[0] + distill_stats["token_mass"], running_mass[1] + 1]
                     if distill_stats.get("teacher_n"):
                         k = distill_stats["teacher_n"]
                         running_distill = [running_distill[0] + distill_stats["teacher_ce"] * k,
@@ -712,6 +727,7 @@ def train(
                           + (f"  teacher {running_distill[0] / running_distill[3]:.4f}  t_acc "
                              f"{running_distill[2] / running_distill[3]:.3f}  distill {running_distill[1] / running_distill[3]:.4f}"
                              if running_distill[3] else "")
+                          + (f"  d1d2 {running_mass[0] / running_mass[1]:.4f}" if running_mass[1] else "")
                           + "".join(f"  cot_{k} {v[0] / v[1]:.4f}" for k, v in cot_tokens.items() if v[1])
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
                     if writer:
@@ -732,6 +748,8 @@ def train(
                         if cfg.distill_fade is not None:
                             from sors.training.distill import trace_keep
                             writer.add_scalar("train/trace_keep", trace_keep(step, cfg.steps, cfg.distill_fade), step)
+                        if running_mass[1]:
+                            writer.add_scalar("train/token_mass", running_mass[0] / running_mass[1], step)
                         if running_distill[3]:
                             writer.add_scalar("train/teacher_loss", running_distill[0] / running_distill[3], step)
                             writer.add_scalar("train/teacher_accuracy", running_distill[2] / running_distill[3], step)
@@ -756,6 +774,7 @@ def train(
                     running_emd, running_emd_n = 0.0, 0
                     running_cot, running_cot_n = 0.0, 0
                     running_distill = [0.0, 0.0, 0, 0, 0]
+                    running_mass = [0.0, 0]
                     running_gn, running_gn_n = 0.0, 0
                     cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}
                     data_wait = 0.0

@@ -48,6 +48,9 @@ class DecisionConfig:
     layers: tuple[int, ...] | None = None
     feedback: bool = False
     option_batch_size: int = 32
+    # candidate 的读出: scorer = w · RMSNorm(H) (默认); token = 主干原来的 lm_head 在整个词表上的 log P(<|D1|>),
+    # 不合适的选项把下一个词放到 <|D2|> 上 (见 DecisionModel._token_scores)
+    readout: str = "scorer"
 
     def __post_init__(self):
         if self.kind not in ("minimal", "structural", "candidate"):
@@ -60,6 +63,10 @@ class DecisionConfig:
             raise ValueError("minimal with zero decision blocks has nothing to write back; turn feedback off")
         if self.layers is not None:
             object.__setattr__(self, "layers", tuple(self.layers))
+        if self.readout not in ("scorer", "token"):
+            raise ValueError(f"unknown decision readout {self.readout!r}; expected scorer or token")
+        if self.readout == "token" and (self.kind != "candidate" or self.blocks != 0):
+            raise ValueError("the token readout needs the candidate architecture with zero set blocks")
         if self.kind == "candidate" and (self.feedback or self.layers):
             raise ValueError("candidate uses post-encoder SetBlocks; feedback and backbone layer indices are unsupported")
 
@@ -83,6 +90,8 @@ def architecture_config(model) -> dict:
         return {"kind": "slots"}
     out = asdict(cfg)
     out["layers"] = list(cfg.layers) if cfg.layers is not None else None
+    if out["readout"] == "scorer":  # 默认读出不写进记录: 旧存档与旧 run 目录名的哈希不变
+        del out["readout"]
     return out
 
 
@@ -214,6 +223,9 @@ class DecisionModel(nn.Module):
             self.option_norm = nn.RMSNorm(hidden, eps=1e-6)
             self.scorer = nn.Linear(hidden, 1, bias=False)
             decision_layers = (self.blocks, self.option_norm, self.scorer)
+            if config.readout == "token":  # 标量头不参与 (仍建出来, 好让 dtype / 设备的约定照旧)
+                self.option_norm.requires_grad_(False)
+                self.scorer.requires_grad_(False)
         else:
             self.option_proj = nn.Linear(hidden, config.dim)
             self.blocks = nn.ModuleList([DecisionBlock(config.dim, hidden, config.heads, feedback=config.feedback)
@@ -221,6 +233,7 @@ class DecisionModel(nn.Module):
             self.query = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, config.dim))
             self.option_norm = nn.LayerNorm(config.dim)
             decision_layers = (self.option_proj, self.blocks, self.query, self.option_norm)
+        self._token_mass = None  # token 读出: 训练前向里记下的 D1/D2 概率质量项, 由 pop_token_mass 取走
         # Keep new decision parameters in fp32, just like PEFT adapters; the
         # training loop's master weights still handle a low-precision backbone.
         device = next(base.parameters()).device
@@ -323,10 +336,39 @@ class DecisionModel(nn.Module):
             return False
         return frozen
 
+    TOKEN_CHUNK = 128  # 一次过 lm_head 的选项数: 128 × 248k 词表的 fp32 logits 约 130 MB, 反传时逐块重算
+
+    def pop_token_mass(self):
+        """token 读出在训练前向里记下的 -mean log(P(D1) + P(D2)) (各有效选项平均); 取走后清空. 其余情况 None."""
+        mass, self._token_mass = self._token_mass, None
+        return mass
+
+    def _token_scores(self, h):
+        """h: (N, hidden), 最后一层 final norm 之后. 返回 (log P(D1), log P(D1) + P(D2)), 都在整个词表上归一化.
+        D1 / D2 是放开的 token 行里的第 1、2 行 (train_ids 以 D0..D255 开头), lm_head 里这两列读 rows."""
+        raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
+        head, ids = raw.lm_head, self.get_input_embeddings().ids
+        d1, d2 = int(ids[1]), int(ids[2])
+        dtype = head.base.weight.dtype
+
+        def chunk(x):
+            logp = head(x.to(dtype)).float().log_softmax(-1)
+            return logp[:, d1], torch.logaddexp(logp[:, d1], logp[:, d2])
+
+        grad = self.training and torch.is_grad_enabled()
+        parts = [checkpoint(chunk, x, use_reentrant=False) if grad else chunk(x) for x in h.split(self.TOKEN_CHUNK)]
+        return torch.cat([p[0] for p in parts]), torch.cat([p[1] for p in parts])
+
     def _candidate_output(self, encoded, slots, option_rows=None):
         valid = slots >= 0
         if option_rows is None:
             option_rows = valid.flatten().nonzero().flatten()
+        if self.decision_config.readout == "token":
+            score, pair = self._token_scores(encoded)
+            self._token_mass = -pair.mean() if self.training and torch.is_grad_enabled() else None
+            u = score.new_zeros(slots.shape)
+            u.flatten().index_copy_(0, option_rows, score)
+            return self._output_logits(u, slots, valid, option_rows)
         u = encoded.new_zeros((*slots.shape, encoded.shape[-1]))
         u.flatten(0, 1).index_copy_(0, option_rows, encoded)
         for block in self.blocks:
