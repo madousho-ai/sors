@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from sors.core.prompt import DEFAULT_QUESTION, Special, _context, _special_id, encode_prompts, prompt_pieces
-from sors.core.tokens import CONTEXT_TOKENS
+from sors.core.tokens import CONTEXT_TOKENS, D_TOKENS
 
 
 def _pad(sequences, pad):
@@ -103,7 +103,7 @@ def structural_pieces(ex, type_marker=False, context_marker=False):
     return memory, options
 
 
-def candidate_pieces(ex, type_marker=False, context_marker=False):
+def candidate_pieces(ex, type_marker=False, context_marker=False, option_marker=False):
     """A shared textual prefix plus suffixes, each ending at a pretrained readout token.
 
     Callers encode prefix + suffix together. The prefix tensor in the batch is
@@ -112,6 +112,8 @@ def candidate_pieces(ex, type_marker=False, context_marker=False):
     label = ["Question (", Special(f"<|{ex.qtype}|>"), "):"] if type_marker else ["Question:"]
     question = ex.question if ex.question is not None else DEFAULT_QUESTION
     prefix = [*_context(ex, context_marker), "\n\n", *label, f" {question}\n\n"]
+    if option_marker:  # token 读出: 每个选项前都是同一个 <|D1|>, 读出位置的下一个词在 D1 / D2 之间选
+        return prefix, [["Option: ", Special(D_TOKENS[1]), " ", name, "\n\nAnswer:"] for name in ex.option_names]
     return prefix, [["Option: ", name, "\n\nAnswer:"] for name in ex.option_names]
 
 
@@ -136,7 +138,8 @@ def _candidate_suffixes(prefixes, branches):
 
 
 def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
-                      architecture, *, truncate=True, option_branches=True, traces=False):
+                      architecture, *, truncate=True, option_branches=True, traces=False,
+                      option_marker=False):
     from sors.core.batch import targets
 
     if max_length < 1 or not examples or any(not e.options or len(e.options) > k_max for e in examples):
@@ -153,10 +156,12 @@ def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, typ
             positions[i, :len(ends)] = torch.tensor(ends) + ids.shape[1] - len(seq)
         out.update(input_ids=ids, attention_mask=mask, option_positions=positions)
         return out
+    if option_marker and architecture != "candidate":
+        raise ValueError("the D1 option marker needs the candidate architecture")
     if architecture not in ("structural", "candidate") or layout != "context-first":
         raise ValueError(f"{architecture} architecture requires context-first layout")
     if architecture == "candidate":
-        memory, suffixes = zip(*(candidate_pieces(e, type_marker, context_marker) for e in examples))
+        memory, suffixes = zip(*(candidate_pieces(e, type_marker, context_marker, option_marker) for e in examples))
         options = [[prefix + suffix for suffix in group] for prefix, group in zip(memory, suffixes)]
     else:
         memory, options = zip(*(structural_pieces(e, type_marker, context_marker) for e in examples))

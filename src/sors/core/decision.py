@@ -95,6 +95,11 @@ def architecture_config(model) -> dict:
     return out
 
 
+def option_marker(model) -> bool:
+    """菜单里每个选项前要不要放 <|D1|>: token 读出的模型训练与推理都读这种菜单."""
+    return getattr(getattr(model, "decision_config", None), "readout", "scorer") == "token"
+
+
 def decision_config(record: dict | None) -> DecisionConfig | None:
     if record is None or record == {"kind": "slots"}:
         return None

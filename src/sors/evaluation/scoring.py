@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import torch
 
+from sors.core.decision import option_marker
+
 from sors.core.batch import collate
 from sors.core.menu import MenuExample
 from sors.core.model import last_logits
@@ -41,7 +43,7 @@ def score_examples(m, tok, d_ids, examples: list[MenuExample], batch_size: int, 
     for s in range(0, len(examples), batch_size):
         kind = getattr(getattr(m, "decision_config", None), "kind", "slots")
         b = collate(examples[s : s + batch_size], tok, d_ids, k_max, layout, max_length, type_marker, context_marker,
-                    architecture=kind)
+                    architecture=kind, option_marker=option_marker(m))
         b = {k: v.to(dev) for k, v in b.items()}
         logits = m.forward_batch(b) if kind != "slots" else last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0

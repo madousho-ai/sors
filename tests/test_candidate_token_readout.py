@@ -137,3 +137,63 @@ def test_the_mass_term_changes_how_a_training_step_moves_d2():
         moved[weight] = not torch.equal(emb.rows[emb.lut[d2]].detach(), before)
         rows_after[weight] = emb.rows[emb.lut[d2]].detach().clone()
     assert moved[0.0] and moved[1.0] and not torch.equal(*rows_after.values())
+
+
+def test_marked_branches_put_d1_in_front_of_every_option_name():
+    from sors.core.decision_batch import candidate_pieces
+    from sors.core.prompt import Special
+    ex = examples()[0]
+    _, plain = candidate_pieces(ex)
+    _, marked = candidate_pieces(ex, option_marker=True)
+    for p, q, name in zip(plain, marked, ex.option_names):
+        assert q == ["Option: ", Special(D_TOKENS[1]), " ", name, "\n\nAnswer:"]
+        assert p == ["Option: ", name, "\n\nAnswer:"]
+
+
+def test_collate_encodes_the_d1_token_in_every_suffix_only_when_asked():
+    tok, d, _ = tokenizer()
+    d1 = tok.convert_tokens_to_ids(D_TOKENS[1])
+    plain = candidate_batch(tok, d)
+    marked = candidate_batch(tok, d, option_marker=True)
+    valid = marked["slot_ids"] >= 0
+    for r, c in valid.nonzero().tolist():
+        suffix = marked["suffix_input_ids"][r, c][marked["suffix_attention_mask"][r, c].bool()].tolist()
+        assert suffix.count(d1) == 1
+        assert d1 not in plain["suffix_input_ids"][r, c].tolist()
+
+
+def test_the_token_readout_model_says_it_reads_marked_menus():
+    from sors.core.decision import option_marker
+    m, *_ = token_model()
+    assert option_marker(m) is True
+    tok, d, ids = tokenizer()
+    plain = prepare_model(tiny_backbone(tok), ids, 4, 8, 0., trainable="full",
+                          decision=DecisionConfig(kind="candidate", blocks=0))
+    assert option_marker(plain) is False
+
+
+def test_training_batches_and_evaluation_use_the_marked_menu():
+    from sors.evaluation.scoring import score_examples
+    from sors.training.loop import _prepare_batch
+    m, tok, d, _ = token_model()
+    m.set_candidate_prefix_cache("off")
+    d1 = tok.convert_tokens_to_ids(D_TOKENS[1])
+    spec = (list(d), 4, "context-first", 512, False, False, "candidate", 0.0, False, False, False, True)
+    b, *_ = _prepare_batch(spec, (examples(), None), tok)
+    assert (b["suffix_input_ids"] == d1).any()
+    m.eval()
+    with torch.no_grad():
+        want = m.forward_batch(candidate_batch(tok, d, option_marker=True))
+        q = score_examples(m, tok, d, examples(), 2, 4, 512, "context-first")["q"]
+    for i, ex in enumerate(examples()):
+        slots = candidate_batch(tok, d)["slot_ids"][i][:len(ex.options)]
+        torch.testing.assert_close(torch.tensor(q[i][:len(ex.options)]), want[i, slots].softmax(-1), atol=1e-5, rtol=1e-5)
+
+
+def test_the_server_reads_marked_menus_for_a_token_readout_model():
+    from sors.serve.engine import Engine
+    m, tok, d, _ = token_model()
+    m.eval()
+    from test_serve_engine import _questions
+    prompts = Engine(m, tok, d).prompts("red context", _questions())
+    assert all(D_TOKENS[1] in p[1] for p in prompts.values())

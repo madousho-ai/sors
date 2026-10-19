@@ -25,6 +25,8 @@ from dataclasses import dataclass
 
 import torch
 
+from sors.core.decision import option_marker
+
 from sors.core.cache import branch_logits, prefix_cache
 from sors.core.checkpoint import prepare_from_checkpoint
 from sors.core.prompt import encode_prompts, prompt_pieces, split_prompt
@@ -77,7 +79,7 @@ class Engine:
             out = {}
             for qid, q in questions.items():
                 prefix, suffixes = candidate_pieces(to_example(q, state, self.context_label), self.type_marker,
-                                                    self.context_marker)
+                                                    self.context_marker, option_marker(self.lm))
                 out[qid] = ("".join(prefix), "\n\n".join(f"Candidate branch {i + 1} (prefix + this suffix):\n{''.join(p)}"
                                                         for i, p in enumerate(suffixes)))
             return out
@@ -128,7 +130,7 @@ class Engine:
             try:
                 b = collate_decisions([ex], self.tok, self.d_ids, len(ex.options), self.layout, self.max_tokens,
                                       self.type_marker, self.context_marker, self.lm.decision_config.kind,
-                                      truncate=False)
+                                      truncate=False, option_marker=option_marker(self.lm))
             except ValueError as exc:
                 raise RequestTooLong(str(exc)) from exc
             batches[qid] = b
