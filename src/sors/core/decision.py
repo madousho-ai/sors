@@ -48,7 +48,7 @@ class DecisionConfig:
     layers: tuple[int, ...] | None = None
     feedback: bool = False
     option_batch_size: int = 32
-    # candidate 的读出: scorer = w · RMSNorm(H) (默认); token = 主干原来的 lm_head 在整个词表上的 log P(<|D1|>),
+    # candidate 的读出: scorer = w · RMSNorm(H) (默认); token = 主干原来的 lm_head 上 log P(<|D1|>) - log P(<|D2|>),
     # 不合适的选项把下一个词放到 <|D2|> 上 (见 DecisionModel._token_scores)
     readout: str = "scorer"
 
@@ -349,7 +349,9 @@ class DecisionModel(nn.Module):
         return mass
 
     def _token_scores(self, h):
-        """h: (N, hidden), 最后一层 final norm 之后. 返回 (log P(D1), log P(D1) + P(D2)), 都在整个词表上归一化.
+        """h: (N, hidden), 最后一层 final norm 之后. 返回 (log P(D1) - log P(D2), log(P(D1) + P(D2))), 概率都在
+        整个词表上归一化. 分数取对数几率: 只用 log P(D1) 时上限是 0, 每个选项一起把 D1 抬到接近 1 就让分数全挤在 0、
+        梯度按 1 - P(D1) 消失 (0.8B 烟测 40 步塌成均匀分布); 对数几率没有上限, 全体同抬 D1 不改变选项间 softmax.
         D1 / D2 是放开的 token 行里的第 1、2 行 (train_ids 以 D0..D255 开头), lm_head 里这两列读 rows."""
         raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
         head, ids = raw.lm_head, self.get_input_embeddings().ids
@@ -358,7 +360,7 @@ class DecisionModel(nn.Module):
 
         def chunk(x):
             logp = head(x.to(dtype)).float().log_softmax(-1)
-            return logp[:, d1], torch.logaddexp(logp[:, d1], logp[:, d2])
+            return logp[:, d1] - logp[:, d2], torch.logaddexp(logp[:, d1], logp[:, d2])
 
         grad = self.training and torch.is_grad_enabled()
         parts = [checkpoint(chunk, x, use_reentrant=False) if grad else chunk(x) for x in h.split(self.TOKEN_CHUNK)]

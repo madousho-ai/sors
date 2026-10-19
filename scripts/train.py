@@ -460,7 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--decision-layers", default=None, help="零起始主干层下标，用逗号分隔；默认按架构选择")
     ap.add_argument("--decision-readout", choices=("scorer", "token"), default=None,
                     help="candidate 的读出: scorer = 标量头 w·RMSNorm(H) (默认); token = 主干原来的 lm_head, "
-                         "分数是整个词表上的 log P(<|D1|>), 只支持 --decision-blocks 0")
+                         "分数是 log P(<|D1|>) - log P(<|D2|>) (整个词表上归一化), 只支持 --decision-blocks 0")
     ap.add_argument("--token-mass-weight", type=float, default=0.0,
                     help="token 读出时另加 -log(P(D1)+P(D2)) 的权重: 读出位置的下一个词只落在 D1 / D2 上. "
                          "写进目录名 (-tm<w>)")

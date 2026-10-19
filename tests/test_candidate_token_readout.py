@@ -1,5 +1,5 @@
 """candidate 的 token 读出: 每个选项分支在 "Answer:" 位置走主干原来的 lm_head, 分数 = 整个词表上
-log P(<|D1|>). 各选项的分数照旧做选项间 softmax 与原来的损失. 另有一项「下一个词只在 {D1, D2} 上」
+log P(<|D1|>) - log P(<|D2|>) (对数几率; 只用 log P(D1) 时上限是 0, 全部选项一起抬 D1 会塌成均匀分布). 各选项的分数照旧做选项间 softmax 与原来的损失. 另有一项「下一个词只在 {D1, D2} 上」
 的约束 (token_mass = -mean log(P(D1) + P(D2))), 让不合适的选项把概率放到 D2 上.
 """
 
@@ -34,11 +34,11 @@ def _reference(m, tok, batch):
         ids = batch["option_input_ids"][r, c][batch["option_attention_mask"][r, c].bool()][None]
         h = m._encode(ids, torch.ones_like(ids))[0, -1]
         logp = m.base.lm_head(h[None]).float().log_softmax(-1)[0]
-        out.append((logp[d1], torch.logaddexp(logp[d1], logp[d2])))
+        out.append((logp[d1] - logp[d2], torch.logaddexp(logp[d1], logp[d2])))
     return out
 
 
-def test_score_is_the_full_vocabulary_log_probability_of_d1():
+def test_score_is_the_log_odds_of_d1_against_d2():
     m, tok, d, _ = token_model()
     m.set_candidate_prefix_cache("off")
     m.eval()
@@ -197,3 +197,4 @@ def test_the_server_reads_marked_menus_for_a_token_readout_model():
     from test_serve_engine import _questions
     prompts = Engine(m, tok, d).prompts("red context", _questions())
     assert all(D_TOKENS[1] in p[1] for p in prompts.values())
+
