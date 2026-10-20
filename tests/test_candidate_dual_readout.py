@@ -141,3 +141,49 @@ def test_cli_parses_the_two_stage_readout():
     with pytest.raises(SystemExit):
         cli.resolve_head_start(cli.build_parser().parse_args(
             ["--architecture", "candidate", "--decision-blocks", "0", "--head-start", "10"]))
+
+
+def test_d1_d2_log_probs_are_computed_in_fp32_even_on_a_bf16_backbone():
+    """bf16 的整词表 logits 精度约 0.05, 两个 logit 相减后接近的选项会因批的排法不同而翻转 (v73 第一阶段一致率 .95)."""
+    m, tok, d = dual_model()
+    raw = m.base
+    raw.lm_head.base.to(torch.bfloat16)
+    m.eval()
+    h = torch.randn(5, raw.config.hidden_size) * 3
+    with torch.no_grad():
+        lp1, lp2 = m._d1_d2_logp(h)
+        w = raw.lm_head.base.weight.float().clone()
+        rows = m.get_input_embeddings().rows.float()
+        ids = m.get_input_embeddings().ids
+        w[ids] = rows
+        logp = (h.float() @ w.T).log_softmax(-1)
+    torch.testing.assert_close(lp1, logp[:, int(ids[1])], atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(lp2, logp[:, int(ids[2])], atol=1e-5, rtol=1e-5)
+
+
+def test_the_step_zero_evaluation_reads_stage_one_scores():
+    from sors.training.loop import TrainConfig, train
+    m, tok, d = dual_model()
+    seen = []
+    real = m.forward_batch
+    def spy(batch, **kw):
+        seen.append(m.head_active)
+        return real(batch, **kw)
+    m.forward_batch = spy
+    from sors.evaluation.scoring import EvalSet
+    es = {"probe": EvalSet(examples(), 2)}
+    cfg = TrainConfig(steps=2, batch_size=2, k_max=4, loss="menu", log_every=10, eval_every=10, lr_lora=1e-3,
+                      accumulate_gradients=True, candidate_prefix_cache="off", head_start=1)
+    train(m, tok, d, lambda n, rng: examples()[:n], es, cfg)
+    assert seen and seen[0] is False
+
+
+def test_fp32_log_probs_backpropagate_to_h_and_the_d_rows():
+    m, tok, d = dual_model()
+    m.base.lm_head.base.to(torch.bfloat16)
+    m.train()
+    h = (torch.randn(3, m.base.config.hidden_size) * 3).requires_grad_(True)
+    lp1, lp2 = m._d1_d2_logp(h)
+    (lp1 - lp2).sum().backward()
+    assert h.grad is not None and h.grad.abs().sum() > 0
+    assert m.get_input_embeddings().rows.grad.abs().sum() > 0

@@ -356,6 +356,19 @@ class DecisionModel(nn.Module):
         mass, self._token_mass = self._token_mass, None
         return mass
 
+    def _vocab_log_probs(self, x):
+        """lm_head 在整个词表上的 log_softmax, 输出 fp32: bf16 的 logits 精度约 0.05, D1 / D2 两个 logit 相减后
+        接近的选项会因批的排法不同而翻转 (v73 第一阶段 5 种顺序一致率只有 .95). 乘法整个在 fp32 里做;
+        D 行那几列照 SlotHead 换成可训的 rows."""
+        raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
+        head = raw.lm_head
+        weight = head.base.weight
+        # 词表矩阵冻结: fp32 副本不进计算图; 每块临时转一次 (248k × 2048 fp32 约 2 GB, 用完即释放)
+        logits = x.float() @ weight.detach().float().T
+        emb = head.emb
+        logits[:, emb.ids] = x.float() @ emb.rows.float().T
+        return logits.log_softmax(-1)
+
     def pop_branch(self):
         """dual 读出在训练前向里记下的 (log P(D1), log P(D2)), 各 (B, K) 按菜单位置排, 菜单外为 0; 取走后清空."""
         branch, self._branch = self._branch, None
@@ -370,13 +383,11 @@ class DecisionModel(nn.Module):
 
     def _d1_d2_logp(self, h):
         """h: (N, hidden) 走 lm_head, 整个词表上的 (log P(D1), log P(D2)); 逐 TOKEN_CHUNK 个选项, 训练时逐块重算."""
-        raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
-        head, ids = raw.lm_head, self.get_input_embeddings().ids
+        ids = self.get_input_embeddings().ids
         d1, d2 = int(ids[1]), int(ids[2])
-        dtype = head.base.weight.dtype
 
         def chunk(x):
-            logp = head(x.to(dtype)).float().log_softmax(-1)
+            logp = self._vocab_log_probs(x)
             return logp[:, d1], logp[:, d2]
 
         grad = self.training and torch.is_grad_enabled()
@@ -388,13 +399,11 @@ class DecisionModel(nn.Module):
         整个词表上归一化. 分数取对数几率: 只用 log P(D1) 时上限是 0, 每个选项一起把 D1 抬到接近 1 就让分数全挤在 0、
         梯度按 1 - P(D1) 消失 (0.8B 烟测 40 步塌成均匀分布); 对数几率没有上限, 全体同抬 D1 不改变选项间 softmax.
         D1 / D2 是放开的 token 行里的第 1、2 行 (train_ids 以 D0..D255 开头), lm_head 里这两列读 rows."""
-        raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
-        head, ids = raw.lm_head, self.get_input_embeddings().ids
+        ids = self.get_input_embeddings().ids
         d1, d2 = int(ids[1]), int(ids[2])
-        dtype = head.base.weight.dtype
 
         def chunk(x):
-            logp = head(x.to(dtype)).float().log_softmax(-1)
+            logp = self._vocab_log_probs(x)
             return logp[:, d1] - logp[:, d2], torch.logaddexp(logp[:, d1], logp[:, d2])
 
         grad = self.training and torch.is_grad_enabled()

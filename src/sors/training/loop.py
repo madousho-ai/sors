@@ -556,6 +556,16 @@ def train(
     t0 = time.time() - elapsed
     m.train()
     drift = None if resume else ParamDrift(m)  # 新训练的起点在第 0 步评估之前; 续训的等拷回权重后再建
+    # 读出阶段要在 step 0 评估之前定好: dual 读出第一阶段的分数是 lm_head 上的对数几率, 不是没训过的标量头
+    readout = getattr(getattr(m, "decision_config", None), "readout", "scorer")
+    token_readout = readout in ("token", "dual")  # 两者都读带 <|D1|> 的菜单
+    if readout == "dual" and cfg.steps > 0:  # 只评估 (steps 0) 时阶段照存档里记的
+        if cfg.head_start is None or not 0 < cfg.head_start < cfg.steps or not cfg.accumulate_gradients:
+            raise ValueError("the dual readout needs 0 < head_start < steps and --accumulate-gradients")
+        m.head_active = start >= cfg.head_start  # 续训时按已完成步数定阶段; 过了切换点的存档里标量头已是训过的值
+        m.branch_in_head_stage = cfg.branch_weight > 0
+    elif cfg.head_start is not None:
+        raise ValueError("head_start needs the dual readout")
     if resume is None and (cfg.initial_eval or cfg.steps == 0):
         do_eval(0, None, final=cfg.steps == 0)
     if cfg.steps == 0:
@@ -639,15 +649,6 @@ def train(
                                    or not cfg.accumulate_gradients):
         raise ValueError("distillation needs the candidate architecture, the packed prefix cache and --accumulate-gradients")
     distill_stats, running_distill = {}, [0.0, 0.0, 0, 0, 0]  # teacher_ce·n, distill·n, teacher_hits, teacher_n, 步数
-    readout = getattr(getattr(m, "decision_config", None), "readout", "scorer")
-    token_readout = readout in ("token", "dual")  # 两者都读带 <|D1|> 的菜单
-    if readout == "dual":
-        if cfg.head_start is None or not 0 < cfg.head_start < cfg.steps or not cfg.accumulate_gradients:
-            raise ValueError("the dual readout needs 0 < head_start < steps and --accumulate-gradients")
-        m.head_active = start >= cfg.head_start  # 续训时按已完成步数定阶段; 过了切换点的存档里标量头已是训过的值
-        m.branch_in_head_stage = cfg.branch_weight > 0
-    elif cfg.head_start is not None:
-        raise ValueError("head_start needs the dual readout")
     if cfg.token_mass_weight > 0 and not (readout == "token" and cfg.accumulate_gradients):
         raise ValueError("token_mass_weight needs the candidate token readout and --accumulate-gradients")
     running_mass = [0.0, 0]  # 每个日志窗口里 -log(P(D1)+P(D2)) 之和与步数
