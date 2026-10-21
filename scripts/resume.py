@@ -180,8 +180,8 @@ def main():
     else:
         verify_sampling_commits(ROOT, args.datasets_dir, opts.expected_data_commit, code_commit=opts.expected_code_commit)
         fingerprint = sampling_fingerprint(ROOT, args.datasets_dir)
-    if args.dataset not in ("synth-v5", "synth-v5.11"):
-        raise ValueError("this recovery entry point currently verifies synth-v5.11 runs (legacy alias: synth-v5) only")
+    if args.dataset not in ("synth-v5", "synth-v5.12"):
+        raise ValueError("this recovery entry point currently verifies synth-v5.12 runs (legacy alias: synth-v5) only")
     cfg = resume_config(config, opts)
     start = state["step"]
     validate_resume_step(start, cfg.steps, full=full)
