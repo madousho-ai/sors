@@ -183,7 +183,7 @@ def test_cli_attaches_traces_from_a_file_to_the_synth_data(tmp_path):
     rows = [{"context_id": it.context_id, "question_id": it.question_id, "text": t, "ask": a, "cot": f"trace {t} {a}"}
             for t in range(len(it.texts)) for a in range(len(it.asks))]
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    args = cli.build_parser().parse_args(["--dataset", "synth-v5.15", "--eval", "simple", "--architecture", "candidate",
+    args = cli.build_parser().parse_args(["--dataset", "synth-v5.16", "--eval", "simple", "--architecture", "candidate",
                                           "--candidate-prefix-cache", "packed", "--distill-traces", str(path),
                                           "--distill-weight", "0.5", "--teacher-weight", "2"])
     assert (args.distill_weight, args.teacher_weight) == (0.5, 2.0)
@@ -228,7 +228,7 @@ def test_cli_reads_the_trace_fade_schedule(tmp_path):
     spec = importlib.util.spec_from_file_location("train_cli_fade", script)
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
-    base = ["--dataset", "synth-v5.15", "--architecture", "candidate", "--candidate-prefix-cache", "packed",
+    base = ["--dataset", "synth-v5.16", "--architecture", "candidate", "--candidate-prefix-cache", "packed",
             "--distill-traces", "t.jsonl", "--distill-weight", "1"]
     args = cli.build_parser().parse_args(base + ["--distill-fade", "0.2,0.6"])
     assert cli.distill_fade(args) == (0.2, 0.6)
