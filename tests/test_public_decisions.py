@@ -309,6 +309,16 @@ def test_xlam_skips_parallel_and_unknown_calls_and_counts_them():
     assert len(out.examples) == 1 and out.skipped == {"not_single_tool_call": 2}
 
 
+def test_xlam_skips_records_whose_tool_list_is_empty():
+    out = _api().xlam([_xlam([], names=()), _xlam([])])
+    assert len(out.examples) == 1 and out.skipped == {"no_tools": 1}
+
+
+def test_xlam_skips_records_with_two_tools_of_one_name():
+    out = _api().xlam([_xlam([], names=("products_list", "users", "products_list")), _xlam([])])
+    assert len(out.examples) == 1 and out.skipped == {"duplicate_tool_names": 1}
+
+
 def test_sampling_shuffles_complete_menus_and_keeps_pair_alignment():
     out = _api().contractnli(_contract())
     originals = copy.deepcopy(out.examples)

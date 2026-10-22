@@ -365,11 +365,15 @@ def xlam(rows: list[dict]) -> Decisions:
     out = Decisions()
     for i, record in enumerate(rows):
         tools = json.loads(_text(record["tools"], "xLAM tools"))
-        if not isinstance(tools, list) or not tools or not all(isinstance(t, dict) and "name" in t for t in tools):
-            raise ValueError("xLAM: tools must be a non-empty list of named definitions")
+        if tools == []:  # xlam-irrelevance removed the only (gold) tool: a one-option menu
+            out.skipped["no_tools"] += 1
+            continue
+        if not isinstance(tools, list) or not all(isinstance(t, dict) and "name" in t for t in tools):
+            raise ValueError("xLAM: tools must be a list of named definitions")
         names = [_text(t["name"], "tool name") for t in tools]
-        if len(set(names)) != len(names):
-            raise ValueError("xLAM: duplicate tool names")
+        if len(set(names)) != len(names):  # different APIs sharing one name: the menu cannot tell them apart
+            out.skipped["duplicate_tool_names"] += 1
+            continue
         calls = json.loads(_text(record["answers"], "xLAM answers"))
         if not isinstance(calls, list):
             raise ValueError("xLAM: answers must be a list")
