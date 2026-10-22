@@ -22,7 +22,7 @@
               --consistency 下材料有几种说法时, 配对的第二份读另一种说法. --fallback-rate 默认 0.5,
               随机加入题目标记的 Other / 信息不足选项；既有 other 配对每次随机选一版，一次抽取出一道题
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
-  contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / quality / reclor / logiqa2
+  contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / xlam / quality / reclor / logiqa2
               官方决策子任务，从 --public-manifest 声明的本地 train 文件读取；全量菜单、硬标签，
               默认按数据集各占一份，--dataset-weights 可指定配比。筛选统计和原始文件 SHA256 写进 result.json 的 split.public_decisions。
 每个训练集各自组菜单, 干扰项不跨集合抽.
@@ -441,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.15 / massive 用 + 连接; "
-                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / quality / reclor / logiqa2; "
+                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / xlam / quality / reclor / logiqa2; "
                          "synth-v5 是 synth-v5.15 的兼容别名; both = banking77+boolq")
     ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
                      help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")

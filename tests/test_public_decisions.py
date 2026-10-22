@@ -290,6 +290,25 @@ def test_toolace_duplicate_tool_names_still_fail_instead_of_being_filtered():
     _raises(lambda: _api().toolace([raw]), "duplicate")
 
 
+def _xlam(answers, names=("get_stock_quote", "convert_units")):
+    tools = [{"name": n, "description": f"{n} description", "parameters": {"x": {"type": "str"}}} for n in names]
+    return {"query": "What is the quote for ACME?", "tools": json.dumps(tools), "answers": json.dumps(answers)}
+
+
+def test_xlam_menus_end_with_a_no_tool_option_that_is_gold_for_irrelevance_records():
+    out = _api().xlam([_xlam([]), _xlam([{"name": "get_stock_quote", "arguments": {"x": "PRIVATE GOLD"}}])])
+    a, b = out.examples
+    assert len(a.options) == 3 and a.option_names[-1].startswith("none")
+    assert a.gold_idx == 2 and b.gold_idx == 0 and b.option_names == a.option_names
+    assert "What is the quote for ACME?" in a.query and "PRIVATE GOLD" not in render_menu(b)
+
+
+def test_xlam_skips_parallel_and_unknown_calls_and_counts_them():
+    two = [{"name": "get_stock_quote", "arguments": {}}, {"name": "convert_units", "arguments": {}}]
+    out = _api().xlam([_xlam(two), _xlam([{"name": "unknown", "arguments": {}}]), _xlam([])])
+    assert len(out.examples) == 1 and out.skipped == {"not_single_tool_call": 2}
+
+
 def test_sampling_shuffles_complete_menus_and_keeps_pair_alignment():
     out = _api().contractnli(_contract())
     originals = copy.deepcopy(out.examples)
@@ -316,6 +335,13 @@ def _load(name, path):
     api = _api()
     assert hasattr(api, "load_public_decisions"), "local manifest loader is missing"
     return api.load_public_decisions(name, path)
+
+
+def test_manifest_reads_xlam_sources():
+    with tempfile.TemporaryDirectory() as d:
+        manifest, _ = _fixture(pathlib.Path(d), "xlam", [_xlam([]), _xlam([])])
+        out = _load("xlam", manifest)
+        assert len(out.examples) == 2 and out.ids[0].startswith("xlam/xlam.json/")
 
 
 def test_manifest_reads_only_train_and_records_file_hashes():

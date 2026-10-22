@@ -23,7 +23,7 @@ from sors.core.prompt import Special, prompt_pieces, state_text
 from sors.core.tokens import D_TOKENS
 
 PUBLIC_DATASETS = ("contractnli", "maud", "legalbench", "sharc", "conditionalqa", "mind2web", "toolace",
-                   "quality", "reclor", "logiqa2")
+                   "quality", "reclor", "logiqa2", "xlam")
 DEFAULT_MANIFEST = pathlib.Path(__file__).resolve().parents[3] / "data/public-decisions/manifest.json"
 
 
@@ -355,6 +355,38 @@ def toolace(rows: list[dict]) -> Decisions:
     return out
 
 
+XLAM_NONE = "none: no listed tool fits this request; answer without calling a tool"
+
+
+def xlam(rows: list[dict]) -> Decisions:
+    """xLAM-style records ({query, tools, answers} with JSON strings), e.g. xlam-irrelevance-7.5k
+    (answers "[]") and xlam-function-calling-60k. Every menu ends with a no-tool option, so the
+    irrelevance records and the single-call records share one menu shape."""
+    out = Decisions()
+    for i, record in enumerate(rows):
+        tools = json.loads(_text(record["tools"], "xLAM tools"))
+        if not isinstance(tools, list) or not tools or not all(isinstance(t, dict) and "name" in t for t in tools):
+            raise ValueError("xLAM: tools must be a non-empty list of named definitions")
+        names = [_text(t["name"], "tool name") for t in tools]
+        if len(set(names)) != len(names):
+            raise ValueError("xLAM: duplicate tool names")
+        calls = json.loads(_text(record["answers"], "xLAM answers"))
+        if not isinstance(calls, list):
+            raise ValueError("xLAM: answers must be a list")
+        if not calls:
+            gold = len(names)
+        elif len(calls) == 1 and isinstance(calls[0], dict) and calls[0].get("name") in names:
+            gold = names.index(calls[0]["name"])
+        else:
+            out.skipped["not_single_tool_call"] += 1
+            continue
+        menu = [f"{t['name']}: {t['description']}" if t.get("description") else t["name"] for t in tools]
+        out.add(str(i), {"tools": tools, "request": _text(record["query"], "xLAM query")},
+                "Which tool should be called for this request?", menu + [XLAM_NONE], gold,
+                label="Tools and request")
+    return out
+
+
 def _four_options(names, out: Decisions):
     if not isinstance(names, list) or len(names) != 4:
         raise ValueError("official MCQ needs four options")
@@ -513,7 +545,7 @@ def load_public_decisions(name: str, manifest=DEFAULT_MANIFEST) -> Decisions:
             elif name == "conditionalqa":
                 part = conditionalqa(raw, auxiliary("documents"))
             else:
-                part = {"sharc": sharc, "mind2web": mind2web, "toolace": toolace,
+                part = {"sharc": sharc, "mind2web": mind2web, "toolace": toolace, "xlam": xlam,
                         "quality": quality, "reclor": reclor, "logiqa2": logiqa2}[name](raw)
             if "include_ids" in entry:
                 allowed = _read_source((manifest.parent / _text(entry["include_ids"], "include_ids")).resolve(),
