@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.12/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.13/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.12
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.13
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -53,9 +53,13 @@ working started to vary per item, so no fixed sentence opens or closes all of th
 (judge_math, judge_code, judge_text and ordinal; data README section 19): bindings 94,453 ->
 118,513, score items 3,023 -> 12,643. Runs before 2026-10-21 (up to v75) used v5.11, data
 repository at b06ff62.
-`--dataset synth-v5.1` through `synth-v5.11` are rejected with a pointer to the new name; `synth-v5`
+`synth-intents-v5.12` became `synth-intents-v5.13` when sampling was grouped by source x
+question type and the hard sources were raised to about 7,200 items each (curric choice
+items, ordinal, and nine hand-written sources: data README section 20): bindings 118,513 ->
+169,419, score items 12,643 -> 37,710. Runs before 2026-10-22 used v5.12 or older.
+`--dataset synth-v5.1` through `synth-v5.12` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.12. A `--mix` written for v5.2 must add a
+resume fingerprint check against v5.13. A `--mix` written for v5.2 must add a
 `contrast=` share, since every goal in the data keeps a positive share. Sors-2B was
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
 The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36; the v5.5
@@ -115,8 +119,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.12+sharc+toolace \
-  --dataset-weights synth-v5.12=27,sharc=6,toolace=3 \
+  --dataset synth-v5.13+sharc+toolace \
+  --dataset-weights synth-v5.13=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 

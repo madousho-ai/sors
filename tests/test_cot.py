@@ -21,9 +21,11 @@ def exs():
 def test_curric_items_carry_cot_and_other_items_do_not():
     from sors.data.synth_v5 import item_example, load_synth_v5
     items = load_synth_v5()
-    cur = [it for it in items if "_curric/" in it.context_id]
+    # v5.13 的 curric 三选一 (cuc_, 1442 个绑定) 只有 why, 计算过程 cot 只写给是非题 (cu_)
+    cur = [it for it in items if "_curric/" in it.context_id and it.question_id.startswith("cu_")]
     assert len(cur) == 5758 and all(it.cot and it.cot.rstrip().endswith((" yes.", " no.")) for it in cur)
-    assert all(it.cot is None for it in items if "_curric/" not in it.context_id)
+    assert sum(it.question_id.startswith("cuc_") for it in items if "_curric/" in it.context_id) == 1442
+    assert all(it.cot is None for it in items if not it.question_id.startswith("cu_"))
     ex = item_example(cur[0], random.Random(0), 0.5, fallback_rate=1.0)
     assert ex.cot == cur[0].cot and partner(ex, random.Random(1)).cot == cur[0].cot
 
