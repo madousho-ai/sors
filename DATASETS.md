@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.16/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.17/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.16
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.17
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -65,9 +65,16 @@ bindings 173,811 -> 185,811, score items 42,102 -> 45,968.
 `synth-intents-v5.15` became `synth-intents-v5.16` when the tool_router and shell_ops domains
 were added, 3,600 items each (data README section 23): bindings 185,811 -> 193,011, domains 24 -> 26.
 Runs before 2026-10-22 used v5.12 or older.
-`--dataset synth-v5.1` through `synth-v5.15` are rejected with a pointer to the new name; `synth-v5`
+`synth-intents-v5.17` preserves all 193,011 v5.16 bindings and appends 177,628
+independently accepted r17 bindings from 389 shards (370,639 total; data repository
+824e773). Bindings that failed review, adjudication or the long-context audit are
+excluded and listed with their reasons in `round17-build.json`, together with the
+immutable accepted-ledger digest and per-shard peer provenance. The first v5.17
+release (2026-10-24, data repository cfedf40) had 82,110 additions, 275,121 total.
+The v5.16 directory is retained for reproducibility.
+`--dataset synth-v5.1` through `synth-v5.16` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.16. A `--mix` written for v5.2 must add a
+resume fingerprint check against v5.17. A `--mix` written for v5.2 must add a
 `contrast=` share, since every goal in the data keeps a positive share. Sors-2B was
 trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
 The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36; the v5.5
@@ -127,8 +134,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.16+sharc+toolace \
-  --dataset-weights synth-v5.16=27,sharc=6,toolace=3 \
+  --dataset synth-v5.17+sharc+toolace \
+  --dataset-weights synth-v5.17=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 
