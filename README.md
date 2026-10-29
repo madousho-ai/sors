@@ -12,17 +12,17 @@ Given a state, a set of questions and options defined by the caller, SORS return
 
 ![SORS architecture](docs/sors-architecture.svg)
 
-SORS attaches a set of decision layers to the last layers of a Qwen3.5 backbone. Every option row on the menu starts with a decision token
-(`<|D0|>` … `<|D255|>`, 256 in total), and the model's score for each option is read at that token. The tokens carry no meaning of their own:
-during training each question gets a fresh, balanced set of codes, so any code that appears on a k-option menu is the answer with probability exactly 1/k,
-and the model can only answer by reading the option text. The caller chooses the option names and how many there are, up to 255 per menu;
-a new set of options needs no retraining.
+SORS scores every option on its own. For each question it builds one branch per option: the shared prefix (state, then question) followed by
+`Option: <|D1|> <option text>` and `Answer:`. The prefix is encoded once and reused by every branch, so a menu costs one pass over the state
+plus a short suffix per option. The fully fine-tuned Qwen3.5 backbone reads each branch causally, and a scalar head on its final hidden state at
+`Answer:` gives that option's score. A softmax over the question's own options turns the scores into probabilities. The caller chooses the option
+names and how many there are, up to 255 per menu; a new set of options needs no retraining.
 
-The backbone is a causal language model, and SORS keeps the part of that order that helps: the state comes first, then the question, then the options,
-so every option row reads the full state and question. What it removes is the order among the options. The decision layers have no position encoding
-between options, so swapping two options only swaps their scores, and they write option-set information back into the backbone.
-Training then applies the constraints shown at the bottom of the diagram to wear down any reliance on option order or codes.
-The most direct one presents every question twice, in two random orders, and uses a Jensen–Shannon term to make the two answers agree.
+Because no branch sees another option, reordering the menu only reorders the scores, and an option's score does not depend on what else is on
+the menu. The scalar head starts as the language model's log-odds that the next token is `<|D1|>` ("this option fits") rather than `<|D2|>`
+("it does not"). Training first teaches the backbone that next-token choice for every option on its own, then switches the head on and trains
+the softmax over the menu together with the same per-option term. Ambiguous questions train toward a probability distribution instead of a single
+answer, half the questions hide option descriptions, and half the menus add a "none of these" option.
 
 ## Benchmarks
 
@@ -49,7 +49,6 @@ Numbers are accuracy (%).
 
 - **Banking77 and MASSIVE are answered against the full intent menu.** Every Banking77 question shows all 77 intents and every MASSIVE question shows all 60;
   no retriever or other model narrows them to a top-K shortlist first. "+ descriptions" adds a one-line description after each intent name.
-- 17 of Banking77's intents never appear in training. The model meets them for the first time at evaluation.
 - Option order: the same questions answered with their options shuffled into 5 random orders stay within 0.1 points of the table for Sors-2B,
   and the 5 orders pick the same option on 99.7–99.8% of Banking77 and MASSIVE questions and on every BoolQ question.
 - Public JevBench is JevBench's public question set, scored with the official JevBench CLI and its `typesafe` adapter. Its tiers have only 48 / 72 / 111 questions, so differences of a few points there are noise; "overall" is accuracy over all 231 questions (192 correct). Results from the JevBench leaderboard will be added once available.
