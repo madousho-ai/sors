@@ -24,32 +24,33 @@ SORS 在 Qwen3.5 主干的最后几层上接一组决策层。菜单里每个选
 
 ## 跑分
 
-Sors-2B 只用我们自己合成的数据集 synth-intents-v5.3 训练（数据集整理完成后开源），
+Sors-2B 只用我们自己合成的数据集 synth-intents-v5.17 训练（26 个领域共 370,639 道题，数据集整理完成后开源），
 下表里的评估集都不参与训练。合成数据由我们从零编写，不包含任何现有数据集的内容，生成时刻意避开了 Banking77 的银行业务
-和 MASSIVE 的语音助手场景，并有自动检查拦截这些领域的用词。我们拿训练材料（26,755 段不同的文本）逐条比对了下表的全部评估集：
+和 MASSIVE 的语音助手场景，并有自动检查拦截这些领域的用词。我们拿训练材料（167,759 段不同的文本）逐条比对了下表的全部评估集：
 归一化后完全相同的文本为 0；与 MASSIVE、BoolQ、JevBench 共享连续 8 个词的条目为 0；
-Banking77 的 3,080 条里有 4 条与训练材料共享 8 个词，都是「I don't want to be charged for」这类日常短语。
+Banking77 的 3,080 条里有 5 条与训练材料共享 8 个词，都是「I don't want to be charged for」这类日常短语。
 
 | 评估集 | 题数 | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) |
 |---|---:|---:|
-| Banking77 | 3,080 | 70.3 |
-| Banking77 + 描述 | 3,080 | 81.1 |
-| MASSIVE | 2,974 | 72.3 |
-| MASSIVE + 描述 | 2,974 | 81.6 |
-| BoolQ | 3,270 | 84.0 |
+| Banking77 | 3,080 | 67.0 |
+| Banking77 + 描述 | 3,080 | 79.7 |
+| MASSIVE | 2,974 | 68.6 |
+| MASSIVE + 描述 | 2,974 | 80.4 |
+| BoolQ | 3,270 | 81.1 |
 | Public JevBench easy | 48 | 100.0 |
-| Public JevBench original | 72 | 90.3 |
-| Public JevBench hard | 111 | 73.0 |
-| Public JevBench 合计 | 231 | 84.0 |
+| Public JevBench original | 72 | 97.2 |
+| Public JevBench hard | 111 | 66.7 |
+| Public JevBench 合计 | 231 | 83.1 |
 
 数值是准确率（%）。
 
 - **Banking77 和 MASSIVE 每道题都在完整的意图菜单上作答**：Banking77 一次给出全部 77 个意图，MASSIVE 一次给出全部 60 个意图，
   没有先用检索或其他模型挑出 top-K 候选再让模型选。「+ 描述」是在每个意图名后面附一句说明。
 - Banking77 有 17 个意图完全不出现在训练中，模型第一次见到它们就是在评估时。
-- 选项顺序：同一批题把选项随机打乱成 5 种顺序分别作答，Sors-2B 的平均准确率与上表相差不超过 1.3 个点，
-  5 种顺序选中同一选项的比例在 Banking77 上是 0.86、MASSIVE 0.82、BoolQ 0.98。
-- Public JevBench 是 JevBench 的公开题集，三档分别只有 48 / 72 / 111 题，几个点以内的差距属于噪声；「合计」是全部 231 题的准确率（194 题答对）。JevBench 榜单的成绩出来后会更新到这里。
+- 选项顺序：同一批题把选项随机打乱成 5 种顺序分别作答，Sors-2B 的平均准确率与上表相差不超过 0.1 个点，
+  5 种顺序选中同一选项的比例在 Banking77 和 MASSIVE 上是 99.7–99.8%，BoolQ 上是全部。
+- Public JevBench 是 JevBench 的公开题集，用 JevBench 官方 CLI 和它的 `typesafe` adapter 评测；三档分别只有 48 / 72 / 111 题，几个点以内的差距属于噪声；「合计」是全部 231 题的准确率（192 题答对）。JevBench 榜单的成绩出来后会更新到这里。
+- 这是 2026-10-29 发布的权重。2026-10-08 发布、用 synth-intents-v5.3 训练的权重仍可通过 Hugging Face revision `v5.3-2026-10-08` 获取。
 
 ## 部署
 
@@ -115,7 +116,7 @@ curl -s http://127.0.0.1:8000/v1/systemone \
 ```
 
 问题有三种类型：`choice` 在调用方给的选项里选一个（2–255 项，每个选项可以附一段说明）；`noul` 是是非题，返回答「是」的概率；
-`score` 是有序等级（接口已支持，目前还没有专门的训练数据）。`state`、`instructions` 和选项说明都可以是字符串或 JSON。
+`score` 是有序等级。`state`、`instructions` 和选项说明都可以是字符串或 JSON。
 
 ### Docker
 

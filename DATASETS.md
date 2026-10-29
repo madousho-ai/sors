@@ -75,8 +75,11 @@ The v5.16 directory is retained for reproducibility.
 `--dataset synth-v5.1` through `synth-v5.16` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
 resume fingerprint check against v5.17. A `--mix` written for v5.2 must add a
-`contrast=` share, since every goal in the data keeps a positive share. Sors-2B was
-trained on v5.3; reproduce it with the data repository at f613f66 (before the hard items).
+`contrast=` share, since every goal in the data keeps a positive share. The Sors-2B weights
+of 2026-10-08 (Hugging Face revision `v5.3-2026-10-08`) were trained on v5.3; reproduce them with the
+data repository at f613f66 (before the hard items). The Sors-2B weights of 2026-10-29 are run v78:
+synth-v5.17 at data repository 824e773, 9,034 steps at batch 72 (1.05 weighted rounds), other
+settings as v76.
 The v5.4 model of 2026-10-10 (2,600 steps) used the data repository at e01bf36; the v5.5
 runs of 2026-10-11/12 (v55, v56c, v56s, v57) used eca83c1.
 

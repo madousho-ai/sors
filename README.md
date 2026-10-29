@@ -26,33 +26,34 @@ The most direct one presents every question twice, in two random orders, and use
 
 ## Benchmarks
 
-Sors-2B is trained only on our own synthetic dataset, synth-intents-v5.3 (to be open-sourced once it is cleaned up);
+Sors-2B is trained only on our own synthetic dataset, synth-intents-v5.17 (370,639 questions in 26 domains; to be open-sourced once it is cleaned up);
 none of the evaluation sets below take part in training. We wrote the synthetic data from scratch and it contains no content from existing datasets.
 It deliberately stays out of Banking77's banking domain and MASSIVE's voice-assistant scenarios, and an automatic check blocks vocabulary from those domains.
-We compared the training material (26,755 distinct texts) against every evaluation set below: no text is identical after normalisation;
-no MASSIVE, BoolQ or JevBench item shares a run of 8 consecutive words with it; 4 of Banking77's 3,080 items share 8 words,
+We compared the training material (167,759 distinct texts) against every evaluation set below: no text is identical after normalisation;
+no MASSIVE, BoolQ or JevBench item shares a run of 8 consecutive words with it; 5 of Banking77's 3,080 items share 8 words,
 all of them everyday phrases such as "I don't want to be charged for".
 
 | Benchmark | Questions | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) |
 |---|---:|---:|
-| Banking77 | 3,080 | 70.3 |
-| Banking77 + descriptions | 3,080 | 81.1 |
-| MASSIVE | 2,974 | 72.3 |
-| MASSIVE + descriptions | 2,974 | 81.6 |
-| BoolQ | 3,270 | 84.0 |
+| Banking77 | 3,080 | 67.0 |
+| Banking77 + descriptions | 3,080 | 79.7 |
+| MASSIVE | 2,974 | 68.6 |
+| MASSIVE + descriptions | 2,974 | 80.4 |
+| BoolQ | 3,270 | 81.1 |
 | Public JevBench easy | 48 | 100.0 |
-| Public JevBench original | 72 | 90.3 |
-| Public JevBench hard | 111 | 73.0 |
-| Public JevBench overall | 231 | 84.0 |
+| Public JevBench original | 72 | 97.2 |
+| Public JevBench hard | 111 | 66.7 |
+| Public JevBench overall | 231 | 83.1 |
 
 Numbers are accuracy (%).
 
 - **Banking77 and MASSIVE are answered against the full intent menu.** Every Banking77 question shows all 77 intents and every MASSIVE question shows all 60;
   no retriever or other model narrows them to a top-K shortlist first. "+ descriptions" adds a one-line description after each intent name.
 - 17 of Banking77's intents never appear in training. The model meets them for the first time at evaluation.
-- Option order: the same questions answered with their options shuffled into 5 random orders stay within 1.3 points of the table for Sors-2B,
-  and the 5 orders pick the same option 0.86 of the time on Banking77, 0.82 on MASSIVE and 0.98 on BoolQ.
-- Public JevBench is JevBench's public question set. Its tiers have only 48 / 72 / 111 questions, so differences of a few points there are noise; "overall" is accuracy over all 231 questions (194 correct). Results from the JevBench leaderboard will be added once available.
+- Option order: the same questions answered with their options shuffled into 5 random orders stay within 0.1 points of the table for Sors-2B,
+  and the 5 orders pick the same option on 99.7–99.8% of Banking77 and MASSIVE questions and on every BoolQ question.
+- Public JevBench is JevBench's public question set, scored with the official JevBench CLI and its `typesafe` adapter. Its tiers have only 48 / 72 / 111 questions, so differences of a few points there are noise; "overall" is accuracy over all 231 questions (192 correct). Results from the JevBench leaderboard will be added once available.
+- These are the weights released on 2026-10-29. The 2026-10-08 weights, trained on synth-intents-v5.3, remain available as Hugging Face revision `v5.3-2026-10-08`.
 
 ## Deployment
 
@@ -119,7 +120,7 @@ Response (probabilities are illustrative):
 ```
 
 There are three question types. `choice` picks one of the caller's options (2–255, each with an optional description); `noul` is a yes/no question
-and returns the probability of "yes"; `score` is an ordered scale (supported by the API, with no dedicated training data yet).
+and returns the probability of "yes"; `score` is an ordered scale.
 `state`, `instructions` and option descriptions can each be a string or JSON.
 
 ### Docker
