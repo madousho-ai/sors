@@ -42,17 +42,17 @@ def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
 
     item = _marked()
     with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
-        current, _, info = _mod.build_data(_args("synth-v5.17", eval="simple", fallback_rate=1.0))
+        current, _, info = _mod.build_data(_args("synth-v5.18", eval="simple", fallback_rate=1.0))
         legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
     assert current(8, random.Random(0)) == legacy(8, random.Random(0))
     assert info == old_info
-    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.17", "--fallback-rate", "1"])
+    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.18", "--fallback-rate", "1"])
     assert "-fallback1" in _mod.run_tag(args)
 
 
 def test_v51_and_its_legacy_alias_cannot_duplicate_the_dataset():
     try:
-        _mod.parse_datasets("synth-v5+synth-v5.17")
+        _mod.parse_datasets("synth-v5+synth-v5.18")
     except SystemExit:
         return
     raise AssertionError("the same dataset was accepted twice through aliases")
@@ -68,7 +68,7 @@ def test_the_retired_v51_to_v516_names_point_to_v517():
             try:
                 parse()
             except (SystemExit, ValueError) as exc:
-                assert "synth-v5.17" in str(exc), exc
+                assert "synth-v5.18" in str(exc), exc
                 continue
             raise AssertionError(f"{old} was accepted")
 
@@ -261,14 +261,15 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """v5.17 的七个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/7。
+    """v5.18 的八个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/8。
     intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 370639, info
+    assert info["synth_v5_items"] == 373356, info
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "contrast": 1.0,
-                                         "edge_case": 1.0, "long_context": 1.0, "long_menu": 1.0})]
+                                         "edge_case": 1.0, "json-scope": 1.0, "long_context": 1.0,
+                                         "long_menu": 1.0})]
     full_menus = {}
-    for path in asset_path("synth-intents-v5.17").glob("*.questions.json"):
+    for path in asset_path("synth-intents-v5.18").glob("*.questions.json"):
         for question in json.loads(path.read_text())["questions"]:
             if len(question["options"]) == 256:
                 rows = frozenset(f"{key}: {description}" for key, description in question["options"].items())
@@ -281,7 +282,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
             sizes["256" if len(e.options) == 256 else "other"] += 1
             if len(e.options) == 256:
                 assert e.question in full_menus[frozenset(e.option_names)], e.question
-    data_labels = {c["label"] for path in asset_path("synth-intents-v5.17").glob("*.contexts.json")
+    data_labels = {c["label"] for path in asset_path("synth-intents-v5.18").glob("*.contexts.json")
                    for c in json.loads(path.read_text())["contexts"]}
     assert V5_LABELS <= data_labels and labels <= data_labels, labels - data_labels  # scoresem 的材料标题各式各样
     assert "" in labels and "Customer message" in labels, labels
@@ -291,7 +292,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
 def test_synth_v5_mix_sets_the_goal_shares():
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive",
                                                mix="long_menu=14,breadth=2,complex=2,edge_case=1,long_context=0.9,"
-                                                   "ambiguous=0.1,contrast=0.1"))
+                                                   "ambiguous=0.1,contrast=0.1,json-scope=0.1"))
     rng = random.Random(0)
     n = long = 0
     # 10k 次抽取: 占比的标准差约 0.0046, ±0.05 的范围有 10 倍余量. 只抽 1000 次时标准差 0.0145,
@@ -324,7 +325,8 @@ def test_mask_descriptions_must_be_a_share_and_needs_synth_v5():
 def test_mask_descriptions_hides_intent_descriptions_on_both_copies_of_a_pair():
     """--mask-descriptions 1 --consistency 1: intent 题 (maskable) 的两份都只剩键, 按描述对齐照样成立."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", mask_descriptions=1.0, consistency=1.0,
-                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=1,contrast=1"))
+                                            mix="long_menu=96,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=1,contrast=1,"
+                                                "json-scope=1"))
     rng = random.Random(0)
     pairs = 0
     for _ in range(10):
@@ -341,7 +343,7 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
     """v4 的材料带两种说法: --consistency 下配对的两份读的是不同说法, 问句与选项集合相同."""
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="massive", consistency=1.0,
                                             mix="long_menu=1,breadth=1,complex=33,edge_case=33,long_context=31,"
-                                                "ambiguous=1,contrast=1"))
+                                                "ambiguous=1,contrast=1,json-scope=1"))
     rng = random.Random(0)
     reworded = 0
     for _ in range(20):
@@ -358,7 +360,8 @@ def test_consistency_pairs_a_v5_material_with_another_phrasing_of_it():
 
 def test_synth_v5_random_other_view_keeps_one_example_per_draw():
     sample_fn, _, _ = _mod.build_data(_args("synth-v5", eval="simple",
-                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=95,contrast=1"))
+                                            mix="long_menu=1,breadth=1,complex=1,edge_case=1,long_context=1,ambiguous=95,contrast=1,"
+                                                "json-scope=1"))
     rng = random.Random(0)
     assert all(len(sample_fn(8, rng)) == 8 for _ in range(40))
 
@@ -411,7 +414,7 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """v5.17 有370639个绑定、742对菜单版本，一轮369897次语义抽取；
+    """v5.18 有373356个绑定、742对菜单版本，一轮372614次语义抽取；
     complex / edge_case / long_context 共208787个绑定各多出两遍。
     改动题 (contrast_of) 每抽一次连原题多出一道题。"""
     from sors.data.synth_v5 import draw_of, load_synth_v5
@@ -420,9 +423,9 @@ def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
     passes = {"complex": 3, "edge_case": 3, "long_context": 3}
     extra = sum(passes.get(items[d[0][0]].goal, 1) for d in {draw_of(items, i) for i in range(len(items))} if len(d) == 2)
     assert extra > 1500 and info["synth_v5_contrast_draws"] == extra, (extra, info)
-    assert info["synth_v5_round"] == 369897 + 2 * 208787 + extra, info
+    assert info["synth_v5_round"] == 372614 + 2 * 208787 + extra, info
     assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "contrast": 1, "edge_case": 3,
-                                       "long_context": 3, "long_menu": 1}
+                                       "json-scope": 1, "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info
 
 

@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.17/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.18/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.17
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.18
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -72,10 +72,18 @@ excluded and listed with their reasons in `round17-build.json`, together with th
 immutable accepted-ledger digest and per-shard peer provenance. The first v5.17
 release (2026-10-24, data repository cfedf40) had 82,110 additions, 275,121 total.
 The v5.16 directory is retained for reproducibility.
-`--dataset synth-v5.1` through `synth-v5.16` are rejected with a pointer to the new name; `synth-v5`
+`synth-intents-v5.18` keeps all 370,639 v5.17 bindings and appends 2,717 json-scope
+bindings over 1,393 materials in all 26 domains (373,356 total; data README section 24,
+data repository 01a2868). They add the eighth goal `json-scope` and the ability category
+`json_scope`: the material is a JSON object and the question names a path (`.a.b[2]`, a
+union of paths, or everything except one), answered from the content at that path only.
+`--exclude-categories json_scope` drops them. The v5.17 directory is retained.
+`--dataset synth-v5.1` through `synth-v5.17` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.17. A `--mix` written for v5.2 must add a
-`contrast=` share, since every goal in the data keeps a positive share. The Sors-2B weights
+resume fingerprint check against v5.18. A `--mix` written for v5.2 must add a
+`contrast=` share, and one written for v5.17 or older a `json-scope=` share, since every goal
+in the data keeps a positive share. Without `--mix` the eight goals get equal shares, so the
+2,717 json-scope bindings take one eighth of the draws. The Sors-2B weights
 of 2026-10-08 (Hugging Face revision `v5.3-2026-10-08`) were trained on v5.3; reproduce them with the
 data repository at f613f66 (before the hard items). The Sors-2B weights of 2026-10-29 are run v78:
 synth-v5.17 at data repository 824e773, 9,034 steps at batch 72 (1.05 weighted rounds), other
@@ -137,8 +145,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.17+sharc+toolace \
-  --dataset-weights synth-v5.17=27,sharc=6,toolace=3 \
+  --dataset synth-v5.18+sharc+toolace \
+  --dataset-weights synth-v5.18=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 
