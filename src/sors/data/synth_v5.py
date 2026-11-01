@@ -68,6 +68,8 @@ class V5Item:
     cot: str | None = None  # 绑定的 cot: 程序写的计算过程 (只有 curric 有), 只作训练时的语言模型目标
     categories: tuple[str, ...] = ()  # 能力类别 (数据的 categories/<domain>.json, 多标签; 长材料多一个 long_context); 数据没标就是空
     traces: dict | None = None  # 蒸馏老师读的计算过程 {(说法下标, 问法下标): 文本} (attach_traces); None = 没有
+    langs: tuple[str, ...] | None = None  # 每种说法的语言, 与 texts 一一对应; None = 全是英文 (数据没有 i18n/)
+    i18n: dict | None = None  # {语言: {"asks", "rows", "bare", "fallback_row"}}: 抽到这种语言的说法时题目这样显示
 
 
 def attach_traces(items: list[V5Item], traces) -> list[V5Item]:
@@ -88,13 +90,38 @@ def _schema(data_dir: pathlib.Path):
     return m
 
 
-def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
-    kind = schema.option_kind(q)
+def _rows(q: dict, options, kind: str, maskable: bool):
+    """菜单各行与遮掉说明后的各行; options 是原题的或某种语言的译文 (键与项数相同)."""
     if kind in ("keyed", "yes_no"):
-        rows = [option_row(k, d) for k, d in q["options"].items()]
-        bare = [option_row(k, None) for k in q["options"]] if b.get("maskable") else None
-    else:
-        rows, bare = [option_row(s, None) for s in q["options"]], None
+        return [option_row(k, d) for k, d in options.items()], ([option_row(k, None) for k in options] if maskable else None)
+    return [option_row(s, None) for s in options], None
+
+
+def _translations(schema, c: dict, b: dict, q: dict, kind: str, overlay: dict | None) -> tuple:
+    """(全部说法, 各说法的语言, 各语言的题目显示). 没有译文时后两项为 None."""
+    pairs = schema.variants_with_languages(c, overlay) if overlay is not None else [(t, "en") for t in schema.variants(c["text"])]
+    texts = [state_text(t) for t, _ in pairs]
+    langs = tuple(lang for _, lang in pairs)
+    if set(langs) == {"en"}:
+        return texts, None, None
+    fb = b.get("fallback")
+    shown = {}
+    for lang in sorted(set(langs) - {"en"}):
+        t = overlay["questions"][q["id"]][lang]
+        rows, bare = _rows(q, t["options"], kind, b.get("maskable", False))
+        row = None
+        if fb:
+            key, description = schema.FALLBACKS[fb]
+            text = schema.FALLBACKS_I18N[lang][fb]
+            row = option_row(key, text) if kind in ("keyed", "yes_no") else text
+        shown[lang] = {"asks": list(t["ask"]), "rows": rows, "bare": bare, "fallback_row": row}
+    return texts, langs, shown
+
+
+def _item(schema, domain: str, c: dict, b: dict, q: dict, overlay: dict | None = None) -> V5Item:
+    kind = schema.option_kind(q)
+    rows, bare = _rows(q, q["options"], kind, b.get("maskable", False))
+    texts, langs, shown = _translations(schema, c, b, q, kind, overlay)
     names = schema.option_names(q)
     a = b["answer"]
     if isinstance(a, dict):
@@ -110,7 +137,7 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict) -> V5Item:
         extra = option_row(key, description) if kind in ("keyed", "yes_no") else description
         extra_bare = key
     return V5Item(domain=domain, context_id=c["id"], question_id=q["id"], kind=q.get("kind", q["id"]),
-                  goal=schema.goal_of(c, b), label=c["label"], texts=[state_text(t) for t in schema.variants(c["text"])],
+                  goal=schema.goal_of(c, b), label=c["label"], texts=texts, langs=langs, i18n=shown,
                   asks=list(q["ask"]), rows=rows, bare=bare, qtype={"yes_no": "bool", "score": "score"}.get(kind, "choice"),
                   target=target, gold=gold, fallback_row=extra, fallback_bare=extra_bare,
                   fallback_correct=(fallback, b.get("uncertainty")) in
@@ -135,10 +162,16 @@ def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
             if errs:
                 raise ValueError(f"{domain}: {len(errs)} category problems, e.g. {errs[:2]}; "
                                  f"run {data_dir / 'schema.py'} {domain} to see them all")
+        overlay = schema.load_i18n(domain, data_dir) if hasattr(schema, "load_i18n") else None
+        if overlay is not None:
+            errs = schema.i18n_problems(domain, bank, contexts, overlay)
+            if errs:
+                raise ValueError(f"{domain}: {len(errs)} translation problems, e.g. {errs[:2]}; "
+                                 f"run {data_dir / 'schema.py'} {domain} to see them all")
         by_id = {q["id"]: q for q in bank}
         for c in contexts:
             start = len(out)
-            out += [replace(_item(schema, domain, c, b, by_id[b["question"]]),
+            out += [replace(_item(schema, domain, c, b, by_id[b["question"]], overlay),
                             categories=tuple(schema.categories_of(c, b, cats)) if cats is not None else ())
                     for b in c["questions"]]
             at = {b["question"]: start + j for j, b in enumerate(c["questions"])}
@@ -192,6 +225,17 @@ def _choose(it: V5Item, rng: random.Random, mask_rate: float) -> tuple[bool, str
     return masked, query, other
 
 
+def _in_language(it: V5Item, query: str) -> V5Item:
+    """抽到的说法是译文时, 换成那种语言的问法、选项与兜底项; 计算过程只对英文说法, 一并去掉."""
+    if it.langs is None:
+        return it
+    lang = it.langs[it.texts.index(query)]
+    if lang == "en":
+        return it
+    t = it.i18n[lang]
+    return replace(it, asks=t["asks"], rows=t["rows"], bare=t["bare"], fallback_row=t["fallback_row"], traces=None)
+
+
 def _example(it: V5Item, masked: bool, query: str, other: str | None, question: str, rng: random.Random) -> MenuExample:
     rows = it.bare if masked else it.rows
     k = len(rows)
@@ -225,15 +269,18 @@ def _add_fallback(it: V5Item) -> V5Item:
 def item_example(it: V5Item, rng: random.Random, mask_rate: float, fallback_rate: float = 0.5) -> MenuExample:
     """Choose a fallback view, then descriptions, phrasings, question wording and row order."""
     _check_fallback_rate(fallback_rate)
-    if it.fallback_row is not None and fallback_rate > 0 and (fallback_rate == 1 or rng.random() < fallback_rate):
-        it = _add_fallback(it)
+    add = it.fallback_row is not None and fallback_rate > 0 and (fallback_rate == 1 or rng.random() < fallback_rate)
     masked, query, other = _choose(it, rng, mask_rate)
+    it = _in_language(it, query)
+    if add:
+        it = _add_fallback(it)
     return _example(it, masked, query, other, rng.choice(it.asks), rng)
 
 
 def pair_examples(a: V5Item, b: V5Item, rng: random.Random, mask_rate: float) -> list[MenuExample]:
     """成对的两个绑定 (原题与 other 版) 出两道题: 遮不遮、说法、问法抽一次两道共用, 行序各打乱各的."""
     masked, query, other = _choose(a, rng, mask_rate)
+    a, b = _in_language(a, query), _in_language(b, query)
     question = rng.choice(a.asks)
     return [_example(it, masked, query, other, question, rng) for it in (a, b)]
 
