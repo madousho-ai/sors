@@ -28,7 +28,7 @@ RELABEL = {"domain": "telecom", "bindings": [
 def _items(relabel=True):
     bank = [q for q in TELECOM_Q if q["id"] in ("direct", "detail_cancel_contract")]
     d = _data(telecom=(bank, [MISSING]), hotel=(HOTEL_Q, HOTEL_C))
-    shutil.copy(asset_path("synth-intents-v5.20/schema.py"), d)
+    shutil.copy(asset_path("synth-intents-v5.21/schema.py"), d)
     if relabel:
         (d / "relabel").mkdir()
         (d / "relabel" / "telecom.json").write_text(json.dumps(RELABEL))
