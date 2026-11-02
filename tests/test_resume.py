@@ -196,6 +196,9 @@ def test_full_resume_matches_uninterrupted_training_samples_parameters_and_optim
     assert [h["step"] for h in hist] == [0, 2, 4]
     assert [s for t, v, s in writer.scalars if t == "train/loss"] == [4]
     assert hist[-1]["train_accuracy_n"] == ref_states[-1]["history"][-1]["train_accuracy_n"]
+    for key in ("train_conf_mean", "train_conf_n", "train_noul_decisive_rate", "train_noul_n"):
+        assert hist[-1][key] == ref_states[-1]["history"][-1][key]
+    assert [v for t, v, s in writer.scalars if t == "train/conf_mean"] == [hist[-1]["train_conf_mean"]]
     for a, b in zip(reference.parameters(), resumed.parameters()):
         torch.testing.assert_close(a, b, rtol=0, atol=0)
     for a, b in zip(ref_states[-1]["master"], states[-1]["master"]):

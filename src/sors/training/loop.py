@@ -23,8 +23,8 @@ from sors.core.model import decision_logits, grouped_last_logits, last_logits, s
 from sors.core.decision import architecture_config
 from sors.core.prompt import DEFAULT_LAYOUT
 from sors.evaluation.scoring import EvalSet, consistency_eval, evaluate
-from sors.training.loss import (consistency_js, contrast_margin_loss, menu_hit_counts, score_emd_loss, smooth_target,
-                                training_loss)
+from sors.training.loss import (consistency_js, contrast_margin_loss, gather_slot_logits, menu_hit_counts, score_emd_loss,
+                                smooth_target, training_loss)
 from sors.training.cot import cot_batch, cot_lm_loss
 from sors.training.monitor import ParamDrift, writeback_blocks
 from sors.training.prefetch import device_prefetch, prefetch_batches, validate_data_preparation
@@ -258,7 +258,7 @@ def step_loss(
     return total + cfg.consistency * js, ce, js
 
 
-def _metric_tensor(ce, js, logits, slots, target):
+def _metric_tensor(ce, js, logits, slots, target, noul_mask=None):
     """Keep reporting detached on-device until one bulk read at the step boundary.
 
     Float64 preserves the original scalar values for the same Python weighted
@@ -266,6 +266,11 @@ def _metric_tensor(ce, js, logits, slots, target):
     """
     hits, count = menu_hit_counts(logits.detach(), slots, target)
     values = (ce, js if js is not None else ce.new_zeros(()), hits, count)
+    if noul_mask is not None:
+        q = gather_slot_logits(logits.detach(), slots).softmax(-1)
+        conf = q.max(-1).values.to(torch.float64)
+        # bool 的两类分布中 max(q) >= .8 等价于 P(yes) >= .8 或 <= .2, 与行序无关.
+        values += (conf.sum(), conf.new_tensor(len(conf)), ((conf >= 0.8) & noul_mask).sum(), noul_mask.sum())
     return torch.stack([value.detach().to(torch.float64) for value in values])
 
 
@@ -299,6 +304,9 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
     if size == 0 or size % width or cfg.micro_batches < 1:
         raise ValueError("empty batch, incomplete consistency pairs, or invalid micro_batches")
     alignment = pair_alignment(exs, b["slot_ids"].shape[1]).to(b["input_ids"].device) if paired else None
+    noul_mask = b.get("noul_mask") if stats is not None else None
+    if stats is not None and noul_mask is None:  # 独立调用者可直接交 collate 的批; train 已在 CPU 后台备好
+        noul_mask = torch.tensor([ex.qtype == "bool" for ex in exs], device=b["input_ids"].device)
     target = step_target(exs, b, cfg.label_smoothing)
     contrasts = contrast_rows(exs, cfg.contrast_qtypes) if cfg.contrast_weight > 0 else None
     levels = score_levels(exs, b["slot_ids"].shape[1]).to(b["input_ids"].device) if cfg.score_emd > 0 else None
@@ -378,10 +386,14 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         if stage_one:  # 第一阶段只有逐分支 D1/D2 项; 选项间 CE 照算, 只作日志
             loss = branch_loss
         (weight * loss).backward()
-        reports.append(_metric_tensor(ce, js, logits, slots, targets))
+        reports.append(_metric_tensor(ce, js, logits, slots, targets,
+                                      noul_mask=None if noul_mask is None else noul_mask[rows]))
         weights.append(weight)
         del logits, loss, ce, js, local, extra
     values = torch.stack(reports).cpu().tolist()
+    if stats is not None:
+        stats["calib"] = [sum(row[4] for row in values),
+                          *[sum(int(row[i]) for row in values) for i in (5, 6, 7)]]
     if stats is not None and branch_parts:  # 逐分支 D1/D2 交叉熵, 各题平均
         stats["branch"] = float(torch.stack(branch_parts).sum().cpu()) / size
     if stats is not None and mass_parts:  # 各选项 -log(P(D1)+P(D2)) 的整批平均 (按行数加权)
@@ -435,6 +447,7 @@ def _prepare_batch(spec: tuple, sample, tokenizer):
     # 打包前向只读前缀与选项续写; 逐选项完整分支不必准备、序列化、拷进显存
     batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
                     architecture=architecture, option_branches=not packed, traces=distill, option_marker=marker)
+    batch["noul_mask"] = torch.tensor([ex.qtype == "bool" for ex in examples], dtype=torch.bool)
     if cot_weight > 0:  # 语言模型那一遍的张量也在后台准备, 随批一起拷进显存; 训练线程用之前从批里取走
         batch.update(cot_batch(examples, tokenizer, d_ids, layout, max_length, type_marker, context_marker,
                                paired=paired, architecture=architecture))
@@ -468,17 +481,21 @@ def train(
       train/js                      cfg.consistency > 0 时, 成对题的 JS (乘 λ 之前)
       train/contrast_margin         cfg.contrast_weight > 0 时, 原题/改动题成对损失 (乘权重之前)
       train/score_emd               cfg.score_emd > 0 时, 每道评分题的分级距离 EMD 平均 (乘权重、除整批题数之前)
+      train/conf_mean               每 log_every 步, 训练批上原始 T=1 菜单分布的首选置信度平均
+      train/noul_decisive_rate      同上, bool 题中 P(yes) >= .8 或 <= .2 的比例; 窗口里有 bool 题时记录
       train/cot_loss                cfg.cot_weight > 0 时, 计算过程的语言模型损失 (乘权重之前; 批里有带 cot 的题才算)
       train/cot_key_loss            同上, 只算关键 token (算式结果、比较、条件成立与否、选中的选项; training.cot.key_spans)
       train/cot_rest_loss           同上, 其余 token; 两项都按 token 平均, 只进日志
       consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
       eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
       consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
+      <group>/<set>/calib/...       上述三组评估各自的整集置信度与 choice/noul/score 校准指标
       sys/tctl_c, sys/thermal_waits 温度与被温度闸拦下的次数
     guard: ThermalGuard, 可选. 每步之前和每次评估之前各问一次.
 
     log_path 的每条记录另有 train_accuracy / train_accuracy_n: 上一个评估点以来全部训练题上的正确率与题数
     (step 0 还没训练, 是 None / 0).
+    train_conf_mean / train_conf_n 与 train_noul_decisive_rate / train_noul_n 同样覆盖上一个评估点以来的训练题.
     """
     # sample_fn 必须是新建的原版本管线。重建全部采样调用，包含 queue、码计数、问法与配对的随机流。
     validate_data_preparation(cfg.data_workers, cfg.data_prefetch, cfg.data_backend)
@@ -519,6 +536,7 @@ def train(
     log_f = open(log_path, "a") if log_path else None
     waits = resume.get("waits", 0) if resume else 0
     since_eval = list(resume.get("since_eval", [0, 0])) if resume else [0, 0]
+    since_eval_calib = list(resume.get("since_eval_calib", [0.0, 0, 0, 0])) if resume else [0.0, 0, 0, 0]
     probes = {name: probe_passes(es.examples, cfg.probe_size, cfg.probe_passes, f"probe-{cfg.seed}-{name}")
               for name, es in eval_sets.items()}
 
@@ -533,6 +551,10 @@ def train(
         since_eval[:] = [0, 0]
         rec = {"step": step, "train_loss": train_loss, "train_accuracy": hits / n if n else None,
                "train_accuracy_n": n, "t": round(time.time() - t0, 1), "tctl_c": tctl(), "thermal_waits": waits}
+        conf_sum, conf_n, decisive, noul_n = since_eval_calib
+        rec.update(train_conf_mean=conf_sum / conf_n if conf_n else None, train_conf_n=conf_n,
+                   train_noul_decisive_rate=decisive / noul_n if noul_n else None, train_noul_n=noul_n)
+        since_eval_calib[:] = [0.0, 0, 0, 0]
         rec["drift"] = drift.ratios()
         rec.update(eval_record(m, tok, d_ids, eval_sets, probes, cfg, final))
         if writer:
@@ -625,6 +647,7 @@ def train(
         resume_info.update(optimizer_reset_at=start, torch_rng_reset_at=start,
                            lr_at_resume=[g["lr"] for g in opt.param_groups])
     running, running_js, running_hits, running_n = resume.get("running", [0.0, 0.0, 0, 0]) if resume else (0.0, 0.0, 0, 0)
+    running_calib = list(resume.get("running_calib", [0.0, 0, 0, 0])) if resume else [0.0, 0, 0, 0]
     running_cm, running_cm_n = 0.0, 0
     running_emd, running_emd_n = 0.0, 0
     running_cot, running_cot_n = 0.0, 0
@@ -667,6 +690,7 @@ def train(
                 "scheduler": sched.state_dict(), "rng": consumed_rng, "torch_rng": torch.get_rng_state(),
                 "cuda_rng": torch.cuda.get_rng_state_all() if next(m.parameters()).is_cuda else [],
                 "python_rng": random.getstate(), "history": list(history), "since_eval": list(since_eval),
+                "since_eval_calib": list(since_eval_calib), "running_calib": list(running_calib),
                 "running": [running, running_js, running_hits, running_n], "waits": waits,
                 "elapsed": time.time() - t0, "resume_info": resume_info}
 
@@ -691,7 +715,8 @@ def train(
                         m.activate_head()  # 第二阶段: 标量头从 e_D1 - e_D2 起步
                         print(f"step {step:5d}  dual readout: switched to the scalar head", flush=True)
                     ce_value, js_value, hits, n, cm_value, emd_value = backward_groups(
-                        m, cfg, exs, b, d_ids, lengths, stats=distill_stats if cfg.distill_weight > 0 or token_readout else None)
+                        m, cfg, exs, b, d_ids, lengths, stats=distill_stats)
+                    calib = distill_stats["calib"]
                     if "branch" in distill_stats:
                         running_branch = [running_branch[0] + distill_stats["branch"], running_branch[1] + 1]
                     if "token_mass" in distill_stats:
@@ -707,12 +732,14 @@ def train(
                     logits = (decision_logits(m, b, groups) if architecture["kind"] != "slots" else
                               grouped_last_logits(m, b["input_ids"], b["attention_mask"], groups))
                     loss, ce, js = step_loss(cfg, exs, b, logits, d_ids)
-                    metrics = _metric_tensor(ce, js, logits, b["slot_ids"], b["target"])
+                    metrics = _metric_tensor(ce, js, logits, b["slot_ids"], b["target"],
+                                             noul_mask=b["noul_mask"])
                     cm = contrast_term(cfg, exs, b, logits.detach())
                     cm_value = None if cm is None else float(cm)
                     emd_value = score_item_emd(cfg, exs, b, logits.detach())
                     loss.backward()
-                    ce_value, js_value, hits, n = metrics.cpu().tolist()
+                    ce_value, js_value, hits, n, *calib = metrics.cpu().tolist()
+                    calib[1:] = [int(v) for v in calib[1:]]
                     js_value = js_value if js is not None else None
                     hits, n = int(hits), int(n)
                     del logits, loss, ce, js
@@ -738,6 +765,9 @@ def train(
                 running_hits, running_n = running_hits + hits, running_n + n
                 since_eval[0] += hits
                 since_eval[1] += n
+                for i, value in enumerate(calib):
+                    running_calib[i] += value
+                    since_eval_calib[i] += value
                 if js_value is not None:
                     running_js += js_value
                 if cm_value is not None:  # 成对损失 (乘权重之前), 只进日志, 不进续训状态
@@ -766,6 +796,10 @@ def train(
                     if writer:
                         writer.add_scalar("sys/data_wait_ms", 1e3 * data_wait / cfg.log_every, step)
                         writer.add_scalar("train/loss", avg, step)
+                        if running_calib[1]:
+                            writer.add_scalar("train/conf_mean", running_calib[0] / running_calib[1], step)
+                        if running_calib[3]:
+                            writer.add_scalar("train/noul_decisive_rate", running_calib[2] / running_calib[3], step)
                         if running_gn_n:
                             writer.add_scalar("train/grad_norm", running_gn / running_gn_n, step)
                         if acc is not None:
@@ -805,6 +839,7 @@ def train(
                         if t is not None:
                             writer.add_scalar("sys/tctl_c", t, step)
                     running, running_js, running_hits, running_n = 0.0, 0.0, 0, 0
+                    running_calib = [0.0, 0, 0, 0]
                     for blk in feedback_blocks:  # 没有 writer 时也要清, 否则累加的统计一直涨
                         blk.pop_writeback_ratio()
                     running_cm, running_cm_n = 0.0, 0

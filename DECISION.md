@@ -111,6 +111,7 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 三种新架构要求显式 `--loss menu`。硬标签、软标签、标签平滑、语义对齐 JS 与分组梯度累积共用现有实现。
 新架构的 `m_answer` 和 `top1_in_menu_rate` 由合法输出约束保证接近 1，`m_offmenu` 为 0；这些值表示输出协议的性质。
 决策质量应比较 accuracy、NLL、Brier、ECE 和扰动一致性。
+训练探针与完整评估还按题型记录 T=1 置信度及准确率差、noul 明确回答率与能力分、score 的 nRPS 和 90% 中央区间覆盖率及归一化宽度。
 
 ## 结构参数
 
