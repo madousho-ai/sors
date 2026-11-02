@@ -129,7 +129,7 @@ RETIRED = {name: message.replace("use --dataset synth-v5.19", "use --dataset syn
            for name, message in RETIRED.items()}
 RETIRED["synth-v5.19"] = ("synth-v5.19 precedes the relabelled in-band answers; use --dataset synth-v5.20 "
                           "or pin older code/data to reproduce it")
-KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench")
+KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench", "jsoneval")
 
 
 def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
@@ -207,7 +207,9 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     (消息、选项顺序、正确位置), 只换了选项的文字.
     simple 是外部数据仓库的 synth-simple-eval, 菜单写死在文件里 (不受 --k-eval / --seed 影响), 展开成每个菜单长度一个集合.
     jevbench 是 JevBench 的三档公开题 (第一次用时下载到 data/jevbench, 不进仓库), 同样写死, 展开成 jevbench_easy / _original / _hard;
-    hard 的提示最长 3838 token, 批取四分之一, 一批的 token 数与 BoolQ 那档相当."""
+    hard 的提示最长 3838 token, 批取四分之一, 一批的 token 数与 BoolQ 那档相当.
+    jsoneval 是外部数据仓库的 json-eval (JSON 阅读能力, 按能力切片展开成 json_c1 ... json_tr, c6 按长度分 json_c6_s/m/l);
+    json_c6_l 的材料约 2 万字符, 批取四分之一."""
     out = {}
     for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
         if name == "simple":
@@ -216,6 +218,13 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
             for sub, exs in load_simple_eval(datasets_dir=getattr(args, "datasets_dir", None)).items():
                 pos = 1 if sub == "simple_bool" else None
                 out[sub] = EvalSet(exs, args.eval_batch_size, pos_class=pos)
+            continue
+        if name == "jsoneval":
+            from sors.data.json_eval import load_json_eval
+
+            for sub, exs in load_json_eval(datasets_dir=getattr(args, "datasets_dir", None)).items():
+                bs = max(1, args.eval_batch_size // 4) if sub == "json_c6_l" else args.eval_batch_size
+                out[sub] = EvalSet(exs, bs)
             continue
         if name == "jevbench":
             from sors.data.jevbench import load_jevbench
@@ -579,7 +588,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "massive (test 2974 条, 60 类全量菜单, 原始 intent 名) / massive-desc (同一批题, 「原始名: description」) / "
                          "boolq (validation 3270 条) / "
                          "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes) / "
-                         "jevbench (JevBench 公开题 easy 48 / original 72 / hard 111, 按推理服务收到请求时的样子出题)")
+                         "jevbench (JevBench 公开题 easy 48 / original 72 / hard 111, 按推理服务收到请求时的样子出题); "
+                         "jsoneval (外部数据仓库的 json-eval, JSON 阅读能力按切片分开, 不在默认里)")
     ap.add_argument("--random-codes", type=float, default=0.0,
                     help="训练题里换成随机码的比例 (0..1), 二元题也换: 挑上菜单次数最少的 k 个 D 码、顺序随机, "
                          "每个码上菜单时是答案的概率都是 1/k, "
