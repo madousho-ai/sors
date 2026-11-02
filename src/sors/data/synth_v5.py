@@ -140,7 +140,7 @@ def _item(schema, domain: str, c: dict, b: dict, q: dict, overlay: dict | None =
                   goal=schema.goal_of(c, b), label=c["label"], texts=texts, langs=langs, i18n=shown,
                   asks=list(q["ask"]), rows=rows, bare=bare, qtype={"yes_no": "bool", "score": "score"}.get(kind, "choice"),
                   target=target, gold=gold, fallback_row=extra, fallback_bare=extra_bare,
-                  fallback_correct=(fallback, b.get("uncertainty")) in
+                  fallback_correct=b.get("fallback_correct") is True or (fallback, b.get("uncertainty")) in
                   (("other", "menu_missing"), ("unknown", "insufficient_evidence")), cot=b.get("cot"))
 
 
@@ -152,17 +152,25 @@ def load_synth_v5(data_dir=None, *, datasets_dir=None) -> list[V5Item]:
     out = []
     for domain in schema.domains(data_dir):
         bank, contexts = schema.load(domain, data_dir)
+        relabel = schema.load_relabel(domain, data_dir) if hasattr(schema, "load_relabel") else None
+        if relabel is not None:  # v5.20: 改标叠加层 (去掉的绑定、换成单一答案的绑定), 先查格式再合并
+            errs = schema.relabel_problems(domain, bank, contexts, relabel)
+            if errs:
+                raise ValueError(f"{domain}: {len(errs)} relabel problems, e.g. {errs[:2]}; "
+                                 f"run {data_dir / 'schema.py'} {domain} to see them all")
+            bank, contexts = schema.apply_relabel(bank, contexts, relabel)
+        trim = schema.restrict_overlay if relabel is not None else (lambda o, *_: o)
         errs = schema.problems(domain, bank, contexts)
         if errs:
             raise ValueError(f"{domain}: {len(errs)} format problems, e.g. {errs[:2]}; "
                               f"run {data_dir / 'schema.py'} {domain} to see them all")
-        cats = schema.load_categories(domain, data_dir) if hasattr(schema, "load_categories") else None
+        cats = trim(schema.load_categories(domain, data_dir), bank, contexts) if hasattr(schema, "load_categories") else None
         if cats is not None:
             errs = schema.category_problems(domain, contexts, cats)
             if errs:
                 raise ValueError(f"{domain}: {len(errs)} category problems, e.g. {errs[:2]}; "
                                  f"run {data_dir / 'schema.py'} {domain} to see them all")
-        overlay = schema.load_i18n(domain, data_dir) if hasattr(schema, "load_i18n") else None
+        overlay = trim(schema.load_i18n(domain, data_dir), bank, contexts) if hasattr(schema, "load_i18n") else None
         if overlay is not None:
             errs = schema.i18n_problems(domain, bank, contexts, overlay)
             if errs:
