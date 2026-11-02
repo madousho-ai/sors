@@ -58,6 +58,94 @@ def ece_multiclass(q: list[list[float]], y: list[int], n_bins: int = 10) -> floa
     return ece(conf, correct, n_bins=n_bins)
 
 
+def confidence_summary(q: list[list[float]], y: list[int]) -> dict[str, float | None]:
+    """T=1 首选置信度及准确率差; 正差表示欠自信. 条件集合为空时给 None."""
+    conf = [max(row) for row in q]
+    correct = [_top(row, len(row)) == t for row, t in zip(q, y)]
+    good = [c for c, ok in zip(conf, correct) if ok]
+    bad = [c for c, ok in zip(conf, correct) if not ok]
+    mean = sum(conf) / len(y)
+    return {"conf_mean": mean, "accuracy_minus_confidence": sum(correct) / len(y) - mean,
+            "conf_correct_mean": sum(good) / len(good) if good else None,
+            "conf_wrong_mean": sum(bad) / len(bad) if bad else None}
+
+
+def choice_calibration(q: list[list[float]], y: list[int]) -> dict[str, float | None]:
+    """首选 ECE (10 个等宽箱), 校准分裁到 0..100, 加置信度读数."""
+    error = ece_multiclass(q, y)
+    return {**confidence_summary(q, y), "ece": error,
+            "calibration_score": max(0.0, min(100.0, 100 * (1 - 2 * error)))}
+
+
+def noul_calibration(p_yes: list[float], y: list[int]) -> dict[str, float | None]:
+    """类空间 P(yes); >= .8 或 <= .2 为明确回答, P(yes) >= .5 预测 yes."""
+    decisive = [p >= 0.8 or p <= 0.2 for p in p_yes]
+    correct = [(p >= 0.5) == bool(t) for p, t in zip(p_yes, y)]
+    hits = sum(d and ok for d, ok in zip(decisive, correct))
+    acc = hits / len(y)
+    # yes 放首列, 使 .5 平局与 P(yes) >= .5 的预测约定一致.
+    conf = confidence_summary([[p, 1 - p] for p in p_yes], [1 - t for t in y])
+    error = ece([max(p, 1 - p) for p in p_yes], correct)
+    return {**conf, "decisive_rate": sum(decisive) / len(y),
+            "decisive_accuracy": hits / sum(decisive) if any(decisive) else None,
+            "accuracy_with_abstentions_wrong": acc,
+            "competence": 100 * max(0.0, min(1.0, (acc - 0.5) / 0.5)),
+            "ece": error, "brier": sum((p - t) ** 2 for p, t in zip(p_yes, y)) / len(y),
+            "calibration_score": 100 * (1 - 2 * error)}
+
+
+def score_calibration(q: list[list[float]], y: list[int]) -> dict[str, float | None]:
+    """q 的列按级别从低到高排; nRPS 与 90% 中央区间宽度逐题除以 K-1."""
+    rps = width = covered = 0.0
+    for row, gold in zip(q, y):
+        cdf, total = [], 0.0
+        for p in row:
+            total += p
+            cdf.append(total)
+        scale = max(1, len(row) - 1)
+        rps += sum((p - (level >= gold)) ** 2 for level, p in enumerate(cdf[:-1])) / scale
+        lo = next((i for i, p in enumerate(cdf) if p >= 0.05), len(row) - 1)
+        hi = next((i for i, p in enumerate(cdf) if p >= 0.95), len(row) - 1)
+        covered += lo <= gold <= hi
+        width += (hi - lo) / scale
+    return {**confidence_summary(q, y), "ece": ece_multiclass(q, y), "nrps": rps / len(y),
+            "interval90_coverage": covered / len(y), "interval90_width": width / len(y)}
+
+
+def calibration_summary(q: list[list[float]], examples, pos_class: int | None = None) -> dict:
+    """位置空间概率 -> 整集置信度 + choice/noul/score 分题型校准; 菜单外补零列忽略.
+
+    bool 优先用显式 pos_class, 其余从 yes 的描述找正类位置; score 按类 id (级别) 排序.
+    """
+    if not examples:
+        return {}
+    rows = [row[:len(ex.options)] for row, ex in zip(q, examples)]
+    out = confidence_summary(rows, [ex.gold_idx for ex in examples])
+    for qtype in ("choice", "bool", "score"):
+        pairs = [(row, ex) for row, ex in zip(rows, examples) if ex.qtype == qtype]
+        if not pairs:
+            continue
+        qs, exs = zip(*pairs)
+        if qtype == "bool":
+            p_yes, ys = [], []
+            for row, ex in pairs:
+                pos = ex.options.index(pos_class) if pos_class is not None else next(
+                    (i for i, name in enumerate(ex.option_names) if name.partition(":")[0].strip().lower() == "yes"),
+                    None)
+                if pos is None:
+                    pos = ex.options.index(1)
+                p_yes.append(row[pos])
+                ys.append(int(ex.label == ex.options[pos]))
+            out["noul"] = noul_calibration(p_yes, ys)
+        elif qtype == "score":
+            ordered = [sorted(zip(ex.options, row)) for row, ex in pairs]
+            out["score"] = score_calibration([[p for _, p in row] for row in ordered],
+                                             [sorted(ex.options).index(ex.label) for ex in exs])
+        else:
+            out["choice"] = choice_calibration(list(qs), [ex.gold_idx for ex in exs])
+    return out
+
+
 def summarize(q: list[list[float]], y: list[int], n_bins: int = 10) -> dict[str, float]:
     """一次算全: accuracy / top5 / nll / n_saturated / brier / ece / conf_mean."""
     return {
