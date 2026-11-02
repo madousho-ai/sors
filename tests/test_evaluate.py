@@ -198,7 +198,7 @@ def test_consistency_eval_scores_each_pass_and_compares_them_by_description():
     got = consistency_eval(m, tok, d_ids, passes, batch_size=2, k_max=3, max_length=512, layout=DEFAULT_LAYOUT)
     qs = [score_examples(m, tok, d_ids, p, 2, 3, 512, DEFAULT_LAYOUT)["q"] for p in passes]
     want = pass_consistency(qs, passes)
-    assert got.keys() == want.keys() and got["n"] == 3 and got["passes"] == 3, got
+    assert got.keys() == want.keys() | {"calib"} and got["n"] == 3 and got["passes"] == 3, got
     assert all(abs(got[k] - want[k]) < 1e-6 for k in want), (got, want)
 
 

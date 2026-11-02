@@ -15,8 +15,9 @@ from sors.core.decision import option_marker
 from sors.core.batch import collate
 from sors.core.menu import MenuExample
 from sors.core.model import last_logits
-from sors.evaluation.metrics import (answer_mass_summary, binary_summary, by_family, by_gold_slot, decoy_summary,
-                                             first_two_slots, menu_size_summary, pass_by_family, pass_consistency, summarize)
+from sors.evaluation.metrics import (answer_mass_summary, binary_summary, by_family, by_gold_slot, calibration_summary,
+                                    decoy_summary, first_two_slots, menu_size_summary, pass_by_family, pass_consistency,
+                                    summarize)
 from sors.training.loss import answer_mass, gather_slot_logits, vocab_cross_entropy
 
 
@@ -77,6 +78,7 @@ def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: st
     out["n"] = len(Y)
     out["by_gold_slot"] = by_gold_slot(Q, Y)
     out.update(_family_and_decoy(by_family(Q, es.examples), [decoy_summary(Q, es.examples)]))
+    out["calib"] = calibration_summary(Q, es.examples, es.pos_class)
     return out
 
 
@@ -92,11 +94,14 @@ def _family_and_decoy(families: dict, decoys: list[dict]) -> dict:
 
 
 def consistency_eval(m, tok, d_ids, passes: list[list[MenuExample]], batch_size: int, k_max: int, max_length: int,
-                     layout: str, type_marker: bool = False, context_marker: bool = False) -> dict:
+                      layout: str, type_marker: bool = False, context_marker: bool = False,
+                      pos_class: int | None = None) -> dict:
     """每一份各打一次分, 再按描述对齐比 (metrics.pass_consistency): accuracy / agree / js.
-    题带 family 时另报 by_family (各份平均), 带诱饵时另报整集的诱饵读数 (各份平均)."""
+    题带 family 时另报 by_family (各份平均), 带诱饵时另报整集的诱饵读数 (各份平均).
+    calib 汇总每一份的原始 T=1 分布, 份数作为重复观测; 直接复用已打分的概率."""
     qs = [score_examples(m, tok, d_ids, exs, batch_size, k_max, max_length, layout, type_marker, context_marker)["q"]
           for exs in passes]
     out = pass_consistency(qs, passes)
     out.update(_family_and_decoy(pass_by_family(qs, passes), [decoy_summary(q, p) for q, p in zip(qs, passes)]))
+    out["calib"] = calibration_summary([row for q in qs for row in q], [ex for p in passes for ex in p], pos_class)
     return out

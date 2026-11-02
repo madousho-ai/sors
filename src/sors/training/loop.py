@@ -192,14 +192,14 @@ def eval_record(m, tok, d_ids, eval_sets: dict[str, EvalSet], probes: dict[str, 
       eval              部署形态 (连续编号) 下的 evaluate(): 正确率、NLL、校准等
       consistency_full  cfg.probe_passes 种随机排法下的一致性, 排法由 seed 和集名定死"""
     args = (cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker, cfg.context_marker)
-    rec = {"consistency": {name: consistency_eval(m, tok, d_ids, probes[name], es.batch_size, *args)
+    rec = {"consistency": {name: consistency_eval(m, tok, d_ids, probes[name], es.batch_size, *args, pos_class=es.pos_class)
                            for name, es in eval_sets.items()}}
     if final:
         rec["eval"] = {name: evaluate(m, tok, d_ids, es, *args) for name, es in eval_sets.items()}
         rec["consistency_full"] = {
             name: consistency_eval(m, tok, d_ids, arrangements(es.examples, cfg.probe_passes,
                                                                random.Random(f"full-{cfg.seed}-{name}")),
-                                   es.batch_size, *args)
+                                    es.batch_size, *args, pos_class=es.pos_class)
             for name, es in eval_sets.items()}
     return rec
 
