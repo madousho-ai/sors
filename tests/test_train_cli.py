@@ -42,17 +42,17 @@ def test_v51_dataset_selector_and_legacy_alias_produce_the_same_samples():
 
     item = _marked()
     with patch("sors.data.synth_v5.load_synth_v5", return_value=[item]):
-        current, _, info = _mod.build_data(_args("synth-v5.21", eval="simple", fallback_rate=1.0))
+        current, _, info = _mod.build_data(_args("synth-v5.22", eval="simple", fallback_rate=1.0))
         legacy, _, old_info = _mod.build_data(_args("synth-v5", eval="simple", fallback_rate=1.0))
     assert current(8, random.Random(0)) == legacy(8, random.Random(0))
     assert info == old_info
-    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.21", "--fallback-rate", "1"])
+    args = _mod.build_parser().parse_args(["--dataset", "synth-v5.22", "--fallback-rate", "1"])
     assert "-fallback1" in _mod.run_tag(args)
 
 
 def test_v51_and_its_legacy_alias_cannot_duplicate_the_dataset():
     try:
-        _mod.parse_datasets("synth-v5+synth-v5.21")
+        _mod.parse_datasets("synth-v5+synth-v5.22")
     except SystemExit:
         return
     raise AssertionError("the same dataset was accepted twice through aliases")
@@ -68,7 +68,7 @@ def test_the_retired_v51_to_v516_names_point_to_v517():
             try:
                 parse()
             except (SystemExit, ValueError) as exc:
-                assert "synth-v5.21" in str(exc), exc
+                assert "synth-v5.22" in str(exc), exc
                 continue
             raise AssertionError(f"{old} was accepted")
 
@@ -261,15 +261,15 @@ V5_LABELS = {"Customer message", "Support ticket", "Hotel document", "Browser ag
 
 
 def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description():
-    """v5.21 的八个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/8。
+    """v5.22 的八个目标默认等概率；每次抽取一个菜单版本，256行题的份额约为1/8。
     intent 是「键: 描述」，规则材料与自然消息的上下文标题都会出现。"""
     sample_fn, _, info = _mod.build_data(_args("synth-v5", eval="massive"))
-    assert info["synth_v5_items"] == 399759, info
+    assert info["synth_v5_items"] == 419765, info
     assert info["synth_v5_mix"] == [(0, {"ambiguous": 1.0, "breadth": 1.0, "complex": 1.0, "contrast": 1.0,
                                          "edge_case": 1.0, "json-scope": 1.0, "long_context": 1.0,
                                          "long_menu": 1.0})]
     full_menus = {}  # 256 行菜单的各行 -> 问法; 译文题 (i18n/) 用同一种语言的选项说明和问法
-    data = asset_path("synth-intents-v5.21")
+    data = asset_path("synth-intents-v5.22")
     for path in data.glob("*.questions.json"):
         overlay = data / "i18n" / path.name.replace(".questions.json", ".json")
         translated = json.loads(overlay.read_text())["questions"] if overlay.exists() else {}
@@ -288,7 +288,7 @@ def test_synth_v5_draws_every_goal_and_shows_intent_menus_as_key_and_description
             sizes["256" if len(e.options) == 256 else "other"] += 1
             if len(e.options) == 256:
                 assert e.question in full_menus[frozenset(e.option_names)], e.question
-    data_labels = {c["label"] for path in asset_path("synth-intents-v5.21").glob("*.contexts.json")
+    data_labels = {c["label"] for path in asset_path("synth-intents-v5.22").glob("*.contexts.json")
                    for c in json.loads(path.read_text())["contexts"]}
     assert V5_LABELS <= data_labels and labels <= data_labels, labels - data_labels  # scoresem 的材料标题各式各样
     assert "" in labels and "Customer message" in labels, labels
@@ -420,7 +420,7 @@ def test_synth_v5_options_are_named_in_the_run_directory():
 
 
 def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
-    """v5.21 有399759个绑定、742对菜单版本，一轮399017次语义抽取；
+    """v5.22 有419765个绑定、742对菜单版本，一轮419023次语义抽取；
     complex / edge_case / long_context 共208786个绑定各多出两遍。
     改动题 (contrast_of) 每抽一次连原题多出一道题。"""
     from sors.data.synth_v5 import draw_of, load_synth_v5
@@ -429,7 +429,7 @@ def test_passes_draw_synth_v5_in_rounds_and_the_hard_goals_repeat():
     passes = {"complex": 3, "edge_case": 3, "long_context": 3}
     extra = sum(passes.get(items[d[0][0]].goal, 1) for d in {draw_of(items, i) for i in range(len(items))} if len(d) == 2)
     assert extra > 1500 and info["synth_v5_contrast_draws"] == extra, (extra, info)
-    assert info["synth_v5_round"] == 399017 + 2 * 208786 + extra, info
+    assert info["synth_v5_round"] == 419023 + 2 * 208786 + extra, info
     assert info["synth_v5_passes"] == {"ambiguous": 1, "breadth": 1, "complex": 3, "contrast": 1, "edge_case": 3,
                                        "json-scope": 1, "long_context": 3, "long_menu": 1}
     assert "synth_v5_mix" not in info
