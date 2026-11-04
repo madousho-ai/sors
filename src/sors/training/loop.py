@@ -420,21 +420,40 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
 # 约合 128 个 token 的隐藏状态; 但梯度检查点下状态只在重算的那一层里短暂存在, 而 token 预算管的是 24 层
 # 都要留下的层输入, 所以按 128 / 24 摊薄, 取 8. 取 128 时一步被切成 15 组 (minimal 5 组), 慢了约 3 倍.
 BRANCH_STATE_TOKENS = 8
+REFERENCE_STATE = 16 * 128 * 128  # 推出上面那个 8 的状态大小: Qwen3.5 0.8B / 2B 每层的 V 头 x head_k_dim x head_v_dim
 
 
-def batch_costs(batch: dict, architecture: str) -> list[int]:
+def branch_state_tokens(config) -> int:
+    """每个分支替递归状态记几个 token: 状态比 REFERENCE_STATE 大 (扩过 V 头或头维度) 就按比例放大,
+    不比它大的、没有线性注意力的都记 BRANCH_STATE_TOKENS."""
+    text = config.get_text_config()
+    heads = getattr(text, "linear_num_value_heads", None)
+    if heads is None:
+        return BRANCH_STATE_TOKENS
+    state = heads * text.linear_key_head_dim * text.linear_value_head_dim
+    return max(BRANCH_STATE_TOKENS, -(-BRANCH_STATE_TOKENS * state // REFERENCE_STATE))
+
+
+def _backbone_config(m):
+    """主干的 config; 决策模型、peft 包装与裸 LM 都认."""
+    if getattr(m, "decision_config", None) is not None:
+        return m.decoder.config
+    return (m.get_base_model() if hasattr(m, "get_base_model") else m).config
+
+
+def batch_costs(batch: dict, architecture: str, state_tokens: int = BRANCH_STATE_TOKENS) -> list[int]:
     """每行按 token 计的前向开销, 供 token_groups 控显存. candidate 的 attention_mask 只覆盖前缀,
-    分支 token 与每个分支的递归状态另算; 其余架构就是真实长度."""
+    分支 token 与每个分支的递归状态 (state_tokens, 见 branch_state_tokens) 另算; 其余架构就是真实长度."""
     lengths = batch["attention_mask"].sum(1).tolist()
     if architecture != "candidate":
         return lengths
     suffix = batch["suffix_attention_mask"].sum(-1)
     branches = (batch["slot_ids"] >= 0).sum(1)
-    costs = [int(p) + int(s) + int(k) * BRANCH_STATE_TOKENS
+    costs = [int(p) + int(s) + int(k) * state_tokens
              for p, s, k in zip(batch["prefix_lengths"].tolist(), suffix.sum(1).tolist(), branches.tolist())]
     if "trace_attention_mask" in batch:  # 蒸馏: 计算过程一段 + 老师那套分支 (与学生分支同样多、同样长)
         trace = batch["trace_attention_mask"].sum(1).tolist()
-        costs = [c + (t + int(s) + int(k) * BRANCH_STATE_TOKENS if t else 0)
+        costs = [c + (t + int(s) + int(k) * state_tokens if t else 0)
                  for c, t, s, k in zip(costs, trace, suffix.sum(1).tolist(), branches.tolist())]
     return costs
 
@@ -442,7 +461,8 @@ def batch_costs(batch: dict, architecture: str) -> list[int]:
 def _prepare_batch(spec: tuple, sample, tokenizer):
     """后台准备一批. 模块级函数配 functools.partial, 子进程才拿得到."""
     d_ids, k_max, layout, max_length, type_marker, context_marker, architecture, *rest = spec
-    cot_weight, paired, packed, distill, marker = (list(rest) + [0.0, False, False, False, False][len(rest):])[:5]
+    cot_weight, paired, packed, distill, marker, state_tokens = \
+        (list(rest) + [0.0, False, False, False, False, BRANCH_STATE_TOKENS][len(rest):])[:6]
     examples, after_sampling = sample
     # 打包前向只读前缀与选项续写; 逐选项完整分支不必准备、序列化、拷进显存
     batch = collate(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker, context_marker,
@@ -452,7 +472,7 @@ def _prepare_batch(spec: tuple, sample, tokenizer):
         batch.update(cot_batch(examples, tokenizer, d_ids, layout, max_length, type_marker, context_marker,
                                paired=paired, architecture=architecture))
     # 每行真实长度在这里算成 CPU 整数, 训练线程按 token 预算分组时不必读设备
-    return batch, examples, after_sampling, batch_costs(batch, architecture)
+    return batch, examples, after_sampling, batch_costs(batch, architecture, state_tokens)
 
 
 def train(
@@ -680,7 +700,8 @@ def train(
                                                  cfg.type_marker, cfg.context_marker, architecture["kind"],
                                                  cfg.cot_weight, cfg.consistency > 0,
                                                  architecture["kind"] == "candidate" and cfg.candidate_prefix_cache == "packed",
-                                                 cfg.distill_weight > 0, token_readout))
+                                                 cfg.distill_weight > 0, token_readout,
+                                                 branch_state_tokens(_backbone_config(m))))
 
     def capture_state(step):
         # callback 必须在返回前复制/写盘；这些张量直接引用当前训练状态。

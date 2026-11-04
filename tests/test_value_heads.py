@@ -173,3 +173,41 @@ def test_resume_cli_rebuilds_the_expanded_backbone():
     state = {"metadata": {"architecture": {"kind": "slots"}, "adapter": adapter_config(saved)}}
     got = cli.prepare_resume_model(tiny(2), TOKENS, args, state, None, full=True)
     assert got.config.linear_num_value_heads == 4
+
+
+def test_branch_state_budget_grows_with_the_recurrent_state():
+    """token 预算里每个分支按 8 个 token 记 DeltaNet 的递归状态, 这是 16 头 x 128 x 128 推出来的;
+    状态更大时按比例放大, 不比它大的 (含 Qwen3 这类没有线性注意力的) 仍记 8."""
+    from transformers import Qwen3_5TextConfig
+
+    from sors.training.loop import branch_state_tokens
+
+    def config(heads, dim=128):
+        return Qwen3_5TextConfig(linear_num_key_heads=16, linear_num_value_heads=heads,
+                                 linear_key_head_dim=dim, linear_value_head_dim=dim)
+
+    assert branch_state_tokens(config(16)) == 8
+    assert branch_state_tokens(config(32)) == 16
+    assert branch_state_tokens(config(32, 256)) == 64
+    assert branch_state_tokens(tiny(2).config) == 8
+
+
+def test_batch_costs_charge_each_branch_the_given_state_tokens():
+    from sors.training.loop import batch_costs
+
+    batch = {"attention_mask": torch.ones(1, 10), "prefix_lengths": torch.tensor([10]),
+             "suffix_attention_mask": torch.ones(1, 3, 2), "slot_ids": torch.tensor([[0, 1, 2]])}
+    assert batch_costs(batch, "candidate") == [10 + 6 + 3 * 8]
+    assert batch_costs(batch, "candidate", state_tokens=16) == [10 + 6 + 3 * 16]
+
+
+@pytest.mark.parametrize("trainable,decision", [("full", False), ("attn", False), ("decision-only", True)])
+def test_training_reads_the_state_budget_from_every_model_wrapper(trainable, decision):
+    from sors.core.decision import DecisionConfig
+    from sors.core.model import prepare_model
+    from sors.training.loop import _backbone_config, branch_state_tokens
+
+    arch = DecisionConfig(kind="candidate", blocks=0, dim=16, heads=4) if decision else None
+    m = prepare_model(tiny(2), TOKENS, 4, 8, 0.0, trainable=trainable, linear_value_heads=4, decision=arch)
+    assert _backbone_config(m).linear_num_value_heads == 4
+    assert branch_state_tokens(_backbone_config(m)) == 8
