@@ -117,3 +117,59 @@ def test_decision_models_record_the_expansion(trainable):
     m = prepare_model(tiny(2), TOKENS, None, None, 0.0, trainable=trainable, linear_value_heads=4,
                       decision=DecisionConfig(kind="candidate", blocks=0, dim=16, heads=4))
     assert adapter_config(m)["linear_value_heads"] == 4
+
+
+def _train_cli():
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "train.py"
+    spec = importlib.util.spec_from_file_location("train_cli_value_heads", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_train_cli_adds_the_expansion_to_the_adapter_and_the_run_name():
+    cli = _train_cli()
+    args = cli.build_parser().parse_args(["--trainable", "full", "--linear-value-heads", "32"])
+    adapter = cli.resolve_adapter(args)
+    assert adapter == {"trainable": "full", "lora_r": None, "lora_alpha": None, "linear_value_heads": 32}
+    vars(args).update(adapter)
+    assert "-vh32" in cli.run_tag(args)
+    plain = cli.build_parser().parse_args(["--trainable", "full"])
+    assert "linear_value_heads" not in cli.resolve_adapter(plain)
+
+
+def test_train_cli_init_inherits_the_expansion_and_rejects_a_different_count(tmp_path):
+    from sors.core.checkpoint import save_trained
+    from sors.core.model import prepare_model
+    from sors.training.loop import TrainConfig
+
+    path = tmp_path / "trained.safetensors"
+    m = prepare_model(tiny(2), TOKENS, None, None, 0.0, trainable="full", linear_value_heads=4)
+    save_trained(m, TOKENS, TrainConfig(), path)
+    cli = _train_cli()
+    got = cli.resolve_adapter(cli.build_parser().parse_args(["--init", str(path)]))
+    assert got["linear_value_heads"] == 4
+    with pytest.raises(SystemExit):
+        cli.resolve_adapter(cli.build_parser().parse_args(["--init", str(path), "--linear-value-heads", "8"]))
+
+
+def test_resume_cli_rebuilds_the_expanded_backbone():
+    import argparse
+    import importlib.util
+    from pathlib import Path
+
+    from sors.core.model import adapter_config, prepare_model
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "resume.py"
+    spec = importlib.util.spec_from_file_location("resume_cli_value_heads", script)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    saved = prepare_model(tiny(2), TOKENS, None, None, 0.0, trainable="full", linear_value_heads=4)
+    args = argparse.Namespace(lora_r=None, lora_alpha=None, lora_dropout=0., trainable="full", grad_ckpt=False,
+                              linear_value_heads=4)
+    state = {"metadata": {"architecture": {"kind": "slots"}, "adapter": adapter_config(saved)}}
+    got = cli.prepare_resume_model(tiny(2), TOKENS, args, state, None, full=True)
+    assert got.config.linear_num_value_heads == 4

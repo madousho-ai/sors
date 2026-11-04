@@ -134,7 +134,8 @@ def prepare_resume_model(lm, train_ids, args, state, path, *, full):
         architecture = checkpoint_architecture(path)
         state["architecture"] = architecture
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
-                      trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture))
+                      trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture),
+                      linear_value_heads=getattr(args, "linear_value_heads", None))
     if full:
         if adapter_config(m) != meta["adapter"]:
             raise ValueError("adapter configuration differs from the saved state")

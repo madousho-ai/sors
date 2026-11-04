@@ -536,6 +536,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="vocab: 分母是整个词表, 普通 token 每步被压低, 答题位置只说 D 码; "
                          "all-slots: 分母是全部 256 个 D 槽; menu: 只在菜单 k 个槽上归一 (后两种是旧版)")
     ap.add_argument("--lora-r", type=int, default=None, help="不给 = 8; 配 --init 时取档里记的")
+    ap.add_argument("--linear-value-heads", type=int, default=None,
+                    help="把 Qwen3.5 线性注意力层的 V 头扩到这么多 (现有头数的整数倍, 2B 是 16), 再按 --trainable 训; "
+                         "新头复制共用 q、k 的旧头, 输出列置零, 起点与基模相同. 配 --init 时取档里记的")
     ap.add_argument("--lora-alpha", type=int, default=None,
                     help="不给 = 16; 配 --init 时取档里记的. peft 按 alpha / r 缩放, 改 r 时一起改才可比")
     ap.add_argument("--lora-dropout", type=float, default=0.05)
@@ -690,16 +693,20 @@ def resolve_adapter(args) -> dict:
     """LoRA 的形状 {"trainable", "lora_r", "lora_alpha"}. 给了 --init 就用档里记的, 命令行上与它矛盾的直接退出;
     没给就是命令行的值, 不写的取 attn / 8 / 16. d-only 与 full 没有 LoRA, rank 与 alpha 记 None, 与存档一致."""
     given = {"trainable": args.trainable, "lora_r": args.lora_r, "lora_alpha": args.lora_alpha}
+    heads = getattr(args, "linear_value_heads", None)
     if args.init:
         ck = checkpoint_adapter(args.init)
         bad = {k: v for k, v in given.items() if v is not None and v != ck[k]}
+        if heads is not None and heads != ck.get("linear_value_heads"):
+            bad["linear_value_heads"] = heads
         if bad:
             raise SystemExit(f"{bad} contradicts {args.init}, which was trained with {ck}; drop the flags to use it")
         return ck
+    extra = {"linear_value_heads": heads} if heads is not None else {}
     trainable = given["trainable"] or ("decision-only" if getattr(args, "architecture", None) in ("minimal", "structural", "candidate") else "attn")
     if trainable in ("d-only", "full", "decision-only"):
-        return {"trainable": trainable, "lora_r": None, "lora_alpha": None}
-    return {"trainable": trainable, "lora_r": given["lora_r"] or 8, "lora_alpha": given["lora_alpha"] or 16}
+        return {"trainable": trainable, "lora_r": None, "lora_alpha": None, **extra}
+    return {"trainable": trainable, "lora_r": given["lora_r"] or 8, "lora_alpha": given["lora_alpha"] or 16, **extra}
 
 
 def resolve_architecture(args) -> dict:
@@ -822,6 +829,7 @@ def run_tag(args) -> str:
         + (f"-b{args.batch_size}" if args.batch_size != 8 else "") \
         + (f"-r{args.lora_r}" if args.lora_r not in (None, 8) else "") \
         + (f"-alpha{args.lora_alpha}" if args.lora_alpha not in (None, 16) else "") \
+        + (f"-vh{args.linear_value_heads}" if getattr(args, "linear_value_heads", None) is not None else "") \
         + (f"-lr{args.lr_lora:g}" if args.lr_lora != 1e-4 else "") \
         + (f"-lrd{args.lr_decision:g}" if getattr(args, "lr_decision", None) is not None else "") \
         + (f"-clip{args.max_grad_norm:g}" if getattr(args, "max_grad_norm", None) is not None else "") \
@@ -919,7 +927,8 @@ def main() -> None:
     if args.architecture != "slots":
         torch.manual_seed(args.seed)  # Includes the new head and token-row initialization.
     m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
-                       trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture))
+                       trainable=args.trainable, grad_ckpt=args.grad_ckpt, decision=decision_config(architecture),
+                       linear_value_heads=args.linear_value_heads)
     if args.grad_ckpt_keep:
         try:
             keep_layer_activations(m, args.grad_ckpt_keep)
