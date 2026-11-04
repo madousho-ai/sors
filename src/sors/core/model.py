@@ -94,10 +94,12 @@ class SlotHead(nn.Module):
 def prepare_model(
     lm, train_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float,
     trainable: str = "attn", grad_ckpt: bool = False,
-    decision=None,
+    decision=None, linear_value_heads: int | None = None,
 ):
     """train_ids: 嵌入矩阵里放开的行 —— 256 个 D 行, 加上类型 token 行.
     trainable: TRAINABLE 之一. full 时 lora_r / lora_alpha / lora_dropout 不起作用.
+    linear_value_heads: 先把 Qwen3.5 线性注意力层的 V 头扩到这么多 (见 value_heads), 再按 trainable 放开.
+    新头的参数是旧头的确定性复制, 从基模重建得出同一个模型; 扩到几个头记进 adapter_config.
 
     grad_ckpt: 反传时逐层重算前向, 不存激活. 实测 batch 8 × 512 token 的激活从 5+ GiB 降到 0.58 GiB,
     代价约 +30% 时间. 8GB 卡上 BoolQ passage 进 batch 8 必须开.
@@ -106,6 +108,9 @@ def prepare_model(
         raise ValueError(f"unknown trainable {trainable!r}; expected one of {TRAINABLE}")
     if trainable == "decision-only" and decision is None:
         raise ValueError("decision-only requires a decision architecture")
+    if linear_value_heads is not None:
+        from sors.core.value_heads import expand_linear_value_heads
+        expand_linear_value_heads(lm, linear_value_heads)
     old_vocab = lm.get_input_embeddings().weight.shape[0]
     required_vocab = max(train_ids) + 1
     if required_vocab > old_vocab:
@@ -145,17 +150,27 @@ def prepare_model(
     if decision is not None:
         from sors.core.decision import DecisionConfig, DecisionModel
         cfg = DecisionConfig(**decision) if isinstance(decision, dict) else decision
-        adapter = ({"trainable": "decision-only", "lora_r": None, "lora_alpha": None}
-                   if trainable == "decision-only" else adapter_config(m))
+        adapter = adapter_config(m)
+        if trainable == "decision-only":
+            adapter.update(trainable="decision-only", lora_r=None, lora_alpha=None)
         return DecisionModel(m, cfg, adapter, grad_ckpt)
     return m
 
 
 def adapter_config(m) -> dict:
     """m 放开的范围, 键名与 prepare_model 的参数同名: 哪一档 (TRAINABLE 之一)、LoRA 的 rank、alpha.
-    没套 peft 的看 rows 之外还有没有可训参数: 有就是 full, 没有就是 d-only; 两者 rank 与 alpha 无意义记 None."""
+    没套 peft 的看 rows 之外还有没有可训参数: 有就是 full, 没有就是 d-only; 两者 rank 与 alpha 无意义记 None.
+    扩过线性注意力 V 头的模型多一项 linear_value_heads; 没扩过的不带这一项, 与之前的存档相同."""
     if getattr(m, "decision_config", None) is not None:
         return dict(m.adapter)
+    raw = m.get_base_model() if hasattr(m, "get_base_model") else m
+    from sors.core.value_heads import EXPANDED
+    config = getattr(raw, "config", None)
+    heads = getattr(config.get_text_config(), EXPANDED, None) if config is not None else None
+    return {**_trainable_scope(m), **({"linear_value_heads": heads} if heads is not None else {})}
+
+
+def _trainable_scope(m) -> dict:
     peft_cfg = getattr(m, "peft_config", {}).get("default")
     if peft_cfg is None:
         full = any(p.requires_grad for n, p in m.named_parameters() if not n.endswith(".rows"))

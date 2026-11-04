@@ -73,3 +73,47 @@ def test_expanding_to_the_current_count_changes_nothing():
     expand_linear_value_heads(lm, 4)
     for n, p in lm.named_parameters():
         assert torch.equal(p, before[n]), n
+
+
+TOKENS = list(range(56, 64))
+
+
+@pytest.mark.parametrize("trainable", ["full", "attn-mlp-linear"])
+def test_checkpoint_records_the_expansion_and_restores_it_on_a_fresh_base(tmp_path, trainable):
+    """训练存档只存可训的部分, 基模照 model_id 重新加载; 扩展记在 adapter 里, 还原时先扩再灌权重."""
+    from sors.core.checkpoint import checkpoint_adapter, prepare_from_checkpoint, save_trained
+    from sors.core.model import adapter_config, last_logits, prepare_model
+    from sors.training.loop import TrainConfig
+
+    m = prepare_model(tiny(2), TOKENS, 4, 8, 0.0, trainable=trainable, linear_value_heads=4)
+    assert adapter_config(m)["linear_value_heads"] == 4
+    ids, mask = IDS, torch.ones_like(IDS)
+    m.train()
+    last_logits(m, ids, mask)[:, 57].sum().backward()
+    torch.optim.SGD([p for p in m.parameters() if p.requires_grad], lr=1e-2).step()
+    m.eval()
+    with torch.no_grad():
+        want = last_logits(m, ids, mask)
+    path = tmp_path / "trained.safetensors"
+    save_trained(m, TOKENS, TrainConfig(), path)
+    assert checkpoint_adapter(path)["linear_value_heads"] == 4
+    restored, _ = prepare_from_checkpoint(tiny(2), TOKENS, path)
+    with torch.no_grad():
+        torch.testing.assert_close(last_logits(restored.eval(), ids, mask), want, rtol=0, atol=0)
+
+
+def test_unexpanded_models_keep_their_adapter_record():
+    from sors.core.model import adapter_config, prepare_model
+
+    m = prepare_model(tiny(2), TOKENS, None, None, 0.0, trainable="full")
+    assert adapter_config(m) == {"trainable": "full", "lora_r": None, "lora_alpha": None}
+
+
+@pytest.mark.parametrize("trainable", ["decision-only", "full"])
+def test_decision_models_record_the_expansion(trainable):
+    from sors.core.decision import DecisionConfig
+    from sors.core.model import adapter_config, prepare_model
+
+    m = prepare_model(tiny(2), TOKENS, None, None, 0.0, trainable=trainable, linear_value_heads=4,
+                      decision=DecisionConfig(kind="candidate", blocks=0, dim=16, heads=4))
+    assert adapter_config(m)["linear_value_heads"] == 4
