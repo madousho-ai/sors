@@ -141,7 +141,7 @@ RETIRED = {name: message.replace("use --dataset synth-v5.22", "use --dataset syn
            for name, message in RETIRED.items()}
 RETIRED["synth-v5.22"] = ("synth-v5.22 precedes the one-place contrast edits; use --dataset synth-v5.23 "
                           "or pin older code/data to reproduce it")
-KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench", "jsoneval")
+KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench", "jsoneval", "zheval")
 
 
 def _parse_list(spec: str, known: tuple[str, ...], flag: str) -> list[str]:
@@ -221,7 +221,9 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
     jevbench 是 JevBench 的三档公开题 (第一次用时下载到 data/jevbench, 不进仓库), 同样写死, 展开成 jevbench_easy / _original / _hard;
     hard 的提示最长 3838 token, 批取四分之一, 一批的 token 数与 BoolQ 那档相当.
     jsoneval 是外部数据仓库的 json-eval (JSON 阅读能力, 按能力切片展开成 json_c1 ... json_tr, c6 按长度分 json_c6_s/m/l);
-    json_c6_l 的材料约 2 万字符, 批取四分之一."""
+    json_c6_l 的材料约 2 万字符, 批取四分之一.
+    zheval 是外部数据仓库的 zh-eval (中文阅读, 按切片展开成 zh_z1 ... zh_z8, z9 按方向、zp 按语言各分两个集合);
+    zh_z8 有 4 千到 1.2 万字的长材料, 批取四分之一."""
     out = {}
     for name in _parse_list(args.eval, KNOWN_EVAL, "--eval"):
         if name == "simple":
@@ -236,6 +238,13 @@ def build_eval_sets(args, b77_test=None, boolq_val=None) -> dict[str, EvalSet]:
 
             for sub, exs in load_json_eval(datasets_dir=getattr(args, "datasets_dir", None)).items():
                 bs = max(1, args.eval_batch_size // 4) if sub == "json_c6_l" else args.eval_batch_size
+                out[sub] = EvalSet(exs, bs)
+            continue
+        if name == "zheval":
+            from sors.data.zh_eval import load_zh_eval
+
+            for sub, exs in load_zh_eval(datasets_dir=getattr(args, "datasets_dir", None)).items():
+                bs = max(1, args.eval_batch_size // 4) if sub == "zh_z8" else args.eval_batch_size
                 out[sub] = EvalSet(exs, bs)
             continue
         if name == "jevbench":
@@ -601,7 +610,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "boolq (validation 3270 条) / "
                          "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes) / "
                          "jevbench (JevBench 公开题 easy 48 / original 72 / hard 111, 按推理服务收到请求时的样子出题); "
-                         "jsoneval (外部数据仓库的 json-eval, JSON 阅读能力按切片分开, 不在默认里)")
+                         "jsoneval (外部数据仓库的 json-eval, JSON 阅读能力按切片分开, 不在默认里); "
+                         "zheval (外部数据仓库的 zh-eval, 中文阅读按切片分开, 不在默认里)")
     ap.add_argument("--random-codes", type=float, default=0.0,
                     help="训练题里换成随机码的比例 (0..1), 二元题也换: 挑上菜单次数最少的 k 个 D 码、顺序随机, "
                          "每个码上菜单时是答案的概率都是 1/k, "
