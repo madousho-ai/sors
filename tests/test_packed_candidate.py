@@ -98,6 +98,33 @@ def test_checkpointed_packed_forward_matches_the_plain_one():
     torch.testing.assert_close(outs[1][2], outs[0][2])
 
 
+def test_deltanet_kernel_calls_stay_within_the_launch_grid_limit(monkeypatch):
+    """fla 的 chunk 内核 grid 第二维是 段数 x V 头数, CUDA 上限 65,535. 一层的分支段多了 (simple255 评估一批
+    16 x 255 段, V 头扩到 32 时是 130,560) 要分几次调用, 每次不超过上限, 结果与一次跑完相同."""
+    import fla.ops.gated_delta_rule as fla_gdn
+    import sors.core.packed as packed
+
+    m, _, _, data = _setup()
+    m.eval()
+    valid = data["slot_ids"] >= 0
+    heads = next(l.linear_attn.num_v_heads for l in m.decoder.layers if hasattr(l, "linear_attn"))
+    with torch.no_grad():
+        want = packed.packed_candidate_hidden(m.decoder, data, valid).float()
+
+    kernel, rows = fla_gdn.chunk_gated_delta_rule, []
+
+    def recording(q, k, v, *args, cu_seqlens=None, **kwargs):
+        rows.append((len(cu_seqlens) - 1) * v.shape[2])
+        return kernel(q, k, v, *args, cu_seqlens=cu_seqlens, **kwargs)
+
+    monkeypatch.setattr(fla_gdn, "chunk_gated_delta_rule", recording)
+    monkeypatch.setattr(packed, "KERNEL_GRID_ROWS", 2 * heads, raising=False)
+    with torch.no_grad():
+        got = packed.packed_candidate_hidden(m.decoder, data, valid).float()
+    assert max(rows) <= 2 * heads
+    torch.testing.assert_close(got, want, atol=2e-3, rtol=2e-3)
+
+
 def test_packed_mode_trains_the_backbone_with_the_same_logits_as_full_encoding():
     m, tok, d, data = _setup(blocks=1)
     m.train()

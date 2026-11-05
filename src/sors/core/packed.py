@@ -19,6 +19,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+# fla 的 chunk 内核按 (V 分块, 段数 x V 头数) 起 grid, 第二维受 CUDA gridDim.y 上限 65,535 限制;
+# 一层的段数乘头数超过它时分几次调用 (见 _deltanet).
+KERNEL_GRID_ROWS = 65535
 
 def supports_packed(decoder) -> bool:
     cfg = decoder.config
@@ -234,11 +237,26 @@ def _deltanet(layer, h, plan):
         rep = layer.num_v_heads // layer.num_k_heads
         q, k = q.repeat_interleave(rep, dim=1), k.repeat_interleave(rep, dim=1)
 
-    def run(idx, cu, init):
+    def call(idx, cu, init):
         pick = lambda t: t.index_select(0, idx)[None]
         o, final = chunk_gated_delta_rule(pick(q), pick(k), pick(v), g=pick(g), beta=pick(beta), initial_state=init,
                                           output_final_state=True, use_qk_l2norm_in_kernel=True, cu_seqlens=cu)
         return o[0], final
+
+    def run(idx, cu, init):
+        """段数 x V 头数超过 KERNEL_GRID_ROWS 时按段切开分几次调用; 各段互不依赖, 拼回来与一次调用相同."""
+        per_call = max(1, KERNEL_GRID_ROWS // v.shape[1])
+        n = len(cu) - 1
+        if n <= per_call:
+            return call(idx, cu, init)
+        bounds = cu.tolist()
+        outs, finals = [], []
+        for s in range(0, n, per_call):
+            e = min(n, s + per_call)
+            o, final = call(idx[bounds[s]:bounds[e]], cu[s:e + 1] - cu[s], None if init is None else init[s:e])
+            outs.append(o)
+            finals.append(final)
+        return torch.cat(outs), torch.cat(finals)
 
     out = v.new_zeros(v.shape)
     shape = (v.shape[1], q.shape[-1], v.shape[-1])
