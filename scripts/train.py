@@ -33,7 +33,7 @@
 --data-workers / --data-prefetch 可调，--data-backend thread 换回进程内线程。--data-workers 0 使用同步准备。
 抽样顺序与有效 batch 保持原样，worker 只做分词和组批。CUDA 上再提前 --device-prefetch 批锁页拷进显存。
 
---eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench (见 build_eval_sets).
+--eval 是评估集列表, 与训练集无关, 默认 banking77+banking77-desc+massive+massive-desc+boolq+jevbench (见 build_eval_sets).
 训练中 (step 0 与每 --eval-every 步) 只跑探针: 每个评估集固定 --probe-size 道题, 固定 --probe-passes 种随机排法
 (行打乱、D 码随机), 报 accuracy / agree / js. 最后一步再跑全量评估集: 部署形态 (连续编号) 下的正确率那一套,
 与全量题的同一种一致性. 见 sors.training.loop.eval_record.
@@ -610,13 +610,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="每道题排成几种随机的样子 (行打乱、D 码随机, 二元题也一样), 整场固定; 最后一步的全量一致性也用这个数")
     ap.add_argument("--eval-batch-size", type=int, default=16)
     ap.add_argument("--eval-limit", type=int, default=0, help="每个评估集最多用几条 (0 = 全部)")
-    ap.add_argument("--eval", default="banking77+banking77-desc+massive+massive-desc+boolq+simple+jevbench",
+    ap.add_argument("--eval", default="banking77+banking77-desc+massive+massive-desc+boolq+jevbench",
                     help="评估集, 用 + 连接, 与 --dataset 无关: banking77 (test 3080 条, 77 类全量菜单, 原始 label 名) / "
                          "banking77-desc (同一批题, 菜单显示「原始名: description」) / "
                          "massive (test 2974 条, 60 类全量菜单, 原始 intent 名) / massive-desc (同一批题, 「原始名: description」) / "
                          "boolq (validation 3270 条) / "
-                         "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes) / "
                          "jevbench (JevBench 公开题 easy 48 / original 72 / hard 111, 按推理服务收到请求时的样子出题); "
+                         "simple (synth-simple-eval: 消息直接说出答案, 5..255 项各 10 题 + 10 道 no/yes, 不在默认里); "
                          "jsoneval (外部数据仓库的 json-eval, JSON 阅读能力按切片分开, 不在默认里); "
                          "zheval (外部数据仓库的 zh-eval, 中文阅读按切片分开, 不在默认里)")
     ap.add_argument("--random-codes", type=float, default=0.0,
