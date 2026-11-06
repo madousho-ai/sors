@@ -5,6 +5,8 @@
 - xdist 并行时每个 worker 分到的 CPU 线程: 不设的话 16 个 worker 各开满核的 torch
   线程池, 互相抢核反而更慢.
 - tests/*_gpu.py 自动打上 gpu 标记, 默认跳过, 加 --gpu 才跑; 跑时没有 CUDA 直接判失败.
+- 训练循环的数据准备默认开 forkserver 子进程, 每次 train() 起两个子进程各自重新 import torch,
+  玩具模型跑 3 步要 8 秒. 测试里换成线程 (结果逐位相同); 专测子进程的 test_prefetch*.py 不换.
 """
 
 import os
@@ -22,6 +24,19 @@ if _workers > 1:
     _threads = str(max(1, (os.cpu_count() or 1) // _workers))
     for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ.setdefault(_name, _threads)
+
+
+@pytest.fixture(autouse=True)
+def _thread_data_backend(request, monkeypatch):
+    if request.node.path.name.startswith("test_prefetch"):
+        return
+    import sors.training.loop as loop
+    original = loop.prefetch_batches
+
+    def prefetch(*args, backend="thread", **kwargs):
+        return original(*args, backend="thread" if backend == "process" else backend, **kwargs)
+
+    monkeypatch.setattr(loop, "prefetch_batches", prefetch)
 
 
 def pytest_addoption(parser):
