@@ -1,6 +1,6 @@
 """TypeSafe System One API 的线上格式 (https://docs.typesafe.ai/api).
 
-请求 {state, model, questions: {问题 id: Question}}. Question 按 type 分三种, 共有 instructions:
+请求 {state, model, questions: {问题 id: Question}, assets?}. Question 按 type 分三种, 共有 instructions:
   noul    是非题, criteria 可选, 只认 true / false 两个键, 各是一句说明
   choice  选一项, criteria 是 {选项名: 说明或 null}, 2..255 项, 顺序即调用方写的顺序
   score   有序分级, criteria 是分级说明的数组, 2..10 级, 从低到高
@@ -75,10 +75,19 @@ class Score(_Strict):
 Question = Annotated[Noul | Choice | Score, Field(discriminator="type")]
 
 
+class Asset(_Strict):
+    """assets 里的一张图. part 是 multipart 的文件段名; 这个服务只收 base64 JSON, 带 part 由 serve.assets 拒收."""
+    type: Literal["image"] | None = None
+    part: str | None = None
+    data_base64: str | None = None
+    format: Literal["png", "jpg", "jpeg"] | None = None
+
+
 class SystemOneRequest(_Strict):
     state: JSONContent
     model: str
     questions: dict[str, Question] = Field(min_length=1)
+    assets: dict[str, Asset] | None = None  # 引用串 -> 图; 引用怎么换成图、图怎么校验见 serve.assets
 
 
 # ---- 答案 --------------------------------------------------------------------
