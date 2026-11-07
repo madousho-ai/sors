@@ -22,8 +22,10 @@ from sors.core.menu import MenuExample, reorder_menu
 from sors.core.prompt import Special, prompt_pieces, state_text
 from sors.core.tokens import D_TOKENS
 
+# Images in the state, read from parquet; adapters in sors.data.public_vision.
+VISION_DATASETS = ("aokvqa", "scienceqa", "ai2d", "iconqa", "vsr", "nlvr2", "mm-mind2web")
 PUBLIC_DATASETS = ("contractnli", "maud", "legalbench", "sharc", "conditionalqa", "mind2web", "toolace",
-                   "quality", "reclor", "logiqa2", "xlam")
+                   "quality", "reclor", "logiqa2", "xlam") + VISION_DATASETS
 DEFAULT_MANIFEST = pathlib.Path(__file__).resolve().parents[3] / "data/public-decisions/manifest.json"
 
 
@@ -54,8 +56,11 @@ class Decisions:
     ids: list[str] = field(default_factory=list)
     skipped: Counter = field(default_factory=Counter)
     sources: list[dict] = field(default_factory=list)
+    # Vision sources store each example's images as encoded bytes (one per IMAGE_MARK in the
+    # state); sample() runs them through this image processor (core.vision.load_processor).
+    processor: object = None
 
-    def add(self, uid, context, question, names, gold, *, label="", qtype="choice") -> None:
+    def add(self, uid, context, question, names, gold, *, label="", qtype="choice", images=()) -> None:
         _menu(names)
         gold = _integer(gold, "answer index")
         if not 0 <= gold < len(names):
@@ -66,19 +71,36 @@ class Decisions:
             return
         self.examples.append(MenuExample(query=state_text(context), options=list(range(len(names))),
                                          gold_idx=gold, label=gold, option_names=list(names),
-                                         context_label=label, question=question, qtype=qtype))
+                                         context_label=label, question=question, qtype=qtype,
+                                         images=tuple(images)))
         self.ids.append(str(uid))
+
+    @property
+    def has_images(self) -> bool:
+        return any(e.images for e in self.examples)
 
     def sample(self, n: int, rng: random.Random) -> list[MenuExample]:
         if n < 0 or (n and not self.examples):
             raise ValueError("cannot sample from an empty decision set or use a negative count")
-        return [reorder_menu(ex, rng.sample(range(len(ex.options)), len(ex.options)))
-                for ex in rng.choices(self.examples, k=n)] if n else []
+        out = [reorder_menu(ex, rng.sample(range(len(ex.options)), len(ex.options)))
+               for ex in rng.choices(self.examples, k=n)] if n else []
+        if any(ex.images for ex in out):
+            if self.processor is None:
+                raise ValueError("examples with images need an image processor (Decisions.processor)")
+            from dataclasses import replace
+
+            from sors.core.vision import preprocess_images
+            out = [replace(ex, images=tuple(preprocess_images(self.processor, list(ex.images)))) if ex.images else ex
+                   for ex in out]
+        return out
 
     def summary(self) -> dict:
-        return {"items": len(self.examples), "skipped": dict(self.skipped),
-                "menu_sizes": dict(sorted(Counter(len(e.options) for e in self.examples).items())),
-                "sources": self.sources}
+        out = {"items": len(self.examples), "skipped": dict(self.skipped),
+               "menu_sizes": dict(sorted(Counter(len(e.options) for e in self.examples).items())),
+               "sources": self.sources}
+        if self.has_images:
+            out["images"] = sum(len(e.images) for e in self.examples)
+        return out
 
 
 def contractnli(data: dict) -> Decisions:
@@ -492,6 +514,9 @@ def _read_source(path: pathlib.Path, files: list[dict], expected: str | None = N
     if expected is not None and digest != expected:
         raise ValueError(f"{path}: sha256 {digest} != {expected}")
     files.append({"path": str(path), "sha256": digest})
+    if path.suffix == ".parquet":
+        import pyarrow.parquet as pq
+        return pq.read_table(path).to_pylist()
     with path.open(encoding="utf-8-sig", newline="") as f:
         if path.suffix in (".csv", ".tsv"):
             return list(csv.DictReader(f, delimiter="\t" if path.suffix == ".tsv" else ","))
@@ -499,7 +524,7 @@ def _read_source(path: pathlib.Path, files: list[dict], expected: str | None = N
             return [json.loads(line) for line in f if line.strip()]
         if path.suffix == ".json":
             return json.load(f)
-    raise ValueError(f"{path}: supported raw formats are JSON, JSONL, CSV and TSV")
+    raise ValueError(f"{path}: supported raw formats are JSON, JSONL, CSV, TSV and parquet")
 
 
 def load_public_decisions(name: str, manifest=DEFAULT_MANIFEST) -> Decisions:
@@ -548,6 +573,9 @@ def load_public_decisions(name: str, manifest=DEFAULT_MANIFEST) -> Decisions:
                                   auxiliary("task_spec") if entry.get("task_spec") else None)
             elif name == "conditionalqa":
                 part = conditionalqa(raw, auxiliary("documents"))
+            elif name in VISION_DATASETS:
+                from sors.data.public_vision import convert
+                part = convert(name, raw)
             else:
                 part = {"sharc": sharc, "mind2web": mind2web, "toolace": toolace, "xlam": xlam,
                         "quality": quality, "reclor": reclor, "logiqa2": logiqa2}[name](raw)
