@@ -61,8 +61,8 @@ def test_images_with_transparency_or_palettes_are_read_as_rgb():
 # ---- 前向时编码 ----------------------------------------------------------------
 
 
-def pixel_batch(m, tok, d, seed=0):
-    """两行: 第 0 行两张图 (2x2 与 1x2 个占位符), 第 1 行一张 (1x2)."""
+def pixel_examples(seed=0):
+    """两条样本: 第 0 条两张图 (2x2 与 1x2 个占位符), 第 1 条一张 (1x2). 返回 (样本, 三张图)."""
     from dataclasses import replace
 
     from test_decision import examples
@@ -72,6 +72,11 @@ def pixel_batch(m, tok, d, seed=0):
     a, b = examples()
     exs = [replace(a, query=f"red {IMAGE_MARK} {IMAGE_MARK} context", context_label="", images=tuple(images[:2])),
            replace(b, query=f"long {IMAGE_MARK} blue", context_label="", images=(images[2],))]
+    return exs, images
+
+
+def pixel_batch(m, tok, d, seed=0):
+    exs, images = pixel_examples(seed)
     return candidate_batch(tok, d, exs), images
 
 

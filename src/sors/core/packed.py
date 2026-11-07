@@ -10,6 +10,9 @@
   短卷积在每段前接上下文: 前缀前接零 (等于因果零填充), 分支前接本例前缀最后 kernel-1 列的卷积输入.
   梯度经初始状态与卷积上下文回到前缀.
 
+带图的前缀 (批里有 image_embeds / image_grids, 见 core.vision): 前缀的占位符位置换成图像向量, 前缀的旋转位置
+按 M-RoPE 排 (三个坐标各一行), 子段从祖先链之后的旋转位置接着数. 图只在前缀里.
+
 只支持 Qwen3.5 文本主干; DeltaNet 用 fla 的 kernel, 要 CUDA.
 """
 
@@ -75,10 +78,15 @@ class _Plan:
     逐段切片在反传时每段都要分配一份整流大小的零张量, 段一多 (意图题 77~256 个分支) 就成了平方级开销.
     """
 
-    def __init__(self, batch, valid, device, conv_width=3, traces=False):
+    def __init__(self, batch, valid, device, conv_width=3, traces=False, image_token_id=None):
         keys = ["input_ids", "attention_mask", "prefix_lengths", "suffix_input_ids", "suffix_attention_mask"]
         if traces:
             keys += ["trace_input_ids", "trace_attention_mask"]
+        images = "image_embeds" in batch
+        if images and image_token_id is None:
+            raise ValueError("packed encoding of image inputs needs the model's image_token_id")
+        if images:
+            keys.append("image_grids")
         cpu = {k: batch[k].cpu() for k in keys}
         valid_cpu = valid.cpu()
         rows = [tuple(x) for x in valid_cpu.nonzero().tolist()]
@@ -86,15 +94,17 @@ class _Plan:
         for r, c in rows:
             by_row.setdefault(r, []).append(c)
         tokens, pos = [], []
+        image_slots, image_rows = [], []  # 流里的占位符位置, 与 (行, 本行第几个图像向量)
         self.seg_len, self.parent, self.depth = [], [], []
         self.example_len = []
         readout, teacher = {}, {}
         start = 0
 
-        def add(seq, parent, offset):
+        def add(seq, parent, offset, rotary=None):
+            """offset: 本段第一个 token 的旋转位置. rotary 给了就是本段自己的 (3, len) M-RoPE 位置."""
             nonlocal start
             tokens.append(seq)
-            pos.append(torch.arange(offset, offset + len(seq)))
+            pos.append(rotary if rotary is not None else torch.arange(offset, offset + len(seq)).expand(3, -1))
             self.seg_len.append(len(seq)), self.parent.append(parent)
             self.depth.append(0 if parent < 0 else self.depth[parent] + 1)
             start += len(seq)
@@ -104,7 +114,18 @@ class _Plan:
             prefix = cpu["input_ids"][r][cpu["attention_mask"][r].bool()][:int(cpu["prefix_lengths"][r])]
             p = len(prefix)
             ex_start = start
-            prefix_seg = add(prefix, -1, 0) if p else -1
+            rotary = None
+            if images and p:
+                from sors.core.vision import rope_positions, row_grids
+                # 前缀可能只是 state 的开头一截 (BPE 跨界合并时), 但图都在 state 里, 占位符串不会被截开
+                rotary, after = rope_positions(prefix, row_grids(cpu["image_grids"][r]), image_token_id)
+                spots = (prefix == image_token_id).nonzero().flatten()
+                image_slots.append(spots + start)
+                image_rows.append(torch.stack([torch.full_like(spots, r), torch.arange(len(spots))], 1))
+                p_rot = after
+            else:
+                p_rot = p
+            prefix_seg = add(prefix, -1, 0, rotary) if p else -1
             lengths = cpu["suffix_attention_mask"][r].sum(-1).tolist()
             suffix = []
             for c in by_row[r]:
@@ -113,13 +134,13 @@ class _Plan:
                     raise ValueError("candidate continuation needs a readout token")
                 suffix.append((c, cpu["suffix_input_ids"][r, c, -n:]))
             for c, seq in suffix:
-                add(seq, prefix_seg, p)
+                add(seq, prefix_seg, p_rot)
                 readout[(r, c)] = start - 1
             trace = cpu["trace_input_ids"][r][cpu["trace_attention_mask"][r].bool()] if traces else []
             if len(trace):
-                trace_seg = add(trace, prefix_seg, p)
+                trace_seg = add(trace, prefix_seg, p_rot)
                 for c, seq in suffix:
-                    add(seq, trace_seg, p + len(trace))
+                    add(seq, trace_seg, p_rot + len(trace))
                     teacher[(r, c)] = start - 1
             self.example_len.append(start - ex_start)
         T = start
@@ -160,7 +181,9 @@ class _Plan:
         for s in range(len(self.seg_len)):
             sees[s, chain(s)] = True
         self.ids = put(torch.cat(tokens))
-        self.pos = put(torch.cat(pos))
+        self.pos = put(torch.cat(pos, dim=1))  # (3, T)
+        self.image_slots = put(torch.cat(image_slots)) if image_slots else None
+        self.image_rows = put(torch.cat(image_rows)) if image_rows else None
         self.readout = put(torch.tensor([readout[k] for k in rows]))
         self.teacher_rows = put(torch.tensor([i for i, k in enumerate(rows) if k in teacher], dtype=torch.long))
         self.teacher_readout = put(torch.tensor([teacher[k] for k in rows if k in teacher], dtype=torch.long))
@@ -282,16 +305,21 @@ def _layer(layer, h, cos, sin, plan):
     return h + layer.mlp(layer.post_attention_layernorm(h))
 
 
-def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False, traces: bool = False):
+def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False, traces: bool = False,
+                            image_token_id: int | None = None):
     """每个有效选项读出 token 上的最后一层隐藏状态 (final norm 之后), 顺序同 valid.nonzero().
     traces=True (批里要有 trace_*): 返回 (学生, 老师); 老师只含带计算过程的例子的选项, 顺序同 valid.nonzero()
     里这些行的顺序, 读的是 前缀 + 计算过程 + 选项 的最后一个 token."""
     if not supports_packed(decoder):
         raise ValueError("packed candidate encoding supports Qwen3.5 text backbones only")
     linear = [l.linear_attn for l in decoder.layers if getattr(l, "block_type", "") == "linear_attention"]
-    plan = _Plan(batch, valid, batch["input_ids"].device, linear[0].conv_kernel_size - 1 if linear else 3, traces)
+    plan = _Plan(batch, valid, batch["input_ids"].device, linear[0].conv_kernel_size - 1 if linear else 3, traces,
+                 image_token_id)
     h = decoder.embed_tokens(plan.ids)  # (T, hidden)
-    cos, sin = decoder.rotary_emb(h[None], plan.pos[None, None].expand(3, 1, -1))
+    if plan.image_slots is not None:  # 前缀的占位符位置换成各行依次出现的图像向量
+        r, i = plan.image_rows.unbind(1)
+        h = h.index_put((plan.image_slots,), batch["image_embeds"][r, i].to(h.dtype))
+    cos, sin = decoder.rotary_emb(h[None], plan.pos[:, None])
     cos, sin = cos[0], sin[0]  # (T, rotary dim)
     for layer in decoder.layers[:decoder.config.num_hidden_layers]:
         if checkpointed and torch.is_grad_enabled():

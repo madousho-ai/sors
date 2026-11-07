@@ -601,29 +601,31 @@ class DecisionModel(nn.Module):
             return self._output_logits(scores, slots, valid, option_rows)
 
     def _check_images(self, batch):
-        """带图的批: 只有 candidate 的逐选项编码与共享前缀缓存读图. 打包前向还没接上:
-        训练时拒收, 推理 (不求梯度) 时改走共享前缀缓存, 两条路的结果相同."""
+        """带图的批: 只有 candidate 读图 (逐选项编码、共享前缀缓存、打包前向三条路都读)."""
         if not has_images(batch):
             return
         if self.decision_config.kind != "candidate":
             raise ValueError(f"image inputs need the candidate architecture, not {self.decision_config.kind}")
         if self.image_token_id is None:
             raise ValueError("image inputs need the model's image_token_id")
-        if self.candidate_prefix_cache == "packed" and torch.is_grad_enabled():
-            raise ValueError("packed candidate encoding does not read image inputs yet")
 
-    def forward_batch(self, batch, *, option_batch_size=None):
+    def with_image_embeds(self, batch):
+        """检查带图的批; 只带像素时由冻结的视觉编码器编成 image_embeds. 不带图的批原样返回."""
         self._check_images(batch)
-        if "image_pixels" in batch and "image_embeds" not in batch:  # 冻结的视觉编码器先把像素编成图像向量
+        if "image_pixels" in batch and "image_embeds" not in batch:
             if getattr(self, "visual", None) is None:
                 raise ValueError("image pixels need a vision encoder (sors.core.vision.attach_vision)")
             from sors.core.vision import encode_images
             batch = {**batch, "image_embeds": encode_images(self.visual, batch["image_pixels"], batch["image_grids"])}
+        return batch
+
+    def forward_batch(self, batch, *, option_batch_size=None):
+        batch = self.with_image_embeds(batch)
         if self._read_only:
             return self._forward_read_only(batch, option_batch_size)
         if self._layerwise_feedback and self.training and torch.is_grad_enabled():
             return self._forward_feedback(batch)
-        if self.decision_config.kind == "candidate" and self.candidate_prefix_cache == "packed" and not has_images(batch):
+        if self.decision_config.kind == "candidate" and self.candidate_prefix_cache == "packed":
             # 前缀算一次, 全部分支同一次前向接着跑, 可训 (sors.core.packed)
             from sors.core.packed import packed_candidate_hidden, supports_packed
             if not supports_packed(self.decoder):
@@ -638,6 +640,7 @@ class DecisionModel(nn.Module):
                 encoded = packed_candidate_hidden(
                     self.decoder, batch, valid,
                     checkpointed=self.checkpoint_forward and self.training and torch.is_grad_enabled(),
+                    image_token_id=self.image_token_id,
                 ).to(self.option_norm.weight.dtype)
             return self._candidate_output(encoded, batch["slot_ids"], option_rows)
         if self.decision_config.kind == "candidate":

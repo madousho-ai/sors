@@ -62,13 +62,14 @@ def distill_outputs(m, batch: dict) -> dict:
         raise ValueError("packed candidate encoding supports Qwen3.5 text backbones only")
     if "trace_input_ids" not in batch:
         raise ValueError("distillation needs a batch collated with traces=True")
+    batch = m.with_image_embeds(batch)
     slots = batch["slot_ids"]
     valid = slots >= 0
     has = batch["trace_attention_mask"].bool().any(1)
     with m._forward_lock:
         student_h, teacher_h = packed_candidate_hidden(
             m.decoder, batch, valid, checkpointed=m.checkpoint_forward and m.training and torch.is_grad_enabled(),
-            traces=True)
+            traces=True, image_token_id=m.image_token_id)
     dtype = m.option_norm.weight.dtype
     student_h, teacher_h = student_h.to(dtype), teacher_h.to(dtype)
     student_logits = m._candidate_output(student_h, slots)

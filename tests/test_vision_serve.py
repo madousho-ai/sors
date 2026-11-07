@@ -59,8 +59,10 @@ def test_images_in_json_state_values_are_read_in_place():
     assert as_json == same_text
 
 
-def test_packed_models_read_images_through_the_shared_prefix_at_inference():
-    e = engine()
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the packed path's DeltaNet kernels need CUDA")
+def test_packed_models_answer_image_requests_like_the_shared_prefix_cache():
+    m, _, _ = vision_model()
+    e = engine(m.cuda())
     want = e.evaluate(f"red {image((255, 0, 0))}", questions()).probs
     e.lm.set_candidate_prefix_cache("packed")
     got = e.evaluate(f"red {image((255, 0, 0))}", questions()).probs
