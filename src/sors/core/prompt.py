@@ -31,6 +31,7 @@ import json
 
 from sors.core.menu import MenuExample
 from sors.core.tokens import CONTEXT_TOKENS, D_TOKENS
+from sors.core.vision import IMAGE_MARK, VISION_TOKENS
 
 LAYOUTS = ("context-first", "menu-first", "chat")
 DEFAULT_LAYOUT = "context-first"
@@ -66,9 +67,20 @@ def _question_block(ex: MenuExample, type_marker: bool) -> list[str]:
     return [*label, f" {q}\nOptions:\n", *_menu(ex)]
 
 
+def _images(ctx: str, images) -> list[str]:
+    """ctx 里每个 IMAGE_MARK 换成 <|vision_start|> + 这张图的 <|image_pad|> 串 + <|vision_end|>, 都是 Special."""
+    start, pad, end = (Special(t) for t in VISION_TOKENS)
+    parts = ctx.split(IMAGE_MARK)
+    out = [parts[0]]
+    for image, text in zip(images, parts[1:]):
+        out += [start, *[pad] * image.tokens, end, text]
+    return out
+
+
 def _context(ex: MenuExample, context_marker: bool) -> list[str]:
     ctx = f"{ex.context_label}: {ex.query}" if ex.context_label else ex.query
-    return [Special(CONTEXT_TOKENS[0]), ctx, Special(CONTEXT_TOKENS[1])] if context_marker else [ctx]
+    body = _images(ctx, ex.images) if ex.images else [ctx]
+    return [Special(CONTEXT_TOKENS[0]), *body, Special(CONTEXT_TOKENS[1])] if context_marker else body
 
 
 def prompt_pieces(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: bool = False,

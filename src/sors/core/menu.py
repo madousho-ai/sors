@@ -15,6 +15,7 @@ import random
 from dataclasses import dataclass, field, replace
 
 from sors.core.tokens import N_SLOTS
+from sors.core.vision import IMAGE_MARK
 
 
 @dataclass(frozen=True)
@@ -50,8 +51,11 @@ class MenuExample:
     cot: str | None = None  # 程序写的计算过程 (训练时的语言模型目标, 见 training.cot); 推理永远不用; None = 没有
     trace: str | None = None  # 蒸馏老师读的计算过程 (training.distill): 老师分支 = 前缀 + trace + 选项; 推理不用
     partner_trace: str | None = None  # partner_query 那种说法对应的 trace; 一致性配对的第二份读它
+    images: tuple = ()  # query 里每个 vision.IMAGE_MARK 依次对应的 vision.VisionImage
 
     def __post_init__(self):
+        if self.query.count(IMAGE_MARK) != len(self.images):
+            raise ValueError(f"query has {self.query.count(IMAGE_MARK)} image marks but {len(self.images)} images")
         # D 槽只有 N_SLOTS 个. 把菜单压到这个数以内是各数据集管线的责任, 压不住就在抽样当下报错.
         if len(self.options) > N_SLOTS:
             raise ValueError(f"menu has {len(self.options)} options, only {N_SLOTS} D slots; "

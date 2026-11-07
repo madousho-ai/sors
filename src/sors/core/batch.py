@@ -49,6 +49,8 @@ def collate(
     option_marker=True (candidate token 读出): 每个选项前加 <|D1|>, 见 decision_batch.candidate_pieces.
     traces=True (candidate): 另给 trace_input_ids / trace_attention_mask (B, T) 左填充, 没有 trace 的行全 0, 给蒸馏老师用.
     """
+    if architecture != "candidate" and any(ex.images for ex in examples):
+        raise ValueError(f"examples with images need the candidate architecture, not {architecture}")
     if architecture != "slots":
         from sors.core.decision_batch import collate_decisions
         return collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, type_marker,

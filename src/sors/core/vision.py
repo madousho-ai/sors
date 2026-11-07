@@ -10,9 +10,70 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import io
+import re
+from dataclasses import dataclass
+
 import torch
 
 SPATIAL_MERGE = 2  # 视觉编码器把 2x2 个 patch 合成一个占位符 (vision_config.spatial_merge_size)
+VISION_TOKENS = ["<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]  # Qwen3.5 tokenizer 自带
+# state 文字里一张图的位置. 私用区字符, 调用方的文字里出现就拒收 (split_data_uris), 伪造不出图片位置
+IMAGE_MARK = "\ue000"
+_DATA_URI = re.compile(r"data:image/(?:png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})")
+
+
+@dataclass(frozen=True, eq=False)
+class VisionImage:
+    """一张图预处理后的样子: patch 网格 (时间, 高, 宽) 与展平的像素块 (时间 x 高 x 宽, 通道 x patch 面积)."""
+    grid: tuple[int, int, int]
+    pixels: torch.Tensor
+
+    @property
+    def tokens(self) -> int:
+        """它在提示里占几个 <|image_pad|>."""
+        t, h, w = self.grid
+        return t * (h // SPATIAL_MERGE) * (w // SPATIAL_MERGE)
+
+
+def split_data_uris(text: str) -> tuple[str, list[bytes]]:
+    """把 text 里的 data:image/...;base64,... 换成 IMAGE_MARK, 依次返回图片的原始字节.
+
+    周围的文字原样保留 (JSON state 里的引号也在). 解不开的 base64 或不是图片的内容报错;
+    text 里本来就有 IMAGE_MARK 也报错.
+    """
+    from PIL import Image, UnidentifiedImageError
+
+    if IMAGE_MARK in text:
+        raise ValueError("the state contains the reserved image mark U+E000")
+    images = []
+
+    def take(match):
+        try:
+            data = base64.b64decode(match.group(1), validate=True)
+            Image.open(io.BytesIO(data)).verify()
+        except (binascii.Error, UnidentifiedImageError, OSError, SyntaxError) as exc:
+            raise ValueError(f"cannot decode the image data URI at offset {match.start()}: {exc}") from exc
+        images.append(data)
+        return IMAGE_MARK
+
+    return _DATA_URI.sub(take, text), images
+
+
+def image_batch(examples) -> dict[str, torch.Tensor]:
+    """批里各行的 image_grids (B, M, 3) 与 image_pixels (B, P, C): 各行的图依次排, 不足处补零."""
+    grids = torch.zeros(len(examples), max(len(e.images) for e in examples), 3, dtype=torch.long)
+    width = max(sum(len(i.pixels) for i in e.images) for e in examples)
+    first = next(i.pixels for e in examples for i in e.images)
+    pixels = first.new_zeros(len(examples), width, first.shape[-1])
+    for r, ex in enumerate(examples):
+        if ex.images:
+            grids[r, :len(ex.images)] = torch.tensor([i.grid for i in ex.images])
+            rows = torch.cat([i.pixels for i in ex.images])
+            pixels[r, :len(rows)] = rows
+    return {"image_grids": grids, "image_pixels": pixels}
 
 
 def rope_positions(ids, grids, image_token_id: int, start: int = 0,

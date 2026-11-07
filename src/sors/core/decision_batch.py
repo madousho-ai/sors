@@ -196,6 +196,9 @@ def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, typ
         suffix_mask = torch.zeros_like(suffix_ids)
         suffix_ids[valid], suffix_mask[valid] = si, sm
         out.update(prefix_lengths=torch.tensor(lengths), suffix_input_ids=suffix_ids, suffix_attention_mask=suffix_mask)
+        if any(ex.images for ex in examples):  # 图只在前缀 (state) 里; 网格与像素按行带上, 视觉编码器在前向时读
+            from sors.core.vision import image_batch
+            out.update(image_batch(examples))
         if traces:
             # 老师读的计算过程: 接在前缀后面, 前后各空一行, 与选项续写 ("Option: ...") 隔开
             seqs = [tokenizer(f"{ex.trace.strip()}\n\n", add_special_tokens=False)["input_ids"] if ex.trace else []
