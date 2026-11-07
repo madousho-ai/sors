@@ -34,13 +34,13 @@ class FakeEngine:
         self.error = error
         self.calls = []
 
-    def evaluate(self, state, questions):
+    def evaluate(self, state, questions, images=()):
         self.calls.append((state, questions))
         if self.error:
             raise self.error
         return Evaluation({qid: self.probs[qid] for qid in questions}, input_tokens=123)
 
-    def prompts(self, state, questions):
+    def prompts(self, state, questions, images=()):
         return {qid: (f"State: {state}\n\n", f"Question: {q.instructions}\nAnswer:") for qid, q in questions.items()}
 
 

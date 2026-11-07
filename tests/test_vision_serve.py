@@ -1,7 +1,7 @@
-"""推理服务读 state 里的 data URI 图片 (CPU, 随机的小 candidate 模型 + 一层视觉编码器).
+"""推理服务读请求里的图片 (CPU, 随机的小 candidate 模型 + 一层视觉编码器).
 
-请求格式照 TypeSafe System One, 不加字段: 图片以 data:image/...;base64,... 写在 state 里 (字符串或 JSON 的值),
-服务端把它解析出来, 放回它在 state 里的位置.
+请求格式照 TypeSafe System One 的 images: 图片列在顶层 assets 里, state 里写它的引用串 (serve.assets).
+引擎收到的 state 里引用串已换成图片标记, 另给标记依次对应的图片字节.
 """
 
 import base64
@@ -13,12 +13,15 @@ from fastapi.testclient import TestClient
 from test_vision_encoder import processor, vision_model
 from test_vision_prompt import png, uri, vision_tokenizer
 
+from sors.core.vision import IMAGE_MARK
+from sors.serve import assets as A
 from sors.serve.api import SystemOneRequest
 from sors.serve.app import create_app
 from sors.serve.engine import Engine, UnsupportedInput
 
 QUESTIONS = {"color": {"type": "choice", "instructions": "Which color?", "criteria": {"red": None, "blue": None}},
              "ok": {"type": "noul", "instructions": "Ok?"}}
+RED, BLUE = (255, 0, 0), (0, 0, 255)
 
 
 def questions():
@@ -33,47 +36,55 @@ def engine(m=None, **kw):
     return Engine(m, tok, d, processor=kw.pop("processor", processor()), **kw)
 
 
-def image(color, size=(64, 64)):
-    return uri(png(color, size))
+def asset(color, size=(280, 280)) -> dict:
+    return {"type": "image", "format": "png", "data_base64": base64.b64encode(png(color, size)).decode()}
+
+
+def body(state, assets=None, qs=QUESTIONS) -> dict:
+    return {"state": state, "model": "m", "questions": qs, **({"assets": assets} if assets else {})}
+
+
+# ---- 引擎 -------------------------------------------------------------------------
 
 
 def test_the_state_image_changes_the_answer():
     e = engine()
-    red = e.evaluate(f"red {image((255, 0, 0))} context", questions()).probs
-    blue = e.evaluate(f"red {image((0, 0, 255))} context", questions()).probs
+    red = e.evaluate(f"red {IMAGE_MARK} context", questions(), [png(RED, (64, 64))]).probs
+    blue = e.evaluate(f"red {IMAGE_MARK} context", questions(), [png(BLUE, (64, 64))]).probs
     assert not torch.allclose(torch.tensor(red["color"]), torch.tensor(blue["color"]), atol=1e-4)
 
 
 def test_an_image_counts_its_placeholders_as_input_tokens():
     e = engine()
     plain = e.evaluate("red context", questions()).input_tokens
-    with_image = e.evaluate(f"red {image((255, 0, 0))} context", questions()).input_tokens
+    with_image = e.evaluate(f"red {IMAGE_MARK} context", questions(), [png(RED, (64, 64))]).input_tokens
     # 64x64 是 2x2 个占位符, 加 vision_start / vision_end; 决策模型每道题各读一次 state, 两道题各算一次
     assert with_image - plain == len(QUESTIONS) * (4 + 2)
 
 
 def test_images_in_json_state_values_are_read_in_place():
     e = engine()
-    as_json = e.evaluate({"photo": image((255, 0, 0)), "note": "red"}, questions()).probs
-    same_text = e.evaluate(f'{{\n  "photo": "{image((255, 0, 0))}",\n  "note": "red"\n}}', questions()).probs
+    image = [png(RED, (64, 64))]
+    as_json = e.evaluate({"photo": IMAGE_MARK, "note": "red"}, questions(), image).probs
+    same_text = e.evaluate(f'{{\n  "photo": "{IMAGE_MARK}",\n  "note": "red"\n}}', questions(), image).probs
     assert as_json == same_text
+
+
+def test_data_uris_in_the_state_are_plain_text():
+    state, _ = engine().prompts(f"red {uri(png(RED, (64, 64)))}", questions())["color"]
+    assert "<|image_pad|>" not in state and "base64," in state
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the packed path's DeltaNet kernels need CUDA")
 def test_packed_models_answer_image_requests_like_the_shared_prefix_cache():
     m, _, _ = vision_model()
     e = engine(m.cuda())
-    want = e.evaluate(f"red {image((255, 0, 0))}", questions()).probs
+    image = [png(RED, (64, 64))]
+    want = e.evaluate(f"red {IMAGE_MARK}", questions(), image).probs
     e.lm.set_candidate_prefix_cache("packed")
-    got = e.evaluate(f"red {image((255, 0, 0))}", questions()).probs
+    got = e.evaluate(f"red {IMAGE_MARK}", questions(), image).probs
     for qid in want:
         torch.testing.assert_close(torch.tensor(got[qid]), torch.tensor(want[qid]), atol=1e-5, rtol=1e-4)
-
-
-@pytest.mark.parametrize("state", ["a \ue000 b", "data:image/png;base64," + base64.b64encode(b"nope").decode()])
-def test_forged_marks_and_broken_images_are_unsupported_input(state):
-    with pytest.raises(UnsupportedInput):
-        engine().evaluate(state, questions())
 
 
 def test_a_model_without_a_vision_encoder_refuses_images_but_still_answers_text():
@@ -81,23 +92,66 @@ def test_a_model_without_a_vision_encoder_refuses_images_but_still_answers_text(
     del m.visual
     e = engine(m)
     with pytest.raises(UnsupportedInput, match="image"):
-        e.evaluate(f"red {image((255, 0, 0))}", questions())
+        e.evaluate(f"red {IMAGE_MARK}", questions(), [png(RED, (64, 64))])
     assert set(e.evaluate("red", questions()).probs) == set(QUESTIONS)
 
 
-def test_the_http_api_answers_images_and_rejects_unsupported_ones_with_422():
-    client = TestClient(create_app(engine(), "m"))
-    ok = client.post("/v1/systemone", json={"state": f"red {image((255, 0, 0))}", "model": "m", "questions": QUESTIONS})
-    assert ok.status_code == 200 and set(ok.json()["answers"]) == set(QUESTIONS)
-    bad = client.post("/v1/systemone", json={"state": "a \ue000", "model": "m", "questions": QUESTIONS})
-    assert bad.status_code == 422 and bad.json()["detail"][0]["loc"] == ["body", "state"]
-
-
 def test_prompt_previews_show_images_as_placeholder_runs():
-    prompts = engine().prompts(f"red {image((255, 0, 0))}", questions())
+    prompts = engine().prompts(f"red {IMAGE_MARK}", questions(), [png(RED, (64, 64))])
     state, _ = prompts["color"]
-    assert "base64" not in state
     assert state.count("<|image_pad|>") == 4 and "<|vision_start|>" in state
+
+
+# ---- HTTP -------------------------------------------------------------------------
+
+
+def test_the_http_api_reads_assets_referenced_in_the_state():
+    client = TestClient(create_app(engine(), "m"))
+    red = client.post("/v1/systemone", json=body({"photo": "ref-1"}, {"ref-1": asset(RED)}))
+    blue = client.post("/v1/systemone", json=body({"photo": "ref-1"}, {"ref-1": asset(BLUE)}))
+    assert red.status_code == 200 and blue.status_code == 200
+    assert red.json()["answers"]["color"] != blue.json()["answers"]["color"]
+
+
+@pytest.mark.parametrize("assets, status", [
+    ({"ref-1": asset(RED), "spare": asset(RED)}, 400),  # 有一个没被引用
+    ({"ref-1": asset(RED, (200, 280))}, 400),  # 边长不到 280
+    ({"ref-1": asset(RED, (1600, 280))}, 413),  # 边长超过 1568
+])
+def test_rejected_assets_get_the_official_status_codes(assets, status):
+    client = TestClient(create_app(engine(), "m"))
+    r = client.post("/v1/systemone", json=body("see ref-1", assets))
+    assert r.status_code == status
+
+
+def test_references_in_questions_are_422_on_questions():
+    client = TestClient(create_app(engine(), "m"))
+    qs = {"q": {"type": "noul", "instructions": "Is it like ref-1?"}}
+    r = client.post("/v1/systemone", json=body("ref-1", {"ref-1": asset(RED)}, qs))
+    assert r.status_code == 422 and r.json()["detail"][0]["loc"] == ["body", "questions"]
+
+
+def test_the_reserved_mark_and_images_for_a_text_model_are_422_on_state():
+    client = TestClient(create_app(engine(), "m"))
+    forged = client.post("/v1/systemone", json=body(f"a {IMAGE_MARK}"))
+    assert forged.status_code == 422 and forged.json()["detail"][0]["loc"] == ["body", "state"]
+    m, _, _ = vision_model()
+    del m.visual
+    text_only = TestClient(create_app(engine(m), "m")).post("/v1/systemone", json=body("ref-1", {"ref-1": asset(RED)}))
+    assert text_only.status_code == 422 and text_only.json()["detail"][0]["loc"] == ["body", "state"]
+
+
+def test_a_body_over_the_limit_is_413(monkeypatch):
+    client = TestClient(create_app(engine(), "m"))
+    small = body("red")
+    monkeypatch.setattr(A, "MAX_BODY_BYTES", 10)
+    assert client.post("/v1/systemone", json=small).status_code == 413
+
+
+def test_prompt_previews_read_assets_too(tmp_path):
+    client = TestClient(create_app(engine(), "m", demo_dir=tmp_path))
+    r = client.post("/demo/prompts", json=body("see ref-1", {"ref-1": asset(RED)}))
+    assert r.status_code == 200 and "<|image_pad|>" in r.json()["prompts"]["color"]["state"]
 
 
 def test_the_processor_loads_with_a_pixel_cap():

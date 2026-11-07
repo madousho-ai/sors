@@ -1,4 +1,4 @@
-"""state 里的图片: data URI 解析、提示里的占位符展开、candidate 批里的网格与像素 (CPU).
+"""state 里的图片: 提示里的占位符展开、candidate 批里的网格与像素 (CPU).
 
 图在 query 里是一个 IMAGE_MARK 字符, MenuExample.images 依次给出这些图预处理后的样子.
 提示里每个标记展开成 <|vision_start|> + N 个 <|image_pad|> + <|vision_end|>, N = 时间 x 高/2 x 宽/2.
@@ -14,7 +14,7 @@ from test_candidate import candidate_batch
 from test_decision import examples
 
 from sors.core.menu import MenuExample
-from sors.core.vision import IMAGE_MARK, VISION_TOKENS, VisionImage, split_data_uris
+from sors.core.vision import IMAGE_MARK, VISION_TOKENS, VisionImage
 
 
 def png(color=(255, 0, 0), size=(32, 32)) -> bytes:
@@ -53,33 +53,6 @@ def vision_tokenizer():
     tok.add_tokens(VISION_TOKENS, special_tokens=True)
     d = install_d_tokens(tok)
     return tok, d, d + install_type_tokens(tok) + install_context_tokens(tok)
-
-
-# ---- data URI -------------------------------------------------------------------
-
-
-def test_data_uris_become_marks_in_place_and_their_bytes_come_out_in_order():
-    a, b = png((255, 0, 0)), png((0, 0, 255))
-    text, images = split_data_uris(f"before {uri(a)} middle {uri(b, 'jpeg')} after")
-    assert text == f"before {IMAGE_MARK} middle {IMAGE_MARK} after"
-    assert images == [a, b]
-
-
-def test_data_uris_inside_json_state_keep_the_surrounding_json():
-    a = png()
-    text, images = split_data_uris(f'{{\n  "photo": "{uri(a)}",\n  "note": "hi"\n}}')
-    assert text == f'{{\n  "photo": "{IMAGE_MARK}",\n  "note": "hi"\n}}'
-    assert images == [a]
-
-
-def test_text_without_data_uris_is_unchanged():
-    assert split_data_uris("data:text/plain;base64,aGk= stays") == ("data:text/plain;base64,aGk= stays", [])
-
-
-@pytest.mark.parametrize("text", [f"a {IMAGE_MARK} b", f"{uri(b'not an image')}"])
-def test_forged_marks_and_undecodable_images_are_rejected(text):
-    with pytest.raises(ValueError):
-        split_data_uris(text)
 
 
 # ---- 提示 -----------------------------------------------------------------------

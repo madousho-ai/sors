@@ -32,6 +32,7 @@ MIN_SIDE, MAX_SIDE = 280, 1568
 MAX_IMAGE_BYTES = 16 * 2**20
 MAX_REFERENCE_BYTES = 1024
 MAX_REFERENCES_BYTES = 65536
+MAX_BODY_BYTES = 32 * 2**20  # 请求体, 含 JSON 与 base64 文字; serve.app 在解析之前查
 MAX_EXPANDED_BYTES = 32 * 2**20
 
 _BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")

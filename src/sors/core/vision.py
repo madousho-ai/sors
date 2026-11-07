@@ -10,19 +10,15 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import io
-import re
 from dataclasses import dataclass
 
 import torch
 
 SPATIAL_MERGE = 2  # 视觉编码器把 2x2 个 patch 合成一个占位符 (vision_config.spatial_merge_size)
 VISION_TOKENS = ["<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]  # Qwen3.5 tokenizer 自带
-# state 文字里一张图的位置. 私用区字符, 调用方的文字里出现就拒收 (split_data_uris), 伪造不出图片位置
+# state 文字里一张图的位置. 私用区字符, 调用方的文字里出现就拒收 (serve.assets), 伪造不出图片位置
 IMAGE_MARK = "\ue000"
-_DATA_URI = re.compile(r"data:image/(?:png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})")
 
 
 @dataclass(frozen=True, eq=False)
@@ -36,30 +32,6 @@ class VisionImage:
         """它在提示里占几个 <|image_pad|>."""
         t, h, w = self.grid
         return t * (h // SPATIAL_MERGE) * (w // SPATIAL_MERGE)
-
-
-def split_data_uris(text: str) -> tuple[str, list[bytes]]:
-    """把 text 里的 data:image/...;base64,... 换成 IMAGE_MARK, 依次返回图片的原始字节.
-
-    周围的文字原样保留 (JSON state 里的引号也在). 解不开的 base64 或不是图片的内容报错;
-    text 里本来就有 IMAGE_MARK 也报错.
-    """
-    from PIL import Image, UnidentifiedImageError
-
-    if IMAGE_MARK in text:
-        raise ValueError("the state contains the reserved image mark U+E000")
-    images = []
-
-    def take(match):
-        try:
-            data = base64.b64decode(match.group(1), validate=True)
-            Image.open(io.BytesIO(data)).verify()
-        except (binascii.Error, UnidentifiedImageError, OSError, SyntaxError) as exc:
-            raise ValueError(f"cannot decode the image data URI at offset {match.start()}: {exc}") from exc
-        images.append(data)
-        return IMAGE_MARK
-
-    return _DATA_URI.sub(take, text), images
 
 
 def image_batch(examples) -> dict[str, torch.Tensor]:

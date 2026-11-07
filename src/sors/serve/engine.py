@@ -15,10 +15,9 @@ load_engine 从基模 + 存档搭引擎: LoRA 照档里记的形状挂上再合�
 menu-first 训的档没有可共享的 state 前缀, 拒收; chat 布局 (官方 chat template) 与 context-first 一样 state 在前.
 调用方的 state、问句、选项名照 core.prompt.encode_prompts 编码: 里面写着的 <|D5|> 之类是普通文字.
 
-state 里的图片: 请求格式不变, 图片写成 data:image/...;base64,... (字符串 state 或 JSON state 的值都行).
-state 先渲染成文字, 每个 data URI 换成一个图片标记并预处理 (core.vision), 提示里在原位置展开成占位符串.
-只有挂了视觉编码器的 candidate 模型读图; 别的模型收到带图的 state, 解不开的图, 或 state 里本来就有图片标记
-(U+E000), 都是 UnsupportedInput.
+state 里的图片: 请求照 TypeSafe System One 的 assets 送图 (serve.assets), 到这里时 state 里的引用串
+已换成图片标记 (U+E000), images 依次给出每个标记的图片字节; 提示里在原位置展开成占位符串.
+只有挂了视觉编码器的 candidate 模型读图; 别的模型收到图, 读不了的图, 或标记数与图数对不上, 都是 UnsupportedInput.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ from sors.core.cache import branch_logits, prefix_cache
 from sors.core.checkpoint import prepare_from_checkpoint
 from sors.core.prompt import encode_prompts, prompt_pieces, split_prompt, state_text
 from sors.core.tokens import install_context_tokens, install_d_tokens, install_type_tokens
-from sors.core.vision import IMAGE_MARK, preprocess_images, split_data_uris
+from sors.core.vision import IMAGE_MARK, preprocess_images
 from sors.serve.menus import to_example
 
 SHARED_PREFIX_LAYOUTS = ("context-first", "chat")  # state 在前才有可共享的前缀
@@ -80,27 +79,28 @@ class Engine:
         self.processor = processor  # 图像预处理器; None 时不收带图的 state
         self._lock = threading.Lock()
 
-    def _state(self, state) -> tuple[str, tuple]:
-        """state -> (提示里的 state 文字, 图片标记依次对应的图)."""
+    def _state(self, state, images) -> tuple[str, tuple]:
+        """state -> (提示里的 state 文字, 图片标记依次对应的图).
+        images: state 里每个 IMAGE_MARK 依次对应的图片字节 (serve.assets.resolve 从请求的 assets 换出来)."""
         text = state_text(state)
-        if "data:image/" not in text and IMAGE_MARK not in text:
-            return text, ()
-        try:
-            text, data = split_data_uris(text)
-        except ValueError as exc:
-            raise UnsupportedInput(str(exc)) from exc
-        if not data:
+        if text.count(IMAGE_MARK) != len(images):
+            raise UnsupportedInput(f"the state has {text.count(IMAGE_MARK)} image marks (U+E000) "
+                                   f"but {len(images)} images")
+        if not images:
             return text, ()
         kind = getattr(getattr(self.lm, "decision_config", None), "kind", None)
         if kind != "candidate" or getattr(self.lm, "visual", None) is None or self.processor is None:
             raise UnsupportedInput("this model does not read images; serve a candidate model with --vision-model")
-        return text, tuple(preprocess_images(self.processor, data))
+        try:
+            return text, tuple(preprocess_images(self.processor, list(images)))
+        except (OSError, ValueError, SyntaxError) as exc:
+            raise UnsupportedInput(f"cannot read an image in the state: {exc}") from exc
 
-    def prompts(self, state, questions: dict) -> dict[str, tuple[str, str]]:
+    def prompts(self, state, questions: dict, images=()) -> dict[str, tuple[str, str]]:
         """{问题 id: (state 段, 问题段)}: 模型读到的提示原文, 两段拼起来就是训练模板下的整条提示.
         state 段所有题相同 (只前向一次), 问题段各题自己的, 以 'Answer:' 收尾. 不碰模型.
         标签默认为空, state 段就是 state 本身; 给了 context_label 才在前面加「<标签>: 」."""
-        state, images = self._state(state)
+        state, images = self._state(state, images)
         kind = getattr(getattr(self.lm, "decision_config", None), "kind", None)
         if kind == "candidate":
             from sors.core.decision_batch import candidate_pieces
@@ -124,9 +124,10 @@ class Engine:
                                   self.context_marker)
                 for qid, q in questions.items()}
 
-    def evaluate(self, state, questions: dict) -> Evaluation:
-        """questions: {问题 id: serve.api 的 Noul / Choice / Score}. 返回的 probs 与 questions 同序."""
-        state, images = self._state(state)
+    def evaluate(self, state, questions: dict, images=()) -> Evaluation:
+        """questions: {问题 id: serve.api 的 Noul / Choice / Score}. 返回的 probs 与 questions 同序.
+        images 见 _state."""
+        state, images = self._state(state, images)
         exs = {qid: to_example(q, state, self.context_label, images) for qid, q in questions.items()}
         if getattr(self.lm, "decision_config", None) is not None:
             return self._evaluate_decisions(exs)
