@@ -21,6 +21,9 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", choices=["float32", "bfloat16", "float16"], default="bfloat16",
                         help="旧存档加载基模时的精度；完整模型目录保留已保存的混合精度")
+    parser.add_argument("--vision-model", default=None,
+                        help="多模态底座 (如 Qwen/Qwen3.5-2B-Base): 把它的冻结视觉编码器与图像预处理器一起打进导出目录, "
+                             "之后 serve.py 不用再给 --vision-model. 只有 candidate 模型能挂")
     parser.add_argument("--local-files-only", action="store_true")
     add_attention_arguments(parser)
     parser.set_defaults(attn_implementation="sdpa", allow_kernel_download=False)
@@ -39,8 +42,9 @@ def main():
         config = read_checkpoint(args.init)["config"]
     engine = load_engine(args.init, base, device=args.device, dtype=getattr(torch, args.dtype),
                          attn_implementation=args.attn_implementation,
-                         allow_kernel_download=args.allow_kernel_download, local_files_only=args.local_files_only)
-    save_pretrained(engine.lm, engine.tok, config, args.out)
+                         allow_kernel_download=args.allow_kernel_download, local_files_only=args.local_files_only,
+                         vision_model=args.vision_model)
+    save_pretrained(engine.lm, engine.tok, config, args.out, processor=engine.processor)
     size = (args.out / "model.safetensors").stat().st_size
     print(f"exported complete model: {args.out} ({size:,} weight bytes)", flush=True)
 

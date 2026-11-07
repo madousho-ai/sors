@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off", "packed"], default=None,
                     help="覆盖 candidate 存档的共享前缀执行方式；默认继承存档，旧存档保持 off")
     ap.add_argument("--vision-model", default=None,
-                    help="多模态底座 (如 Qwen/Qwen3.5-2B-Base): 从它载入冻结的视觉编码器, 读请求 assets 里、"
+                    help="多模态底座 (如 Qwen/Qwen3.5-2B-Base): 给不自带视觉编码器的模型临时挂一个, 读请求 assets 里、"
                          "state 引用的图 (TypeSafe 的 images 规范). 只有 candidate 模型能挂; 不给 = 不收带图的请求")
     ap.add_argument("--max-image-pixels", type=int, default=1024 * 1024,
                     help="单张图缩到不超过这么多像素; 32x32 像素是一个 token, 默认 1024x1024 即每张图至多 1024 个 token")

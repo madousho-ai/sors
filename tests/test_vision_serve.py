@@ -154,6 +154,48 @@ def test_prompt_previews_read_assets_too(tmp_path):
     assert r.status_code == 200 and "<|image_pad|>" in r.json()["prompts"]["color"]["state"]
 
 
+# ---- 自带视觉编码器的完整模型目录 ---------------------------------------------------
+
+
+def test_an_exported_model_carries_its_vision_encoder_and_reads_images_without_a_base(tmp_path):
+    from unittest.mock import patch
+
+    from sors.core.pretrained import save_pretrained
+    from sors.serve.engine import load_engine
+
+    e = engine()
+    image = [png(RED, (64, 64))]
+    want = e.evaluate(f"red {IMAGE_MARK}", questions(), image).probs
+    save_pretrained(e.lm, e.tok, {"layout": "context-first"}, tmp_path / "release", processor=e.processor)
+    with patch("sors.core.vision.load_vision", side_effect=AssertionError("a base model was read")):
+        loaded = load_engine(tmp_path / "release", device="cpu", dtype=torch.float32, local_files_only=True)
+    assert loaded.evaluate(f"red {IMAGE_MARK}", questions(), image).probs == want
+    with pytest.raises(ValueError, match="vision"):
+        load_engine(tmp_path / "release", device="cpu", vision_model="Qwen/Qwen3.5-2B-Base")
+
+
+def test_the_bundled_processor_still_takes_the_pixel_cap(tmp_path):
+    from sors.core.pretrained import save_pretrained
+    from sors.core.vision import preprocess_images
+    from sors.serve.engine import load_engine
+
+    e = engine()
+    save_pretrained(e.lm, e.tok, {"layout": "context-first"}, tmp_path / "release", processor=e.processor)
+    capped = load_engine(tmp_path / "release", device="cpu", max_image_pixels=64 * 64)
+    (big,) = preprocess_images(capped.processor, [png(RED, (256, 256))])
+    t, h, w = big.grid
+    assert t * h * w * 16 * 16 <= 64 * 64
+
+
+def test_exporting_a_vision_model_needs_its_processor(tmp_path):
+    from sors.core.pretrained import save_pretrained
+
+    e = engine()
+    with pytest.raises(ValueError, match="processor"):
+        save_pretrained(e.lm, e.tok, {"layout": "context-first"}, tmp_path / "release")
+    assert not (tmp_path / "release").exists()
+
+
 def test_the_processor_loads_with_a_pixel_cap():
     from sors.core.vision import load_processor, preprocess_images
 

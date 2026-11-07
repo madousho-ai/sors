@@ -223,7 +223,8 @@ def load_engine(checkpoint, base_model=None, context_label: str = "", device: st
     Complete exports preserve their saved mixed precision and use local model
     assets. The dtype argument controls legacy base-model loading.
     vision_model: 多模态底座 (如 Qwen/Qwen3.5-2B-Base), 从它载入冻结的视觉编码器与图像预处理器;
-    只有 candidate 模型能挂. max_image_pixels: 单张图缩到不超过这么多像素.
+    只有 candidate 模型能挂. 自带视觉编码器的完整模型目录 (core.pretrained) 不用也不许再给.
+    max_image_pixels: 单张图缩到不超过这么多像素.
     """
     from transformers import AutoTokenizer
     from sors.core.attention import load_causal_lm
@@ -250,6 +251,11 @@ def load_engine(checkpoint, base_model=None, context_label: str = "", device: st
     if hasattr(m, "merge_and_unload"):  # d-only 的档没有 LoRA, m 就是基模本身
         m = m.merge_and_unload()
     processor = None
+    if getattr(m, "visual", None) is not None:  # 完整模型目录自带视觉编码器, 预处理器也在目录里
+        if vision_model is not None:
+            raise ValueError(f"{checkpoint} already carries its vision encoder; omit --vision-model")
+        from sors.core.vision import load_processor
+        processor = load_processor(checkpoint, max_pixels=max_image_pixels, local_files_only=True)
     if vision_model is not None:
         from sors.core.vision import attach_vision, load_processor, load_vision
         if getattr(getattr(m, "decision_config", None), "kind", None) != "candidate":

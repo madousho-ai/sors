@@ -31,18 +31,27 @@ def _token_ids(tokenizer, ids, vocab_size):
         raise ValueError("exported tokenizer and trainable token IDs must match the model embeddings")
 
 
-def save_pretrained(model, tokenizer, training_config, directory) -> None:
+def save_pretrained(model, tokenizer, training_config, directory, *, processor=None) -> None:
     """Write a new complete model directory without changing the live model.
 
     Existing directories are refused. This format is for inference with the Sors
     runtime; it carries the same model structure as the training checkpoint and
     preserves the dtype of every parameter, including float32 decision layers.
+
+    A model with a vision encoder attached (core.vision.attach_vision) is saved
+    with it: the frozen visual.* weights go into the same safetensors file, the
+    encoder's config and image token into config.json, and processor (the image
+    preprocessor, required then) into preprocessor_config.json, uncapped; the
+    server applies its own pixel cap when it loads the directory.
     """
     from safetensors.torch import save_model
 
     directory = Path(directory)
     if directory.exists():
         raise FileExistsError(f"export directory already exists: {directory}")
+    visual = getattr(model, "visual", None)
+    if visual is not None and processor is None:
+        raise ValueError("a model with a vision encoder needs its image processor to be exported")
     embedding = model.get_input_embeddings()
     ids = embedding.ids.tolist()
     config = model.config.get_text_config().to_dict()
@@ -62,9 +71,15 @@ def save_pretrained(model, tokenizer, training_config, directory) -> None:
         "backbone_dtype": str(embedding.base.weight.dtype).removeprefix("torch."),
         "parameter_dtypes": dtypes,
     }
+    if visual is not None:
+        vision = visual.config.to_dict()
+        vision.pop("_name_or_path", None)
+        record["vision"] = {"config": vision, "image_token_id": int(model.image_token_id)}
     directory.mkdir(parents=True)
     save_model(model, directory / "model.safetensors", metadata={"format": "pt", "sors_format": FORMAT})
     tokenizer.save_pretrained(directory)
+    if visual is not None:
+        processor.save_pretrained(directory)
     with (directory / "config.json").open("x") as stream:
         json.dump(record, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
@@ -100,6 +115,19 @@ def load_pretrained(directory, *, device="cuda", attn_implementation="sdpa", all
         raw = AutoModelForCausalLM.from_config(config, dtype=dtype,
                                               attn_implementation=choice.implementation).to(device)
         model = prepare_model(raw, ids, lora_dropout=0.0, **record["adapter"], decision=decision)
+        if "vision" in record:  # 自带的视觉编码器: 先搭好挂上, 权重随下面的 load_model 一起严格恢复
+            from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
+            from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+
+            from sors.core.vision import attach_vision
+
+            image_token_id = record["vision"]["image_token_id"]
+            if tok.convert_tokens_to_ids("<|image_pad|>") != image_token_id:
+                raise ValueError(f"the bundled vision encoder places images at token {image_token_id}, "
+                                 "which the bundled tokenizer does not")
+            vision = dict(record["vision"]["config"])
+            vision.pop("model_type", None)
+            attach_vision(model, Qwen3_5VisionModel(Qwen3_5VisionConfig(**vision)).to(device), image_token_id)
         parameters = dict(model.named_parameters())
         if set(parameters) != set(record["parameter_dtypes"]):
             raise ValueError("exported parameter dtype manifest differs from the configured model")
