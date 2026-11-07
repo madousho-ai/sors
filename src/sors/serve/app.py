@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 
 from sors.serve.api import SystemOneRequest, answer
-from sors.serve.engine import RequestTooLong
+from sors.serve.engine import RequestTooLong, UnsupportedInput
 
 
 def _unprocessable(field: str, msg: str) -> HTTPException:
@@ -49,6 +49,8 @@ def create_app(engine, model_name: str, api_key: str | None = None, description:
             ev = engine.evaluate(req.state, req.questions)
         except RequestTooLong as e:
             raise _unprocessable("questions", str(e)) from None
+        except UnsupportedInput as e:
+            raise _unprocessable("state", str(e)) from None
         return {"model": model_name,
                 "answers": {qid: answer(q, ev.probs[qid]) for qid, q in req.questions.items()},
                 "usage": {"input_tokens": ev.input_tokens, "output_tokens": len(req.questions)}}

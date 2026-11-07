@@ -131,6 +131,18 @@ def preprocess_images(processor, images: list[bytes]) -> list[VisionImage]:
     return out
 
 
+def load_processor(model_id, *, max_pixels: int | None = None, revision=None, local_files_only=False):
+    """底座的图像预处理器. max_pixels 给了就把单张图缩到不超过这么多像素 (一个占位符是 32x32 像素);
+    Qwen3.5 自带的上限是 4096x4096, 一张图就有 16384 个占位符."""
+    from transformers import AutoImageProcessor
+
+    processor = AutoImageProcessor.from_pretrained(model_id, revision=revision, local_files_only=local_files_only)
+    if max_pixels is not None:
+        low = min(processor.size["shortest_edge"], max_pixels)
+        processor.size = {"shortest_edge": low, "longest_edge": max_pixels}
+    return processor
+
+
 def attach_vision(model, visual, image_token_id: int) -> None:
     """把冻结的视觉编码器挂到决策模型上 (model.visual), 带 image_pixels 的批在前向时由它编码."""
     visual.requires_grad_(False)

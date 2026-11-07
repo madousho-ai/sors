@@ -601,14 +601,15 @@ class DecisionModel(nn.Module):
             return self._output_logits(scores, slots, valid, option_rows)
 
     def _check_images(self, batch):
-        """带图的批: 只有 candidate 的逐选项编码与共享前缀缓存读图; 打包前向还没接上."""
+        """带图的批: 只有 candidate 的逐选项编码与共享前缀缓存读图. 打包前向还没接上:
+        训练时拒收, 推理 (不求梯度) 时改走共享前缀缓存, 两条路的结果相同."""
         if not has_images(batch):
             return
         if self.decision_config.kind != "candidate":
             raise ValueError(f"image inputs need the candidate architecture, not {self.decision_config.kind}")
         if self.image_token_id is None:
             raise ValueError("image inputs need the model's image_token_id")
-        if self.candidate_prefix_cache == "packed":
+        if self.candidate_prefix_cache == "packed" and torch.is_grad_enabled():
             raise ValueError("packed candidate encoding does not read image inputs yet")
 
     def forward_batch(self, batch, *, option_batch_size=None):
@@ -622,7 +623,7 @@ class DecisionModel(nn.Module):
             return self._forward_read_only(batch, option_batch_size)
         if self._layerwise_feedback and self.training and torch.is_grad_enabled():
             return self._forward_feedback(batch)
-        if self.decision_config.kind == "candidate" and self.candidate_prefix_cache == "packed":
+        if self.decision_config.kind == "candidate" and self.candidate_prefix_cache == "packed" and not has_images(batch):
             # 前缀算一次, 全部分支同一次前向接着跑, 可训 (sors.core.packed)
             from sors.core.packed import packed_candidate_hidden, supports_packed
             if not supports_packed(self.decoder):

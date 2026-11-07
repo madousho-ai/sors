@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="一次前向的 KV cache 预算: 同组问题数 × (state + 组内最长的问题). 显存紧就调小")
     ap.add_argument("--candidate-prefix-cache", choices=["auto", "on", "off", "packed"], default=None,
                     help="覆盖 candidate 存档的共享前缀执行方式；默认继承存档，旧存档保持 off")
+    ap.add_argument("--vision-model", default=None,
+                    help="多模态底座 (如 Qwen/Qwen3.5-2B-Base): 从它载入冻结的视觉编码器, state 里的 "
+                         "data:image/...;base64,... 按图片读. 只有 candidate 模型能挂; 不给 = 不收带图的 state")
+    ap.add_argument("--max-image-pixels", type=int, default=1024 * 1024,
+                    help="单张图缩到不超过这么多像素; 32x32 像素是一个 token, 默认 1024x1024 即每张图至多 1024 个 token")
     ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 SORS_API_KEY, 也没有就不查")
     ap.add_argument("--demo", action="store_true", help="把 demos/ 下的演示页挂在 /demo/ (手填请求在 /demo/playground/, 贪吃蛇在 /demo/snake/)")
     ap.add_argument("--host", default="127.0.0.1")
@@ -160,7 +165,8 @@ def main() -> None:
                           candidate_prefix_cache=args.candidate_prefix_cache,
                           attn_implementation=args.attn_implementation,
                           allow_kernel_download=args.allow_kernel_download,
-                          local_files_only=args.local_files_only)
+                          local_files_only=args.local_files_only,
+                          vision_model=args.vision_model, max_image_pixels=args.max_image_pixels)
     if args.warmup:
         warmup(engine)
     released = datetime.date.fromtimestamp(pathlib.Path(args.init).stat().st_mtime).isoformat()

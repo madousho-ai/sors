@@ -35,8 +35,9 @@ def option_row(name: str, description) -> str:
     return _one_line(name) if description is None else f"{_one_line(name)}: {_one_line(description)}"
 
 
-def to_example(q: Noul | Choice | Score, state, context_label: str) -> MenuExample:
-    """q 在 state 上的菜单样本. 选项的类 id 就是行号, gold 只是占位 (推理没有标准答案)."""
+def to_example(q: Noul | Choice | Score, state, context_label: str, images=()) -> MenuExample:
+    """q 在 state 上的菜单样本. 选项的类 id 就是行号, gold 只是占位 (推理没有标准答案).
+    images: state 文字里每个 vision.IMAGE_MARK 依次对应的图 (serve.engine 从 data URI 解析出来)."""
     if q.type == "choice":
         names, qtype = [option_row(n, d) for n, d in q.criteria.items()], "choice"
     elif q.type == "noul":
@@ -46,4 +47,5 @@ def to_example(q: Noul | Choice | Score, state, context_label: str) -> MenuExamp
         names, qtype = [_one_line(level) for level in q.criteria], "score"
     k = len(names)
     return MenuExample(query=state_text(state), options=list(range(k)), gold_idx=0, label=0, option_names=names,
-                       context_label=context_label, question=state_text(q.instructions), qtype=qtype)
+                       context_label=context_label, question=state_text(q.instructions), qtype=qtype,
+                       images=tuple(images))
