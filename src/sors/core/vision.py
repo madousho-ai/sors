@@ -48,3 +48,34 @@ def rope_positions(ids, grids, image_token_id: int, start: int = 0,
         raise ValueError(f"{len(pending)} images have no placeholders")
     out = torch.cat(pieces, dim=1) if pieces else torch.zeros(3, 0, dtype=torch.long)
     return out, pos
+
+
+def row_grids(grids: torch.Tensor) -> list[tuple[int, int, int]]:
+    """批里一行的 image_grids (M, 3) 去掉全零的空位."""
+    return [tuple(g) for g in grids.tolist() if any(g)]
+
+
+def has_images(batch) -> bool:
+    return "image_embeds" in batch
+
+
+def image_inputs(embed, ids, mask, image_token_id: int, embeds, grids):
+    """带图的一批左填充序列 -> (inputs_embeds (B, L, hidden), position_ids (4, B, L)).
+
+    embed: 主干的嵌入层 (连同 D 行替换). embeds (B, P, hidden): 各行依次出现的图像向量, 多出的是填充.
+    grids (B, M, 3): 各行每张图的网格, 全零行是空位. position_ids 第 0 行是序列序号 (主干拿它建注意力掩码),
+    后三行是 M-RoPE 坐标; 填充位都是 0.
+    """
+    x = embed(ids).clone()
+    text = (mask.long().cumsum(-1) - 1).clamp_min(0)
+    pos = text[None].repeat(4, 1, 1)
+    for r in range(ids.shape[0]):
+        valid = mask[r].bool()
+        p, _ = rope_positions(ids[r][valid], row_grids(grids[r]), image_token_id)
+        pos[1:, r, valid] = p.to(pos.device)
+        spots = valid & (ids[r] == image_token_id)
+        n = int(spots.sum())
+        if n > embeds.shape[1]:
+            raise ValueError(f"row {r} has {n} image placeholders but only {embeds.shape[1]} image vectors")
+        x[r, spots] = embeds[r, :n].to(x.dtype)
+    return x, pos

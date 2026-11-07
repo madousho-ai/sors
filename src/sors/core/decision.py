@@ -12,6 +12,8 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from sors.core.vision import has_images
+
 _OPTION_CHUNK_OWNER = ContextVar('sors_option_chunk_owner', default=None)
 _FEEDBACK_CONTEXT = ContextVar('sors_feedback_context', default=None)
 # Bound the activation scale of a whole option-chunk replay. Larger chunks keep
@@ -247,7 +249,8 @@ class DecisionModel(nn.Module):
         self.head_active = True
         self.branch_in_head_stage = True
         self._branch = None
-        # Keep new decision parameters in fp32, just like PEFT adapters; the
+        # 图片占位符的 token id; None 时不收带图的批 (sors.core.vision)
+        self.image_token_id = None        # Keep new decision parameters in fp32, just like PEFT adapters; the
         # training loop's master weights still handle a low-precision backbone.
         device = next(base.parameters()).device
         for layer in decision_layers:
@@ -262,14 +265,20 @@ class DecisionModel(nn.Module):
     def get_input_embeddings(self):
         return self.base.get_input_embeddings()
 
-    def _encode(self, ids, mask):
+    def _encode(self, ids, mask, images=None):
         # Explicit per-sequence positions preserve padding and branch independence
         # for both rotary attention and the hybrid text backbone.
+        if images is not None:  # (图像向量, 网格), 与 ids 逐行对应; 位置换成 M-RoPE (sors.core.vision)
+            from sors.core.vision import image_inputs
+            x, positions = image_inputs(self.decoder.embed_tokens, ids, mask, self.image_token_id, *images)
+            return self.decoder(inputs_embeds=x, attention_mask=mask, position_ids=positions,
+                                use_cache=False).last_hidden_state
         positions = (mask.long().cumsum(-1) - 1).clamp_min(0)
         return self.decoder(input_ids=ids, attention_mask=mask, position_ids=positions,
                             use_cache=False).last_hidden_state
 
-    def _encode_option_chunk(self, ids, mask, dtype):
+    def _encode_option_chunk(self, ids, mask, dtype, *images):
+        images = images or None
         scale = ids.numel() * self.config.hidden_size * len(self.decoder.layers)
         if self._read_only and self.decision_config.kind == "structural" and scale <= _OPTION_CHECKPOINT_ELEMENTS:
             # The enclosing chunk checkpoint already discards its activations.
@@ -277,16 +286,20 @@ class DecisionModel(nn.Module):
             # thread/model's native checkpoint policy during backward replay.
             token = _OPTION_CHUNK_OWNER.set(self._checkpoint_owner)
             try:
-                return self._encode(ids, mask)[:, -1].to(dtype)
+                return self._encode(ids, mask, images)[:, -1].to(dtype)
             finally:
                 _OPTION_CHUNK_OWNER.reset(token)
-        return self._encode(ids, mask)[:, -1].to(dtype)
+        return self._encode(ids, mask, images)[:, -1].to(dtype)
 
     def _encode_options(self, batch, valid, dtype, option_batch_size, option_rows=None):
         if option_rows is None:
             option_rows = valid.flatten().nonzero().flatten()
         ids = batch["option_input_ids"].flatten(0, 1).index_select(0, option_rows)
         masks = batch["option_attention_mask"].flatten(0, 1).index_select(0, option_rows)
+        images = ()
+        if has_images(batch):  # 每个选项分支读它所在那一行的图
+            rows = option_rows.div(valid.shape[1], rounding_mode="floor")
+            images = (batch["image_embeds"].index_select(0, rows), batch["image_grids"].index_select(0, rows))
         chunk = min(option_batch_size or self.decision_config.option_batch_size, self.decision_config.option_batch_size)
         lengths = masks.sum(1)
         padded = torch.nn.functional.pad(lengths, (0, (-len(lengths)) % chunk))
@@ -295,7 +308,7 @@ class DecisionModel(nn.Module):
         for start, width in zip(range(0, len(ids), chunk), widths):
             width = int(width)  # Float 0/1 masks produce floats in the CPU list.
             part_ids, part_mask = ids[start:start + chunk], masks[start:start + chunk]
-            args = (part_ids[:, -width:], part_mask[:, -width:], dtype)
+            args = (part_ids[:, -width:], part_mask[:, -width:], dtype, *(t[start:start + chunk] for t in images))
             if self._read_only and self.checkpoint_forward and self.training and torch.is_grad_enabled():
                 # Keep one readout per option between chunks. Large chunks also
                 # retain native layer checkpoints to bound backward memory.
@@ -587,7 +600,19 @@ class DecisionModel(nn.Module):
             # a K-way distribution; it never invokes or trains the LM vocabulary head.
             return self._output_logits(scores, slots, valid, option_rows)
 
+    def _check_images(self, batch):
+        """带图的批: 只有 candidate 的逐选项编码与共享前缀缓存读图; 打包前向还没接上."""
+        if not has_images(batch):
+            return
+        if self.decision_config.kind != "candidate":
+            raise ValueError(f"image inputs need the candidate architecture, not {self.decision_config.kind}")
+        if self.image_token_id is None:
+            raise ValueError("image inputs need the model's image_token_id")
+        if self.candidate_prefix_cache == "packed":
+            raise ValueError("packed candidate encoding does not read image inputs yet")
+
     def forward_batch(self, batch, *, option_batch_size=None):
+        self._check_images(batch)
         if self._read_only:
             return self._forward_read_only(batch, option_batch_size)
         if self._layerwise_feedback and self.training and torch.is_grad_enabled():
@@ -620,7 +645,8 @@ class DecisionModel(nn.Module):
                 with self._forward_lock, frozen_encoder(self.decoder):
                     if shared:
                         chunk = min(option_batch_size or self.decision_config.option_batch_size, self.decision_config.option_batch_size)
-                        encoded = shared_candidate_hidden(self.decoder, batch, valid, chunk).to(self.option_norm.weight.dtype)
+                        encoded = shared_candidate_hidden(self.decoder, batch, valid, chunk,
+                                                          self.image_token_id).to(self.option_norm.weight.dtype)
                     else:
                         encoded = self._encode_options(batch, valid, self.option_norm.weight.dtype, option_batch_size, option_rows)
                 # Frozen feature extraction lives outside the head checkpoint;
