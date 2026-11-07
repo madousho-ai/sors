@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.24/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.25/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -12,7 +12,7 @@ From the training repository:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --datasets-dir ../decidophobia-dataset --dataset synth-v5.24
+  --datasets-dir ../decidophobia-dataset --dataset synth-v5.25
 ```
 
 `synth-intents-v5.1` became `synth-intents-v5.2` when targeted hard questions were
@@ -104,9 +104,13 @@ batched with its source. Edits now make up 8 / 8 / 4 % of those goals. 435,416 b
 `synth-intents-v5.24` (data README section 30) adds 45,000 bindings of material written in Chinese, with
 Chinese questions and options: six Chinese-only domains of 3,600 each and 900 in each existing domain. 480,416
 bindings over 32 domains; v5.23 is retained.
-`--dataset synth-v5.1` through `synth-v5.23` are rejected with a pointer to the new name; `synth-v5`
+`synth-intents-v5.25` (data README section 31) adds 30,048 English bindings on v82's weak families: date and
+state reasoning (`rq`), long policies (`lp`), minimal-edit pairs (`cf`), semantic scoring (`ss`) and code judging
+(`jd`), plus the Chinese Telegram anti-spam domain `tg_spam` (6,000, usernames and links written as `[redact]`).
+516,464 bindings over 33 domains; v5.24 is retained.
+`--dataset synth-v5.1` through `synth-v5.24` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
-resume fingerprint check against v5.24. A `--mix` written for v5.2 must add a
+resume fingerprint check against v5.25. A `--mix` written for v5.2 must add a
 `contrast=` share, and one written for v5.17 or older a `json-scope=` share, since every goal
 in the data keeps a positive share. Without `--mix` the eight goals get equal shares, so the
 2,717 json-scope bindings take one eighth of the draws. The Sors-2B weights
@@ -171,8 +175,8 @@ before consistency pairing. Give a positive weight for every selected dataset:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py \
   --datasets-dir ../decidophobia-dataset \
-  --dataset synth-v5.24+sharc+toolace \
-  --dataset-weights synth-v5.24=27,sharc=6,toolace=3 \
+  --dataset synth-v5.25+sharc+toolace \
+  --dataset-weights synth-v5.25=27,sharc=6,toolace=3 \
   --batch-size 36 --consistency 1
 ```
 

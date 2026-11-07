@@ -10,7 +10,8 @@
   synth-v3    外部资产 synth-intents-v3 的五个领域 (工单、酒店文档、浏览器 agent、安全运维、编码与 CI):
               每份 state 带自己的题, 问法与选项各不相同 (2..107 项). 五个领域各占这一份的五分之一;
               写明的答案是硬标签, 没写明的题用参考模型的分布当软标签 (见 sors/data/synth_v3.py)
-  synth-v5.24  外部资产 synth-intents-v5.24: v5.23 加上 45,000 条原生中文绑定 (六个中文领域与原有领域的中文材料)；synth-v5 保留为别名.
+  synth-v5.25  外部资产 synth-intents-v5.25: v5.24 加上 30,048 条针对弱项的英文绑定 (计算推理、长政策、最小改动对、软边界打分、代码评判)
+              与 6,000 条中文 Telegram 反垃圾绑定 (tg_spam)；synth-v5 保留为别名.
               v5.1 改名为 v5.2 加了难题, v5.2 改名为 v5.3 加了 contrast 目标, v5.3 改名为 v5.4 加了
               JevBench 难度风格的补充题, v5.4 改名为 v5.5 给反事实材料记下来源 (contrast_of, 原题与改动题同批),
               v5.5 改名为 v5.6 给每道题标了能力类别 (--exclude-categories) 并加了只考读事实的改动组 factread,
@@ -83,7 +84,7 @@ from sors.training.prefetch import validate_data_preparation
 from sors.training.loss import LOSSES
 from sors.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.24", "synth-v5", "massive") + PUBLIC_DATASETS
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.25", "synth-v5", "massive") + PUBLIC_DATASETS
 RETIRED = {"synth-v5.1": "synth-v5.1 was renamed synth-v5.2 through synth-v5.16; use --dataset synth-v5.16",
            "synth-v5.2": "synth-v5.2 was renamed synth-v5.3 when the contrast goal was added, then up to synth-v5.10; "
                          "use --dataset synth-v5.16",
@@ -145,6 +146,10 @@ RETIRED = {name: message.replace("use --dataset synth-v5.23", "use --dataset syn
            for name, message in RETIRED.items()}
 RETIRED["synth-v5.23"] = ("synth-v5.23 precedes the native Chinese materials; use --dataset synth-v5.24 "
                           "or pin older code/data to reproduce it")
+RETIRED = {name: message.replace("use --dataset synth-v5.24", "use --dataset synth-v5.25")
+           for name, message in RETIRED.items()}
+RETIRED["synth-v5.24"] = ("synth-v5.24 precedes the weak-family expansion and tg_spam; use --dataset synth-v5.25 "
+                          "or pin older code/data to reproduce it")
 KNOWN_EVAL = ("banking77", "banking77-desc", "massive", "massive-desc", "boolq", "simple", "jevbench", "jsoneval", "zheval")
 
 
@@ -161,9 +166,9 @@ def parse_datasets(spec: str) -> list[str]:
     if retired:
         raise SystemExit(f"--dataset: {retired[0]}")
     names = _parse_list("banking77+boolq" if spec == "both" else spec, KNOWN, "--dataset")
-    names = ["synth-v5" if name == "synth-v5.24" else name for name in names]
+    names = ["synth-v5" if name == "synth-v5.25" else name for name in names]
     if len(set(names)) != len(names):
-        raise SystemExit("--dataset: synth-v5.24 and synth-v5 refer to the same dataset; pick one")
+        raise SystemExit("--dataset: synth-v5.25 and synth-v5 refer to the same dataset; pick one")
     if {"synth", "synth-menu"} <= set(names):
         raise SystemExit("--dataset: synth already includes synth-menu's menu questions; pick one")
     return names
@@ -179,7 +184,7 @@ def parse_dataset_weights(spec: str | None, names: list[str]) -> dict[str, Fract
             name, value = (part.strip() for part in entry.split("="))
             if name in RETIRED:
                 raise ValueError(RETIRED[name])
-            name = "synth-v5" if name == "synth-v5.24" else name
+            name = "synth-v5" if name == "synth-v5.25" else name
             if name in weights:
                 raise ValueError(f"repeated dataset {name}")
             weight = Fraction(value)
@@ -314,10 +319,10 @@ def build_data(args):
     if not 0.0 <= fallback_rate <= 1.0:
         raise SystemExit(f"--fallback-rate must be a probability in 0..1; got {fallback_rate}")
     if requested_fallback is not None and "synth-v5" not in datasets:
-        raise SystemExit("--fallback-rate only applies to --dataset synth-v5.24 (legacy alias: synth-v5)")
+        raise SystemExit("--fallback-rate only applies to --dataset synth-v5.25 (legacy alias: synth-v5)")
     balance = getattr(args, "contrast_balance", False)
     if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes or balance):
-        raise SystemExit("--mix, --passes, --mask-descriptions and --contrast-balance only apply to --dataset synth-v5.24 "
+        raise SystemExit("--mix, --passes, --mask-descriptions and --contrast-balance only apply to --dataset synth-v5.25 "
                          "(legacy alias: synth-v5)")
     if args.mix and args.passes:
         raise SystemExit("--mix draws goals by weight and --passes draws in rounds; pick one")
@@ -518,10 +523,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_attention_arguments(ap)
     add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
-                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.24 / massive 用 + 连接; "
+                    help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.25 / massive 用 + 连接; "
                          "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / xlam / quality / reclor / logiqa2, "
                          "以及 state 里带图的 aokvqa / scienceqa / ai2d / iconqa / vsr / nlvr2 / mm-mind2web; "
-                         "synth-v5 是 synth-v5.24 的兼容别名; both = banking77+boolq")
+                         "synth-v5 是 synth-v5.25 的兼容别名; both = banking77+boolq")
     ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
                      help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")
     ap.add_argument("--vision-model", default=None,
@@ -530,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-image-pixels", type=int, default=1024 * 1024,
                     help="单张图缩到不超过这么多像素; 32x32 像素是一个 token, 默认 1024x1024 即每张图至多 1024 个 token (与 serve 相同)")
     ap.add_argument("--dataset-weights", default=None,
-                    help="数据集相对抽题权重，须列出全部训练来源，如 synth-v5.24=3,sharc=1；"
+                    help="数据集相对抽题权重，须列出全部训练来源，如 synth-v5.25=3,sharc=1；"
                          "按最大余数法分配整题，JS配对前生效；默认沿用各sampler等份")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--init", default=None,
@@ -690,7 +695,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="评分题分级距离项的权重: 每道评分题按级别比累计分布的平方差, 按整批题数平均后加进损失. "
                          "0 = 评分题只用交叉熵. 写进目录名 (-emd<w>)")
     ap.add_argument("--cot-weight", type=float, default=0.0,
-                    help="计算过程的语言模型损失权重 (training.cot): 带 cot 的题 (synth-v5.24 的 curric) 另走一遍主干, "
+                    help="计算过程的语言模型损失权重 (training.cot): 带 cot 的题 (synth-v5.25 的 curric) 另走一遍主干, "
                          "学着在 'Answer:' 之后写出程序给的计算过程; 不挂决策层, 推理永远不写. 0 = 不算. 写进目录名 (-cot<w>)")
     ap.add_argument("--distill-traces", default=None,
                     help="蒸馏式内化 (training.distill) 的计算过程文件, jsonl, 每行 {context_id, question_id, text, ask, cot}: "
@@ -878,7 +883,7 @@ def run_tag(args) -> str:
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
         + (f"-cw{args.contrast_weight:g}-cm{args.contrast_margin:g}" if getattr(args, "contrast_weight", 0.0) > 0 else "") \
         + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
-        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.24"} & set(args.dataset.split("+")) else "") \
+        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.25"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
@@ -941,8 +946,8 @@ def main() -> None:
     args.max_grad_norm = resolve_max_grad_norm(args)
     args.save_every = resolve_save_every(args)
     datasets = parse_datasets(args.dataset)
-    if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.24"):
-        raise SystemExit("--save-training-state requires --dataset synth-v5.24 (or synth-v5), matching the resume CLI contract")
+    if args.save_training_state and args.dataset not in ("synth-v5", "synth-v5.25"):
+        raise SystemExit("--save-training-state requires --dataset synth-v5.25 (or synth-v5), matching the resume CLI contract")
 
     tag = run_tag(args)
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")

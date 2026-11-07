@@ -120,7 +120,7 @@ def _cache_synth_v5():
     @functools.wraps(original)
     def load(data_dir=None, *, datasets_dir=None):
         try:
-            path = (Path(data_dir) if data_dir is not None else asset_path("synth-intents-v5.24", datasets_dir)).resolve()
+            path = (Path(data_dir) if data_dir is not None else asset_path("synth-intents-v5.25", datasets_dir)).resolve()
             real = path.is_relative_to(datasets_root()) and not path.is_relative_to(Path(tempfile.gettempdir()).resolve())
         except Exception:
             real = False

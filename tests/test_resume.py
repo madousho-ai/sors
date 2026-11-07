@@ -336,11 +336,11 @@ def test_sampling_fingerprint_tracks_the_v51_dataset():
         for name in ("scripts/train.py", "src/sors/data/synth_v5.py", "src/sors/core/menu.py",
                      "src/sors/core/prompt.py", "src/sors/serve/menus.py",
                      "src/sors/data/paths.py", "src/sors/training/resume.py",
-                     "assets/synth-intents-v5.24/schema.py"):
+                     "assets/synth-intents-v5.25/schema.py"):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("# source fixture\n")
-        data = root / "assets/synth-intents-v5.24/telecom.contexts.json"
+        data = root / "assets/synth-intents-v5.25/telecom.contexts.json"
         data.write_text('{"domain":"telecom","contexts":[]}')
         before = sampling_fingerprint(root, root / "assets")
         data.write_text('{"domain":"telecom","contexts":[{"id":"telecom_changed"}]}')
