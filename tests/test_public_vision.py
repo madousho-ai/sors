@@ -63,6 +63,15 @@ def test_aokvqa_skips_menus_with_repeated_options():
     assert not out.examples and out.skipped["duplicate_options"] == 1
 
 
+def test_blank_options_are_counted_and_skipped():
+    # The released A-OKVQA train has six such menus, e.g. ['n', 'w', '', 'e'].
+    out = pv.aokvqa([_aokvqa(choices=["n", "w", " ", "e"], correct_choice_idx=0)])
+    assert not out.examples and out.skipped["blank_option"] == 1
+    mcq = MCQ.replace("C. Heat", "C. ")
+    out = pv.cauldron_mcq([_cauldron([mcq], ["Answer: A"])], "ai2d")
+    assert out.skipped["blank_option"] + out.skipped["not_multiple_choice"] == 1 and not out.examples
+
+
 # ---- ScienceQA ------------------------------------------------------------------
 
 
@@ -181,6 +190,14 @@ def test_mind2web_targets_below_the_screenshot_and_ambiguous_steps_are_counted()
     out = pv.mm_mind2web([below, two, alone])
     assert not out.examples
     assert out.skipped == {"target_off_screenshot": 1, "multiple_positives": 1, "one_option": 1}
+
+
+def test_mind2web_steps_with_an_oversized_candidate_are_counted():
+    # A few released candidates carry 28k-100k character name attributes; one such branch
+    # would exceed any max_length, so the whole step is skipped rather than truncated.
+    huge = _cand("4", "a", "1,1,5,5", name="x" * (pv.MIND2WEB_OPTION_CHARS + 1))
+    out = pv.mm_mind2web([_web(neg_candidates=[_cand("3", "div", "0,0,64,48"), huge])])
+    assert not out.examples and out.skipped == {"option_too_long": 1}
 
 
 def test_crop_keeps_the_top_of_the_page_at_its_width():

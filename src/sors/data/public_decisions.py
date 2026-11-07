@@ -516,7 +516,8 @@ def _read_source(path: pathlib.Path, files: list[dict], expected: str | None = N
     files.append({"path": str(path), "sha256": digest})
     if path.suffix == ".parquet":
         import pyarrow.parquet as pq
-        return pq.read_table(path).to_pylist()
+        # Batches: a nested image column past 2 GiB cannot become one array (prepared NLVR2).
+        return [row for batch in pq.ParquetFile(path).iter_batches(batch_size=256) for row in batch.to_pylist()]
     with path.open(encoding="utf-8-sig", newline="") as f:
         if path.suffix in (".csv", ".tsv"):
             return list(csv.DictReader(f, delimiter="\t" if path.suffix == ".tsv" else ","))

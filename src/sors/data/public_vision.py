@@ -18,6 +18,8 @@ from sors.core.vision import IMAGE_MARK
 from sors.data.public_decisions import VISION_DATASETS, Decisions, _integer, _text  # noqa: F401 (VISION_DATASETS re-exported)
 
 MIND2WEB_VIEWPORT = 720  # first screen of a 1280-wide page
+# 99.9% of candidates render under 500 characters; the rest reach 100k (huge name attributes)
+MIND2WEB_OPTION_CHARS = 2000
 
 
 def _bytes(image, name: str) -> bytes | None:
@@ -29,6 +31,10 @@ def _bytes(image, name: str) -> bytes | None:
 
 
 def _distinct(names, out: Decisions) -> bool:
+    """A usable official menu: no blank option, no repeated option; others are counted and skipped."""
+    if any(not isinstance(n, str) or not n.strip() for n in names):
+        out.skipped["blank_option"] += 1
+        return False
     if len(set(names)) != len(names):
         out.skipped["duplicate_options"] += 1
         return False
@@ -177,6 +183,9 @@ def mm_mind2web(rows: list[dict]) -> Decisions:
             raise ValueError("Mind2Web: repeated candidate IDs")
         names = [f"{c['backend_node_id']}: {c['tag']} "
                  + json.dumps(json.loads(c["attributes"]), ensure_ascii=False, sort_keys=True) for c in candidates]
+        if max(map(len, names)) > MIND2WEB_OPTION_CHARS:
+            out.skipped["option_too_long"] += 1
+            continue
         step = _integer(row["target_action_index"], "target_action_index")
         if not 0 <= step < len(row["action_reprs"]):
             raise ValueError("Mind2Web: target_action_index outside action_reprs")
