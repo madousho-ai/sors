@@ -54,8 +54,14 @@ class DecisionConfig:
     # 不合适的选项把下一个词放到 <|D2|> 上 (见 DecisionModel._token_scores);
     # dual = 两阶段: 先用 lm_head 上逐分支 D1 / D2 的整词表交叉熵训主干, 再由标量头 (初值 e_D1 - e_D2) 读 H
     readout: str = "scorer"
+    # candidate: 前缀之后接几个隐式推理位置 (sors.core.latent); 0 = 不接. 只走打包前向
+    latent_steps: int = 0
 
     def __post_init__(self):
+        if not isinstance(self.latent_steps, int) or self.latent_steps < 0:
+            raise ValueError(f"latent_steps must be a non-negative integer; got {self.latent_steps!r}")
+        if self.latent_steps and self.kind != "candidate":
+            raise ValueError("latent steps need the candidate architecture")
         if self.kind not in ("minimal", "structural", "candidate"):
             raise ValueError(f"unknown decision architecture {self.kind!r}")
         if self.dim < 2 or min(self.heads, self.option_batch_size) < 1 or self.dim % self.heads:
@@ -95,6 +101,8 @@ def architecture_config(model) -> dict:
     out["layers"] = list(cfg.layers) if cfg.layers is not None else None
     if out["readout"] == "scorer":  # 默认读出不写进记录: 旧存档与旧 run 目录名的哈希不变
         del out["readout"]
+    if not out["latent_steps"]:  # 同上
+        del out["latent_steps"]
     return out
 
 
@@ -208,7 +216,7 @@ class DecisionModel(nn.Module):
         self.adapter = dict(adapter)
         self.config = raw.config
         self.checkpoint_forward = grad_ckpt
-        self.candidate_prefix_cache = "auto" if config.kind == "candidate" else "off"
+        self.candidate_prefix_cache = ("packed" if config.latent_steps else "auto") if config.kind == "candidate" else "off"
         self._read_only = config.kind in ("minimal", "structural") and not config.feedback
         self._layerwise_feedback = config.kind == "minimal" and config.feedback and grad_ckpt
         self._checkpoint_owner = object()
@@ -333,6 +341,8 @@ class DecisionModel(nn.Module):
             raise ValueError("candidate prefix cache mode must be auto, on, off or packed")
         if self.decision_config.kind != "candidate" and mode != "off":
             raise ValueError("prefix sharing is only available for the candidate architecture")
+        if self.decision_config.latent_steps and mode != "packed":
+            raise ValueError("a model with latent steps only runs the packed forward")
         self.candidate_prefix_cache = mode
 
     def _encoder_frozen_for_batch(self, batch):
@@ -640,7 +650,7 @@ class DecisionModel(nn.Module):
                 encoded = packed_candidate_hidden(
                     self.decoder, batch, valid,
                     checkpointed=self.checkpoint_forward and self.training and torch.is_grad_enabled(),
-                    image_token_id=self.image_token_id,
+                    image_token_id=self.image_token_id, latent_steps=self.decision_config.latent_steps,
                 ).to(self.option_norm.weight.dtype)
             return self._candidate_output(encoded, batch["slot_ids"], option_rows)
         if self.decision_config.kind == "candidate":

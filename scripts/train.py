@@ -560,6 +560,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="candidate 的读出: scorer = 标量头 w·RMSNorm(H) (默认); token = 主干原来的 lm_head, "
                          "分数是 log P(<|D1|>) - log P(<|D2|>) (整个词表上归一化); dual = 两阶段, 前 --head-start 步"
                          "只训逐分支 D1/D2 的整词表交叉熵, 之后标量头 (初值 e_D1 - e_D2) 读 H. 只支持 --decision-blocks 0")
+    ap.add_argument("--decision-latent-steps", type=int, default=None,
+                    help="candidate: 前缀之后接几个隐式推理位置 (sors.core.latent), 每个的输入是上一位置的最后一层隐藏状态; "
+                         "只走 --candidate-prefix-cache packed. 默认 0 = 不接. 写进目录名 (-lat<n>)")
     ap.add_argument("--head-start", type=int, default=None,
                     help="dual 读出: 第一阶段的步数, 0 < n < --steps. 写进目录名 (-hs<n>)")
     ap.add_argument("--branch-weight", type=float, default=1.0,
@@ -754,7 +757,8 @@ def resolve_adapter(args) -> dict:
 def resolve_architecture(args) -> dict:
     """Reconstruction settings are inherited as a unit; explicit conflicts fail."""
     given = {key: getattr(args, f"decision_{key}", None)
-             for key in ("dim", "heads", "blocks", "layers", "feedback", "option_batch_size", "readout")}
+             for key in ("dim", "heads", "blocks", "layers", "feedback", "option_batch_size", "readout",
+                         "latent_steps")}
     given["kind"] = getattr(args, "architecture", None)
     if isinstance(given["layers"], str):
         try:
@@ -779,6 +783,8 @@ def resolve_architecture(args) -> dict:
     out = {**asdict(config), "layers": list(config.layers) if config.layers is not None else None}
     if out["readout"] == "scorer":  # 与 decision.architecture_config 一致: 默认读出不进记录, 旧 run 的哈希不变
         del out["readout"]
+    if not out["latent_steps"]:  # 同上
+        del out["latent_steps"]
     return out
 
 
@@ -892,6 +898,7 @@ def run_tag(args) -> str:
         + (f"-tq{'.'.join(v.split('=')[1] for v in args.type_quota.split(','))}" if getattr(args, "type_quota", None) else "") \
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
         + (f"-cot{args.cot_weight:g}" if getattr(args, "cot_weight", 0.0) > 0 else "") \
+        + (f"-lat{args.decision_latent_steps}" if getattr(args, "decision_latent_steps", None) else "") \
         + (f"-tm{args.token_mass_weight:g}" if getattr(args, "token_mass_weight", 0.0) > 0 else "") \
         + (f"-hs{args.head_start}-bw{args.branch_weight:g}" if getattr(args, "head_start", None) else "") \
         + (f"-dist{args.distill_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 else "") \

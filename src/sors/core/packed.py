@@ -306,12 +306,18 @@ def _layer(layer, h, cos, sin, plan):
 
 
 def packed_candidate_hidden(decoder, batch, valid, checkpointed: bool = False, traces: bool = False,
-                            image_token_id: int | None = None):
+                            image_token_id: int | None = None, latent_steps: int = 0):
     """每个有效选项读出 token 上的最后一层隐藏状态 (final norm 之后), 顺序同 valid.nonzero().
     traces=True (批里要有 trace_*): 返回 (学生, 老师); 老师只含带计算过程的例子的选项, 顺序同 valid.nonzero()
-    里这些行的顺序, 读的是 前缀 + 计算过程 + 选项 的最后一个 token."""
+    里这些行的顺序, 读的是 前缀 + 计算过程 + 选项 的最后一个 token.
+    latent_steps > 0: 前缀之后先接这么多个隐式位置 (sors.core.latent), 不能与 traces 同用."""
     if not supports_packed(decoder):
         raise ValueError("packed candidate encoding supports Qwen3.5 text backbones only")
+    if latent_steps:
+        if traces:
+            raise ValueError("latent steps cannot be combined with teacher traces")
+        from sors.core.latent import latent_candidate_hidden
+        return latent_candidate_hidden(decoder, batch, valid, latent_steps, checkpointed)
     linear = [l.linear_attn for l in decoder.layers if getattr(l, "block_type", "") == "linear_attention"]
     plan = _Plan(batch, valid, batch["input_ids"].device, linear[0].conv_kernel_size - 1 if linear else 3, traces,
                  image_token_id)
