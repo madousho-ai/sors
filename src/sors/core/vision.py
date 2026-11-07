@@ -117,7 +117,69 @@ def row_grids(grids: torch.Tensor) -> list[tuple[int, int, int]]:
 
 
 def has_images(batch) -> bool:
-    return "image_embeds" in batch
+    return "image_embeds" in batch or "image_pixels" in batch
+
+
+def preprocess_images(processor, images: list[bytes]) -> list[VisionImage]:
+    """图片字节 -> VisionImage, 每张图单独过预处理器 (各自的分辨率与网格). 透明通道与调色板都按 RGB 读."""
+    from PIL import Image
+
+    out = []
+    for data in images:
+        enc = processor(images=[Image.open(io.BytesIO(data)).convert("RGB")], return_tensors="pt")
+        out.append(VisionImage(grid=tuple(int(x) for x in enc["image_grid_thw"][0]), pixels=enc["pixel_values"]))
+    return out
+
+
+def attach_vision(model, visual, image_token_id: int) -> None:
+    """把冻结的视觉编码器挂到决策模型上 (model.visual), 带 image_pixels 的批在前向时由它编码."""
+    visual.requires_grad_(False)
+    model.visual = visual.eval()
+    model.image_token_id = image_token_id
+
+
+@torch.no_grad()
+def encode_images(visual, pixels: torch.Tensor, grids: torch.Tensor) -> torch.Tensor:
+    """批里的 image_pixels (B, P, C) 与 image_grids (B, M, 3) -> image_embeds (B, N, hidden), 不足处补零.
+    全批的图一次过编码器; 编码器内部的注意力按图分段, 结果与逐张编码相同."""
+    rows = [row_grids(g) for g in grids]
+    sizes = [sum(t * h * w for t, h, w in r) for r in rows]
+    tokens = [sum(t * (h // SPATIAL_MERGE) * (w // SPATIAL_MERGE) for t, h, w in r) for r in rows]
+    dtype = next(visual.parameters()).dtype
+    flat = torch.cat([pixels[i, :n] for i, n in enumerate(sizes)]).to(dtype)
+    grid = torch.tensor([g for r in rows for g in r], device=pixels.device)
+    encoded = visual(flat, grid_thw=grid).pooler_output
+    out = encoded.new_zeros(len(rows), max(tokens), encoded.shape[-1])
+    for i, part in enumerate(encoded.split(tokens)):
+        out[i, :len(part)] = part
+    return out
+
+
+def load_vision(model_id, *, dtype=torch.bfloat16, device="cuda", revision=None, local_files_only=False):
+    """从多模态底座 (Qwen3.5) 的权重里只取视觉编码器 (model.visual.*), 冻结. 返回 (编码器, 图片占位符 id)."""
+    from pathlib import Path
+
+    from safetensors import safe_open
+    from transformers import AutoConfig
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+
+    config = AutoConfig.from_pretrained(model_id, revision=revision, local_files_only=local_files_only)
+    if getattr(config, "vision_config", None) is None:
+        raise ValueError(f"{model_id} has no vision encoder")
+    directory = Path(model_id)
+    if not directory.is_dir():
+        from huggingface_hub import snapshot_download
+        directory = Path(snapshot_download(model_id, revision=revision, local_files_only=local_files_only,
+                                           allow_patterns=["*.safetensors", "*.json"]))
+    prefix = "model.visual."
+    state = {}
+    for path in sorted(directory.glob("*.safetensors")):
+        with safe_open(path, framework="pt") as f:
+            state.update({k[len(prefix):]: f.get_tensor(k) for k in f.keys() if k.startswith(prefix)})  # noqa: SIM118 (safe_open 不是 dict)
+    visual = Qwen3_5VisionModel(config.vision_config)
+    visual.load_state_dict(state, strict=True)
+    visual.to(device=device, dtype=dtype).requires_grad_(False)
+    return visual.eval(), config.image_token_id
 
 
 def image_inputs(embed, ids, mask, image_token_id: int, embeds, grids):

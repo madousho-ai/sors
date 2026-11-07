@@ -47,9 +47,10 @@ def _prefix(batch, row):
 def prefix_key(batch, row):
     """两行前缀能否共用一份缓存: token 相同, 带图时图也相同 (同样大小的图展开成同一串占位符)."""
     key = tuple(_prefix(batch, row).tolist())
-    if "image_embeds" in batch:
+    image = batch.get("image_pixels", batch.get("image_embeds"))  # 有原始像素就认像素, 与编码器的数值误差无关
+    if image is not None:
         from sors.core.vision import row_grids
-        content = batch["image_embeds"][row].detach().float().cpu().numpy().tobytes()
+        content = image[row].detach().float().cpu().numpy().tobytes()
         key += (tuple(row_grids(batch["image_grids"][row])), hashlib.sha256(content).hexdigest())
     return key
 

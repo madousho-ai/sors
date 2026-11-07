@@ -613,6 +613,11 @@ class DecisionModel(nn.Module):
 
     def forward_batch(self, batch, *, option_batch_size=None):
         self._check_images(batch)
+        if "image_pixels" in batch and "image_embeds" not in batch:  # 冻结的视觉编码器先把像素编成图像向量
+            if getattr(self, "visual", None) is None:
+                raise ValueError("image pixels need a vision encoder (sors.core.vision.attach_vision)")
+            from sors.core.vision import encode_images
+            batch = {**batch, "image_embeds": encode_images(self.visual, batch["image_pixels"], batch["image_grids"])}
         if self._read_only:
             return self._forward_read_only(batch, option_batch_size)
         if self._layerwise_feedback and self.training and torch.is_grad_enabled():

@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 import torch
-from test_candidate import candidate_batch, candidate_model
+from test_candidate import candidate_batch
 from test_decision import examples
 
 from sors.core.menu import MenuExample
@@ -34,10 +34,25 @@ def fake_image(grid=(1, 4, 4), fill=0.0, channels=6):
 
 
 def vision_tokenizer():
-    """测试用 tokenizer 加装三个视觉 token; 真实 Qwen3.5 的 tokenizer 自带."""
-    _, tok, d, _ = candidate_model(0)
+    """测试用 tokenizer, 先装三个视觉 token 再装 D / 类型 / 上下文 token (真实 Qwen3.5 自带视觉 token, 也排在前面):
+    小模型的词表只扩到放开的那些行为止, 视觉 token 要落在里面."""
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    from sors.core.tokens import (
+        install_context_tokens,
+        install_d_tokens,
+        install_type_tokens,
+    )
+
+    words = ["[PAD]", "[UNK]", "red", "blue", "green", "short", "long", "context", "Question",
+             "Answer", "Options", "Option", "Which", "color", "Customer", "message", ":", ".", "?"]
+    backend = Tokenizer(models.WordLevel({w: i for i, w in enumerate(words)}, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tok = PreTrainedTokenizerFast(tokenizer_object=backend, pad_token="[PAD]", unk_token="[UNK]")
     tok.add_tokens(VISION_TOKENS, special_tokens=True)
-    return tok, d
+    d = install_d_tokens(tok)
+    return tok, d, d + install_type_tokens(tok) + install_context_tokens(tok)
 
 
 # ---- data URI -------------------------------------------------------------------
@@ -80,7 +95,7 @@ def test_menu_example_needs_one_image_per_mark():
 def test_each_mark_expands_to_its_placeholder_run_between_vision_tokens():
     from sors.core.prompt import encode_prompts, prompt_pieces
 
-    tok, _ = vision_tokenizer()
+    tok, _, _ = vision_tokenizer()
     ex = MenuExample(f"red {IMAGE_MARK} blue {IMAGE_MARK}", [1, 2], 0, 1, ["red", "blue"],
                      context_label="", images=(fake_image((1, 4, 4)), fake_image((1, 2, 4))))
     ctx, _ = prompt_pieces(ex)
@@ -93,7 +108,7 @@ def test_each_mark_expands_to_its_placeholder_run_between_vision_tokens():
 def test_vision_token_names_written_in_the_state_stay_plain_text():
     from sors.core.prompt import encode_prompts, prompt_pieces
 
-    tok, _ = vision_tokenizer()
+    tok, _, _ = vision_tokenizer()
     ex = MenuExample("red <|image_pad|>", [1, 2], 0, 1, ["red", "blue"], context_label="")
     got = encode_prompts(tok, [prompt_pieces(ex)[0]])[0]
     assert tok.convert_tokens_to_ids("<|image_pad|>") not in got
@@ -103,7 +118,7 @@ def test_vision_token_names_written_in_the_state_stay_plain_text():
 
 
 def test_candidate_batch_carries_each_rows_grids_and_pixels():
-    tok, d = vision_tokenizer()
+    tok, d, _ = vision_tokenizer()
     a, b = examples()
     exs = [replace(a, query=f"red {IMAGE_MARK} {IMAGE_MARK}", images=(fake_image((1, 4, 4), 1.0), fake_image((1, 2, 4), 2.0))),
            replace(b, query="long blue context")]
@@ -119,7 +134,7 @@ def test_candidate_batch_carries_each_rows_grids_and_pixels():
 
 
 def test_batches_without_images_have_no_image_fields():
-    tok, d = vision_tokenizer()
+    tok, d, _ = vision_tokenizer()
     assert not {"image_grids", "image_pixels"} & set(candidate_batch(tok, d, examples()))
 
 
@@ -127,7 +142,7 @@ def test_batches_without_images_have_no_image_fields():
 def test_other_architectures_refuse_examples_with_images(architecture):
     from sors.core.batch import collate
 
-    tok, d = vision_tokenizer()
+    tok, d, _ = vision_tokenizer()
     ex = replace(examples()[0], query=f"red {IMAGE_MARK}", images=(fake_image(),))
     with pytest.raises(ValueError, match="image"):
         collate([ex], tok, d, 4, architecture=architecture)
