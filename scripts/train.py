@@ -445,6 +445,7 @@ def build_data(args):
         btr, bva = load_boolq()
         samplers.append(lambda n, rng: btr.sample_examples([0, 1], (2, 2), n, rng))
         sampler_names.append("boolq")
+    processors = {}  # 带图数据集共用一个图像预处理器
     for name in datasets:
         if name in PUBLIC_DATASETS:
             try:
@@ -454,6 +455,8 @@ def build_data(args):
                     raise ValueError(f"{name}: fixed official menus need --k-max >= {largest}; got {args.k_max}")
             except ValueError as exc:
                 raise SystemExit(str(exc)) from None
+            if public.has_images:
+                public.processor = image_processor(args, split_info, processors)
             samplers.append(public.sample)
             sampler_names.append(name)
             split_info.setdefault("public_decisions", {})[name] = public.summary()
@@ -486,16 +489,46 @@ def build_data(args):
     return sample_fn, eval_sets, split_info
 
 
+def vision_model(args) -> str:
+    """多模态底座: 视觉编码器与图像预处理器从它读. 不给 --vision-model 就用 --model (Qwen3.5 底座自带视觉编码器)."""
+    return args.vision_model or args.model
+
+
+def image_processor(args, split_info, cache: dict):
+    """带图数据集共用的图像预处理器, 第一次要时载入进 cache; 读的底座与单图像素上限记进 split_info["vision"]."""
+    if "processor" not in cache:
+        from sors.core import vision
+        cache["processor"] = vision.load_processor(vision_model(args), max_pixels=args.max_image_pixels)
+        split_info["vision"] = {"model": vision_model(args), "max_image_pixels": args.max_image_pixels}
+    return cache["processor"]
+
+
+def attach_training_vision(m, tok, args) -> None:
+    """训练带图数据时给决策模型挂冻结的视觉编码器 (只取底座的 model.visual.* 权重, 不训, 存档不带)."""
+    from sors.core.vision import VISION_TOKENS, attach_vision, load_vision
+
+    visual, image_token_id = load_vision(vision_model(args))
+    if tok.convert_tokens_to_ids(VISION_TOKENS[1]) != image_token_id:
+        raise SystemExit(f"{vision_model(args)} places images at token {image_token_id}, which this tokenizer does not")
+    attach_vision(m, visual, image_token_id)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Train SORS — State-conditioned Option Ranking System")
     add_attention_arguments(ap)
     add_datasets_argument(ap)
     ap.add_argument("--dataset", default="synth",
                     help="训练集, banking77 / boolq / synth / synth-menu / synth-v3 / synth-v5.24 / massive 用 + 连接; "
-                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / xlam / quality / reclor / logiqa2; "
+                         "也支持 contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / xlam / quality / reclor / logiqa2, "
+                         "以及 state 里带图的 aokvqa / scienceqa / ai2d / iconqa / vsr / nlvr2 / mm-mind2web; "
                          "synth-v5 是 synth-v5.24 的兼容别名; both = banking77+boolq")
     ap.add_argument("--public-manifest", default=str(DEFAULT_MANIFEST),
                      help="官方决策数据的本地文件清单，只读取 split=train；见数据仓库 public-decisions/README.md")
+    ap.add_argument("--vision-model", default=None,
+                    help="带图数据集 (aokvqa / scienceqa / ai2d / iconqa / vsr / nlvr2 / mm-mind2web) 的视觉编码器与图像预处理器"
+                         "从这个多模态底座读, 编码器冻结; 不给 = 用 --model. 只有 candidate 架构读图")
+    ap.add_argument("--max-image-pixels", type=int, default=1024 * 1024,
+                    help="单张图缩到不超过这么多像素; 32x32 像素是一个 token, 默认 1024x1024 即每张图至多 1024 个 token (与 serve 相同)")
     ap.add_argument("--dataset-weights", default=None,
                     help="数据集相对抽题权重，须列出全部训练来源，如 synth-v5.24=3,sharc=1；"
                          "按最大余数法分配整题，JS配对前生效；默认沿用各sampler等份")
@@ -915,6 +948,8 @@ def main() -> None:
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
     sample_fn, eval_sets, split_info = build_data(args)
+    if "vision" in split_info and args.architecture != "candidate":
+        raise SystemExit("datasets with images in the state need --architecture candidate")
     from sors.training.resume import sampling_provenance
     provenance = sampling_provenance(pathlib.Path(__file__).resolve().parents[1], args.datasets_dir)
 
@@ -938,6 +973,8 @@ def main() -> None:
             keep_layer_activations(m, args.grad_ckpt_keep)
         except ValueError as error:
             raise SystemExit(f"--grad-ckpt-keep: {error}") from None
+    if "vision" in split_info:
+        attach_training_vision(m, tok, args)
     if args.architecture != "slots":
         args.decision_layers = architecture_config(m)["layers"]
     init_cfg = load_trained(m, train_ids, args.init) if args.init else None

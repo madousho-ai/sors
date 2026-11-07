@@ -257,3 +257,76 @@ def test_manifest_loads_parquet_sources_and_records_their_digest(tmp_path):
     assert out.summary()["sources"][0]["files"] == [{"path": str(tmp_path / "aokvqa.parquet"), "sha256": digest}]
     for name, items in [("ai2d", 1), ("nlvr2", 1), ("mm-mind2web", 1)]:
         assert load_public_decisions(name, manifest).summary()["items"] == items
+
+
+# ---- train CLI --------------------------------------------------------------------
+
+
+def _train_cli():
+    import importlib.util
+    import pathlib
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts/train.py"
+    spec = importlib.util.spec_from_file_location("vision_train_cli", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_train_cli_samples_vision_sources_through_the_base_models_image_processor(tmp_path, monkeypatch):
+    from sors.core import vision
+    cli = _train_cli()
+    manifest = vision_manifest(tmp_path)
+    asked = []
+    monkeypatch.setattr(vision, "load_processor",
+                        lambda model, max_pixels=None, **kw: asked.append((model, max_pixels)) or processor())
+    args = cli.build_parser().parse_args(["--dataset", "aokvqa+nlvr2+contractnli", "--public-manifest", str(manifest),
+                                          "--eval", "simple", "--model", "Qwen/Qwen3.5-0.8B-Base",
+                                          "--max-image-pixels", "4096"])
+    with pytest.raises(SystemExit, match="contractnli"):  # the fixture manifest declares no text source
+        cli.build_data(args)
+    args.dataset = "aokvqa+nlvr2"
+    asked.clear()
+    sample, _, info = cli.build_data(args)
+    assert asked == [("Qwen/Qwen3.5-0.8B-Base", 4096)]  # one processor shared by every vision source
+    assert info["vision"] == {"model": "Qwen/Qwen3.5-0.8B-Base", "max_image_pixels": 4096}
+    batch = sample(4, random.Random(0))
+    assert all(ex.images and all(isinstance(i, VisionImage) for i in ex.images) for ex in batch)
+    assert {len(ex.images) for ex in batch} == {1, 2}
+
+
+def test_train_cli_text_sources_load_no_image_processor(tmp_path, monkeypatch):
+    from sors.core import vision
+    cli = _train_cli()
+    monkeypatch.setattr(vision, "load_processor", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("loaded")))
+    root = tmp_path
+    (root / "c.json").write_text(json.dumps({"labels": {"h": {"hypothesis": "Two years."}}, "documents": [
+        {"id": 1, "text": "Two years.", "annotation_sets": [{"annotations": {"h": {"choice": "Entailment"}}}]}]}))
+    (root / "m.json").write_text(json.dumps({"version": 1, "sources": [
+        {"dataset": "contractnli", "split": "train", "path": "c.json", "source": "f", "license": "f"}]}))
+    args = cli.build_parser().parse_args(["--dataset", "contractnli", "--public-manifest", str(root / "m.json"),
+                                          "--eval", "simple"])
+    _, _, info = cli.build_data(args)
+    assert "vision" not in info
+
+
+def test_training_attaches_the_frozen_encoder_of_the_vision_model(monkeypatch):
+    import types
+
+    import torch
+    from test_vision_encoder import tiny_visual
+    from test_vision_prompt import vision_tokenizer
+
+    from sors.core import vision
+    cli = _train_cli()
+    tok, _, _ = vision_tokenizer()
+    pad = tok.convert_tokens_to_ids("<|image_pad|>")
+    read = []
+    monkeypatch.setattr(vision, "load_vision", lambda model, **kw: read.append(model) or (tiny_visual(), pad))
+    m = torch.nn.Linear(2, 2)
+    args = types.SimpleNamespace(vision_model=None, model="Qwen/Qwen3.5-0.8B-Base")
+    cli.attach_training_vision(m, tok, args)
+    assert read == ["Qwen/Qwen3.5-0.8B-Base"] and m.image_token_id == pad
+    assert not any(p.requires_grad for p in m.visual.parameters())
+    monkeypatch.setattr(vision, "load_vision", lambda model, **kw: (tiny_visual(), pad + 1))
+    with pytest.raises(SystemExit, match="token"):
+        cli.attach_training_vision(torch.nn.Linear(2, 2), tok, args)
