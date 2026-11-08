@@ -52,6 +52,10 @@ class MenuExample:
     trace: str | None = None  # 蒸馏老师读的计算过程 (training.distill): 老师分支 = 前缀 + trace + 选项; 推理不用
     partner_trace: str | None = None  # partner_query 那种说法对应的 trace; 一致性配对的第二份读它
     images: tuple = ()  # query 里每个 vision.IMAGE_MARK 依次对应的 vision.VisionImage
+    # 隐式推理课程 (training.latent_curriculum): 本题前缀后接几个隐式位置 (None = 模型默认的 latent_steps),
+    # 以及接在隐式位置后面、还没换掉的那段计算过程 (训练时算下一个词的损失; None = 没有). 推理永远不用
+    latent_n: int | None = None
+    latent_text: str | None = None
 
     def __post_init__(self):
         if self.query.count(IMAGE_MARK) != len(self.images):

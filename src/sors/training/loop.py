@@ -65,6 +65,8 @@ class TrainConfig:
     distill_weight: float = 0.0  # 蒸馏式内化 (training.distill) 里学生读出贴老师读出的权重; 0 = 不蒸馏, 批里也不带 trace
     teacher_weight: float = 1.0  # 蒸馏时老师分支 (前缀 + 计算过程 + 选项) 自己的答案损失权重
     distill_fade: tuple[float, float] | None = None  # 逐步内化 (distill.trace_keep): 老师读的计算过程从右往左删的起止 (总步数比例)
+    latent_curriculum: tuple[float, float] | None = None  # 隐式推理课程 (training.latent_curriculum) 的起止 (总步数比例); None = 不用
+    latent_lm_weight: float = 1.0  # 隐式推理课程里还没换掉的计算过程文字的下一个词损失权重
     eval_every: int = 100
     initial_eval: bool = True  # 开训前 (step 0) 先评一次; False 跳过. steps == 0 (只评估) 时照评
     save_every: int = 0  # 每隔几步交一次存档给 train() 的 on_checkpoint, 最后一步除外 (调用方另存); 0 = 途中不存
@@ -319,7 +321,8 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
         order = torch.argsort(lengths_t, descending=True, stable=True)
         plan = [((units[:, None] * width + torch.arange(width, device=units.device)).flatten(), None)
                 for units in torch.tensor_split(order, min(cfg.micro_batches, len(order)))]
-    reports, weights, margin_parts, emd_parts, mass_parts, branch_parts = [], [], [], [], [], []
+    reports, weights, margin_parts, emd_parts, mass_parts, branch_parts, lm_parts = [], [], [], [], [], [], []
+    lm_tokens = int(b["latent_text_mask"].sum()) if "latent_text_mask" in b else 0  # 整批文字 token 数 (CPU 上备好时不读设备)
     dual = getattr(getattr(m, "decision_config", None), "readout", "scorer") == "dual"
     stage_one = dual and not m.head_active
     n_groups = int(contrasts["group"].max()) + 1 if contrasts is not None else 0
@@ -351,11 +354,17 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
                 branch_parts.append(branch_loss.detach() * len(rows))
                 if not stage_one and cfg.branch_weight > 0:
                     extra = cfg.branch_weight * branch_loss
+            lm = m.pop_latent_lm() if hasattr(m, "pop_latent_lm") else None
+            if lm is not None:  # 文字损失按 token 平均: 本组 token 和 / 整批文字 token 数, 合起来就是整批平均
+                lm_parts.append(lm[0].detach())
+                if cfg.latent_lm_weight > 0:
+                    term = cfg.latent_lm_weight * lm[0] / (lm_tokens * (len(rows) / size))
+                    extra = term if extra is None else extra + term
             mass = m.pop_token_mass() if hasattr(m, "pop_token_mass") else None
             if mass is not None:
                 mass_parts.append(mass.detach() * len(rows))
                 if cfg.token_mass_weight > 0:
-                    extra = cfg.token_mass_weight * mass
+                    extra = cfg.token_mass_weight * mass if extra is None else extra + cfg.token_mass_weight * mass
         elif text_width is None:
             input_ids, mask = trim_left_padding(b["input_ids"][rows], b["attention_mask"][rows])
             logits = last_logits(m, input_ids, mask)
@@ -396,6 +405,8 @@ def backward_groups(m, cfg: TrainConfig, exs: list[MenuExample], b: dict, d_ids:
                           *[sum(int(row[i]) for row in values) for i in (5, 6, 7)]]
     if stats is not None and branch_parts:  # 逐分支 D1/D2 交叉熵, 各题平均
         stats["branch"] = float(torch.stack(branch_parts).sum().cpu()) / size
+    if stats is not None and lm_parts:  # 隐式推理课程: 文字的下一个词损失, 整批按 token 平均 (乘权重之前)
+        stats["latent_lm"] = float(torch.stack(lm_parts).sum().cpu()) / lm_tokens
     if stats is not None and mass_parts:  # 各选项 -log(P(D1)+P(D2)) 的整批平均 (按行数加权)
         stats["token_mass"] = float(torch.stack(mass_parts).sum().cpu()) / size
     if stats is not None and distilling:
@@ -508,6 +519,8 @@ def train(
       train/cot_loss                cfg.cot_weight > 0 时, 计算过程的语言模型损失 (乘权重之前; 批里有带 cot 的题才算)
       train/cot_key_loss            同上, 只算关键 token (算式结果、比较、条件成立与否、选中的选项; training.cot.key_spans)
       train/cot_rest_loss           同上, 其余 token; 两项都按 token 平均, 只进日志
+      train/latent_lm               cfg.latent_curriculum 时, 还没换成隐式位置的计算过程文字的下一个词损失 (按 token 平均, 乘权重之前)
+      train/latent_stage            同上, 当前课程阶段 (0 = 计算过程全是文字, latent_steps = 全是隐式位置)
       consistency/<set>/<metric>    每个评估点, 探针子集上的 accuracy / agree / js
       eval/<set>/<metric>           最后一步, 全量评估集的正确率那一套 (与旧 run 的同名标量同一个量)
       consistency_full/<set>/<metric>  最后一步, 全量评估集的一致性
@@ -684,8 +697,17 @@ def train(
             if cfg.distill_fade is not None:  # 逐步内化: 按这一步的课程截短老师读的计算过程
                 from sors.training.distill import shorten_examples, trace_keep
                 examples = shorten_examples(examples, trace_keep(step, cfg.steps, cfg.distill_fade))
+            if cfg.latent_curriculum is not None:  # 隐式推理课程: 按这一步的阶段把计算过程的前几句换成隐式位置
+                from sors.training.latent_curriculum import curriculum_examples, latent_stage
+                k_lat = m.decision_config.latent_steps
+                examples = curriculum_examples(examples, latent_stage(step, cfg.steps, k_lat, cfg.latent_curriculum),
+                                               k_lat)
             yield examples, rng.getstate()
 
+    if cfg.latent_curriculum is not None and not (architecture.get("latent_steps") and cfg.accumulate_gradients
+                                                  and cfg.candidate_prefix_cache == "packed"):
+        raise ValueError("the latent curriculum needs a candidate model with latent steps, the packed prefix cache "
+                         "and --accumulate-gradients")
     if cfg.cot_weight > 0 and architecture["kind"] not in ("minimal", "slots"):
         raise ValueError("the cot loss supports the minimal and slots architectures")
     if cfg.distill_fade is not None and cfg.distill_weight <= 0:
@@ -698,6 +720,7 @@ def train(
         raise ValueError("token_mass_weight needs the candidate token readout and --accumulate-gradients")
     running_mass = [0.0, 0]  # 每个日志窗口里 -log(P(D1)+P(D2)) 之和与步数
     running_branch = [0.0, 0]  # 每个日志窗口里逐分支 D1/D2 交叉熵之和与步数
+    running_latlm = [0.0, 0]  # 每个日志窗口里隐式推理课程文字损失 (按 token 平均) 之和与步数
     prepare = functools.partial(_prepare_batch, (list(d_ids), cfg.k_max, cfg.layout, cfg.max_length,
                                                  cfg.type_marker, cfg.context_marker, architecture["kind"],
                                                  cfg.cot_weight, cfg.consistency > 0,
@@ -735,6 +758,7 @@ def train(
                 if cfg.accumulate_gradients:
                     distill_stats.pop("token_mass", None)
                     distill_stats.pop("branch", None)
+                    distill_stats.pop("latent_lm", None)
                     if readout == "dual" and not m.head_active and step > cfg.head_start:
                         m.activate_head()  # 第二阶段: 标量头从 e_D1 - e_D2 起步
                         print(f"step {step:5d}  dual readout: switched to the scalar head", flush=True)
@@ -745,6 +769,8 @@ def train(
                         running_branch = [running_branch[0] + distill_stats["branch"], running_branch[1] + 1]
                     if "token_mass" in distill_stats:
                         running_mass = [running_mass[0] + distill_stats["token_mass"], running_mass[1] + 1]
+                    if "latent_lm" in distill_stats:
+                        running_latlm = [running_latlm[0] + distill_stats["latent_lm"], running_latlm[1] + 1]
                     if distill_stats.get("teacher_n"):
                         k = distill_stats["teacher_n"]
                         running_distill = [running_distill[0] + distill_stats["teacher_ce"] * k,
@@ -814,6 +840,7 @@ def train(
                              f"{running_distill[2] / running_distill[3]:.3f}  distill {running_distill[1] / running_distill[3]:.4f}"
                              if running_distill[3] else "")
                           + (f"  d1d2 {running_mass[0] / running_mass[1]:.4f}" if running_mass[1] else "")
+                          + (f"  latlm {running_latlm[0] / running_latlm[1]:.4f}" if running_latlm[1] else "")
                           + (f"  branch {running_branch[0] / running_branch[1]:.4f}" if running_branch[1] else "")
                           + "".join(f"  cot_{k} {v[0] / v[1]:.4f}" for k, v in cot_tokens.items() if v[1])
                           + f"  {time.time() - t0:.0f}s" + (f"  tctl {t:.0f}°C" if t is not None else ""), flush=True)
@@ -845,6 +872,12 @@ def train(
                             writer.add_scalar("train/head_active", float(m.head_active), step)
                         if running_mass[1]:
                             writer.add_scalar("train/token_mass", running_mass[0] / running_mass[1], step)
+                        if running_latlm[1]:
+                            writer.add_scalar("train/latent_lm", running_latlm[0] / running_latlm[1], step)
+                        if cfg.latent_curriculum is not None:
+                            from sors.training.latent_curriculum import latent_stage
+                            writer.add_scalar("train/latent_stage", latent_stage(
+                                step, cfg.steps, m.decision_config.latent_steps, cfg.latent_curriculum), step)
                         if running_distill[3]:
                             writer.add_scalar("train/teacher_loss", running_distill[0] / running_distill[3], step)
                             writer.add_scalar("train/teacher_accuracy", running_distill[2] / running_distill[3], step)
@@ -871,6 +904,7 @@ def train(
                     running_cot, running_cot_n = 0.0, 0
                     running_distill = [0.0, 0.0, 0, 0, 0]
                     running_mass = [0.0, 0]
+                    running_latlm = [0.0, 0]
                     running_branch = [0.0, 0]
                     running_gn, running_gn_n = 0.0, 0
                     cot_tokens = {"key": [0.0, 0], "rest": [0.0, 0]}

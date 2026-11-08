@@ -563,6 +563,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--decision-latent-steps", type=int, default=None,
                     help="candidate: 前缀之后接几个隐式推理位置 (sors.core.latent), 每个的输入是上一位置的最后一层隐藏状态; "
                          "只走 --candidate-prefix-cache packed. 默认 0 = 不接. 写进目录名 (-lat<n>)")
+    ap.add_argument("--latent-curriculum", default=None,
+                    help="隐式推理课程 (training.latent_curriculum) 的起止 a,b (总步数比例): a 之前计算过程全是文字, "
+                         "之后每 (b-a)/latent_steps 把一句换成一个隐式位置. 要 --decision-latent-steps. 写进目录名 (-lc<a>-<b>)")
+    ap.add_argument("--latent-lm-weight", type=float, default=1.0,
+                    help="隐式推理课程里还没换掉的计算过程文字的下一个词损失权重. 不是 1 时写进目录名 (-llw<w>)")
     ap.add_argument("--head-start", type=int, default=None,
                     help="dual 读出: 第一阶段的步数, 0 < n < --steps. 写进目录名 (-hs<n>)")
     ap.add_argument("--branch-weight", type=float, default=1.0,
@@ -856,6 +861,24 @@ def checkpoint_path(out: pathlib.Path, step: int) -> pathlib.Path:
     return out / "checkpoints" / f"step-{step:05d}.safetensors"
 
 
+def latent_curriculum(args):
+    """--latent-curriculum "a,b" -> (a, b), 0 <= a < b <= 1; 没给 -> None. 要 candidate + --decision-latent-steps."""
+    raw = getattr(args, "latent_curriculum", None)
+    if not raw:
+        return None
+    if getattr(args, "architecture", None) != "candidate" or not getattr(args, "decision_latent_steps", None):
+        raise SystemExit("--latent-curriculum needs --architecture candidate and --decision-latent-steps")
+    try:
+        a, b = (float(x) for x in raw.split(","))
+    except ValueError:
+        raise SystemExit(f"--latent-curriculum needs two fractions a,b; got {raw!r}") from None
+    if not 0 <= a < b <= 1:
+        raise SystemExit(f"--latent-curriculum needs 0 <= a < b <= 1; got {raw!r}")
+    if getattr(args, "latent_lm_weight", 1.0) < 0:
+        raise SystemExit("--latent-lm-weight is a weight, >= 0")
+    return a, b
+
+
 def distill_fade(args):
     """--distill-fade "a,b" -> (a, b), 0 <= a < b <= 1; 没给 -> None."""
     raw = getattr(args, "distill_fade", None)
@@ -899,6 +922,8 @@ def run_tag(args) -> str:
         + (f"-emd{args.score_emd:g}" if getattr(args, "score_emd", 0.0) > 0 else "") \
         + (f"-cot{args.cot_weight:g}" if getattr(args, "cot_weight", 0.0) > 0 else "") \
         + (f"-lat{args.decision_latent_steps}" if getattr(args, "decision_latent_steps", None) else "") \
+        + (f"-lc{args.latent_curriculum.replace(',', '-')}" if getattr(args, "latent_curriculum", None) else "") \
+        + (f"-llw{args.latent_lm_weight:g}" if getattr(args, "latent_curriculum", None) and getattr(args, "latent_lm_weight", 1.0) != 1.0 else "") \
         + (f"-tm{args.token_mass_weight:g}" if getattr(args, "token_mass_weight", 0.0) > 0 else "") \
         + (f"-hs{args.head_start}-bw{args.branch_weight:g}" if getattr(args, "head_start", None) else "") \
         + (f"-dist{args.distill_weight:g}" if getattr(args, "distill_weight", 0.0) > 0 else "") \
@@ -932,6 +957,7 @@ def main() -> None:
     if args.distill_fade and args.distill_weight <= 0:
         raise SystemExit("--distill-fade needs --distill-weight > 0")
     fade = distill_fade(args)
+    lat_curric = latent_curriculum(args)
     if args.contrast_qtypes and not set(args.contrast_qtypes.split(",")) <= {"choice", "bool", "score"}:
         raise SystemExit(f"--contrast-qtypes takes choice / bool / score, got {args.contrast_qtypes!r}")
     if args.contrast_weight > 0 and args.accumulate_gradients and args.micro_tokens <= 0 and args.micro_batches > 1:
@@ -1011,6 +1037,7 @@ def main() -> None:
         contrast_qtypes=tuple(args.contrast_qtypes.split(",")) if args.contrast_qtypes else None,
         score_emd=args.score_emd, cot_weight=args.cot_weight,
         distill_weight=args.distill_weight, teacher_weight=args.teacher_weight, distill_fade=fade,
+        latent_curriculum=lat_curric, latent_lm_weight=args.latent_lm_weight,
         eval_every=args.eval_every, initial_eval=args.initial_eval, save_every=args.save_every, probe_size=args.probe_size,
         probe_passes=args.probe_passes, seed=args.seed,
         candidate_prefix_cache=args.candidate_prefix_cache,

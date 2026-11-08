@@ -252,6 +252,7 @@ class DecisionModel(nn.Module):
             self.option_norm = nn.LayerNorm(config.dim)
             decision_layers = (self.option_proj, self.blocks, self.query, self.option_norm)
         self._token_mass = None  # token 读出: 训练前向里记下的 D1/D2 概率质量项, 由 pop_token_mass 取走
+        self._latent_lm = None  # 隐式推理课程: 训练前向里记下的文字 (交叉熵之和, token 数), 由 pop_latent_lm 取走
         # dual 读出: head_active=False 是第一阶段 (分数 = lm_head 上的对数几率), True 是第二阶段 (标量头);
         # 训练循环按步数切换, 存档记下当时的阶段. branch_in_head_stage: 第二阶段训练时是否还算逐分支 D1/D2 项
         self.head_active = True
@@ -391,6 +392,11 @@ class DecisionModel(nn.Module):
         emb = head.emb
         logits[:, emb.ids] = x.float() @ emb.rows.float().T
         return logits.log_softmax(-1)
+
+    def pop_latent_lm(self):
+        """隐式推理课程在训练前向里记下的 (文字 token 交叉熵之和, token 数); 取走后清空. 批里没有文字时 None."""
+        lm, self._latent_lm = self._latent_lm, None
+        return lm
 
     def pop_branch(self):
         """dual 读出在训练前向里记下的 (log P(D1), log P(D2)), 各 (B, K) 按菜单位置排, 菜单外为 0; 取走后清空."""
@@ -646,12 +652,22 @@ class DecisionModel(nn.Module):
             if not valid.any(1).all():
                 raise ValueError("candidate batch needs at least one option per example")
             option_rows = valid.flatten().nonzero().flatten()
+            checkpointed = self.checkpoint_forward and self.training and torch.is_grad_enabled()
             with self._forward_lock:
-                encoded = packed_candidate_hidden(
-                    self.decoder, batch, valid,
-                    checkpointed=self.checkpoint_forward and self.training and torch.is_grad_enabled(),
-                    image_token_id=self.image_token_id, latent_steps=self.decision_config.latent_steps,
-                ).to(self.option_norm.weight.dtype)
+                if "latent_n" in batch:  # 隐式推理课程: 每题自己的隐式位置数, 可带一段文字 (sors.core.latent)
+                    if not self.decision_config.latent_steps:
+                        raise ValueError("latent curriculum batches need a model with latent steps")
+                    from sors.core.latent import latent_forward
+                    raw = self.base.get_base_model() if hasattr(self.base, "get_base_model") else self.base
+                    grad = self.training and torch.is_grad_enabled()
+                    encoded, lm = latent_forward(self.decoder, batch, valid, self.decision_config.latent_steps,
+                                                 head=raw.lm_head if grad else None, checkpointed=checkpointed)
+                    self._latent_lm = lm if grad else None
+                else:
+                    encoded = packed_candidate_hidden(
+                        self.decoder, batch, valid, checkpointed=checkpointed,
+                        image_token_id=self.image_token_id, latent_steps=self.decision_config.latent_steps)
+                encoded = encoded.to(self.option_norm.weight.dtype)
             return self._candidate_output(encoded, batch["slot_ids"], option_rows)
         if self.decision_config.kind == "candidate":
             shared = self.uses_shared_prefix(batch)

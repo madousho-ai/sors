@@ -210,6 +210,20 @@ def collate_decisions(examples, tokenizer, d_ids, k_max, layout, max_length, typ
                 if s:
                     trace_ids[i, width - len(s):], trace_mask[i, width - len(s):] = torch.tensor(s), 1
             out.update(trace_input_ids=trace_ids, trace_attention_mask=trace_mask)
+        if any(ex.latent_n is not None or ex.latent_text for ex in examples):
+            # 隐式推理课程: 每题的隐式位置数 (-1 = 模型默认) 与接在隐式位置后面的那段计算过程, 格式同 trace
+            out["latent_n"] = torch.tensor([-1 if ex.latent_n is None else ex.latent_n for ex in examples])
+            seqs = [tokenizer(f"{ex.latent_text.strip()}\n\n", add_special_tokens=False)["input_ids"]
+                    if ex.latent_text else [] for ex in examples]
+            width = max([len(s) for s in seqs] + [1])
+            text_ids = torch.full((len(examples), width), pad, dtype=torch.long)
+            text_mask = torch.zeros_like(text_ids)
+            for i, s in enumerate(seqs):
+                if s:
+                    text_ids[i, width - len(s):], text_mask[i, width - len(s):] = torch.tensor(s), 1
+            out.update(latent_text_ids=text_ids, latent_text_mask=text_mask)
     elif traces:
         raise ValueError("teacher traces need the candidate architecture")
+    elif any(ex.latent_n is not None or ex.latent_text for ex in examples):
+        raise ValueError("latent curriculum examples need the candidate architecture")
     return out
