@@ -189,3 +189,22 @@ def test_training_prepares_batch_costs_with_the_latent_positions():
     _, _, _, plain = _prepare_batch(spec, (exs, None), tok)
     _, _, _, latent = _prepare_batch(spec + (2,), (exs, None), tok)
     assert latent == [plain[0] + 2 * (1 + BRANCH_STATE_TOKENS)]
+
+
+@cuda
+def test_an_exported_latent_model_reloads_with_its_latent_steps_and_the_same_scores(tmp_path):
+    from sors.core import pretrained
+
+    m, tok, d = _latent_model(2)
+    m.to("cuda").eval()
+    exs = with_partners(examples(), random.Random(0))
+    data = {k: v.cuda() for k, v in candidate_batch(tok, d, exs, option_branches=False).items()}
+    with torch.inference_mode():
+        expected = m.forward_batch(data)
+    settings = {"layout": "context-first", "type_marker": False, "context_marker": False,
+                "max_length": 8192, "candidate_prefix_cache": "packed"}
+    pretrained.save_pretrained(m, tok, settings, tmp_path / "release")
+    restored, _, _, _ = pretrained.load_pretrained(tmp_path / "release", device="cuda")
+    assert restored.decision_config.latent_steps == 2 and restored.candidate_prefix_cache == "packed"
+    with torch.inference_mode():
+        torch.testing.assert_close(restored.forward_batch(data), expected)
