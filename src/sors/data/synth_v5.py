@@ -444,14 +444,17 @@ def parse_passes(spec: str | None, goals: set[str]) -> dict[str, int]:
 
 
 class V5Rounds:
-    """按轮抽: 一轮把每个绑定出一遍, parse_passes 列了遍数的目标出那么多遍, 轮内整体打乱.
+    """按轮抽: 一轮把每个绑定出一遍, parse_passes 列了遍数的目标出那么多遍, 轮内整体打乱;
+    cot_passes 给了时, 带计算过程 (cot) 的绑定改出 cot_passes 遍.
     一批从上一批停下的地方接着取, 一轮取完就打乱出下一轮, 一批可以跨过两轮的边界.
     成对的两半 (原题与 other 版) 算一个单元、随机选一版，同 V5Sampler。改动题一抽连原题出两道 (见 draw_of)。
     round_size 是一轮出的题数 (改动题算两道)。"""
 
     def __init__(self, items: list[V5Item], passes: dict[str, int], mask_rate: float = 0.0, fallback_rate: float = 0.5,
-                 contrast_balance: bool = False):
+                 contrast_balance: bool = False, cot_passes: int | None = None):
         _check_fallback_rate(fallback_rate)
+        if cot_passes is not None and (not isinstance(cot_passes, int) or cot_passes < 1):
+            raise ValueError(f"cot_passes must be a whole number >= 1; got {cot_passes!r}")
         self.fallback_rate = fallback_rate
         missing = {it.goal for it in items} ^ set(passes)
         if missing:
@@ -459,7 +462,9 @@ class V5Rounds:
         self.items, self.passes, self.mask_rate = items, passes, mask_rate
         edits = edit_map(items) if contrast_balance else None
         draws = sorted({draw_of(items, i, edits) for i in range(len(items))})
-        self.units = [d for d in draws for _ in range(passes[items[d[0][0]].goal])]
+        # cot_passes: 带计算过程的绑定 (隐式推理课程用它们) 每轮出这么多遍, 覆盖目标的遍数
+        times = lambda it: cot_passes if cot_passes is not None and it.cot else passes[it.goal]
+        self.units = [d for d in draws for _ in range(times(items[d[0][0]]))]
         self.round_size = sum(len(d) for d in self.units)
         self.contrast_draws = sum(len(d) == 2 for d in self.units)  # 一轮里成对出的抽取数 (改动题带原题, 平衡时也有原题带改动题)
         self.queue: list[tuple[tuple[int, ...], ...]] = []

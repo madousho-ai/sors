@@ -422,8 +422,10 @@ def build_data(args):
                 samplers.append(strata)
             elif args.passes:
                 rounds = V5Rounds(v5, parse_passes(args.passes, goals), args.mask_descriptions, fallback_rate,
-                                  contrast_balance=balance)
+                                  contrast_balance=balance, cot_passes=getattr(args, "cot_passes", None))
                 split_info["synth_v5_passes"] = rounds.passes
+                if getattr(args, "cot_passes", None):
+                    split_info["synth_v5_cot_passes"] = args.cot_passes
                 split_info["synth_v5_round"] = rounds.round_size
                 split_info["synth_v5_contrast_draws"] = rounds.contrast_draws
                 samplers.append(rounds)
@@ -681,6 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="synth-v5 各训练目标的配比, 相对权重: long_menu=4,breadth=2,complex=1,edge_case=1; "
                          "分段写成 '0: long_menu=6,...; 1000: long_menu=3,...', 到那一步换配比. "
                          "数据里有的目标每一段都要给正权重. 不给 = 各目标相同. 写进目录名 (-mix<hash>)")
+    ap.add_argument("--cot-passes", type=int, default=None,
+                    help="配合 --passes: 带计算过程 (cot) 的绑定每轮出 N 遍, 覆盖它所在目标的遍数 (隐式推理课程用). "
+                         "写进目录名 (-cotp<N>)")
     ap.add_argument("--passes", default=None,
                     help="synth-v5 按轮抽, 代替 --mix: 一轮把每个绑定出一遍, 这里列的目标出 N 遍, 如 "
                          "complex=3,edge_case=3,long_context=3 (不列的 1 遍). 轮内打乱, 一轮取完再开一轮. "
@@ -915,6 +920,7 @@ def run_tag(args) -> str:
         + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.25"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
+        + (f"-cotp{args.cot_passes}" if getattr(args, "cot_passes", None) else "") \
         + ("-cbal" if getattr(args, "contrast_balance", False) else "") \
         + (f"-cp{args.contrast_pairs}" if getattr(args, "contrast_pairs", 0) else "") \
         + (f"-xc{'+'.join(sorted(set(args.exclude_categories.split(','))))}" if getattr(args, "exclude_categories", None) else "") \
@@ -948,6 +954,8 @@ def main() -> None:
         raise SystemExit(f"--micro-tokens is a padded-token budget per group, >= 0; got {args.micro_tokens}")
     if args.score_emd < 0:
         raise SystemExit(f"--score-emd is a weight, >= 0; got {args.score_emd}")
+    if getattr(args, "cot_passes", None) is not None and (args.cot_passes < 1 or not args.passes):
+        raise SystemExit("--cot-passes needs --passes and a whole number >= 1")
     if args.cot_weight < 0:
         raise SystemExit(f"--cot-weight is a weight, >= 0; got {args.cot_weight}")
     if args.distill_weight < 0 or args.teacher_weight < 0:
