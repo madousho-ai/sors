@@ -92,6 +92,13 @@ def test_a_request_too_long_for_the_model_is_422():
     assert r.status_code == 422 and "9000 tokens" in r.json()["detail"][0]["msg"], r.text
 
 
+def test_a_request_too_long_says_context_window_so_benchmark_clients_record_a_capacity_limit():
+    # Decision Index 的 http 引擎只在 422 正文含 "context window" 这类短语时记成 unsupported, 否则记 error 并在续跑时重试
+    e = FakeEngine(error=RequestTooLong("candidate option branch exceeds max_length"))
+    r = _client(e).post("/v1/systemone", json=BODY)
+    assert r.status_code == 422 and "context window" in r.json()["detail"][0]["msg"], r.text
+
+
 def test_with_an_api_key_set_requests_need_the_bearer_token():
     c = _client(api_key="s3cret")
     assert c.post("/v1/systemone", json=BODY).status_code == 401

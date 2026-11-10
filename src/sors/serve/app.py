@@ -109,7 +109,8 @@ def create_app(engine, model_name: str, api_key: str | None = None, description:
         try:
             ev = engine.evaluate(state, req.questions, images)
         except RequestTooLong as e:
-            raise _unprocessable("questions", str(e)) from None
+            # "context window" 是 Decision Index 等评测客户端认作容量上限的短语; 拒收原因照旧接在后面
+            raise _unprocessable("questions", f"request exceeds this server's context window: {e}") from None
         except UnsupportedInput as e:
             raise _unprocessable("state", str(e)) from None
         return {"model": model_name,
