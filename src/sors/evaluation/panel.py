@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import pathlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from sors.core.menu import LabeledSet
+from sors.evaluation.metrics import ece
 
 NOUL_BAND = (0.2, 0.8)
 
@@ -80,24 +82,40 @@ def item_from_suite_row(set_name: str, row: dict) -> dict:
     return _item(set_name, ev["run_id"], ev["dataset"], row["state"], row["questions"], dict(row["gold"]))
 
 
+def _dist_stats(probs: dict, gold) -> dict:
+    """一道题的分布: conf (最大概率)、nll (−log 标准答案的概率)、brier (Σ (p − y)², y 是标准答案的独热)."""
+    total = sum(probs.values()) or 1.0
+    p = {k: v / total for k, v in probs.items()}
+    pg = p.get(gold, 0.0)
+    return {"conf": max(p.values()), "nll": -math.log(max(pg, 1e-12)),
+            "brier": sum((v - (1.0 if k == gold else 0.0)) ** 2 for k, v in p.items())}
+
+
 def score_question(qtype: str, k: int, answer: dict, gold) -> dict:
-    """一道题的 {top1, metric, chance}. answer 是服务返回的那道题的答案对象."""
+    """一道题的 {top1, metric, chance, conf, nll, brier} (noul 另有 p_yes). answer 是服务返回的那道题的答案对象."""
     if qtype == "choice":
         top1 = answer.get("choice") == gold
-        return {"top1": top1, "metric": float(top1), "chance": 1 / k}
+        probs = {key: float(v) for key, v in (answer.get("probabilities") or {}).items()}
+        out = {"top1": top1, "metric": float(top1), "chance": 1 / k}
+        if probs:
+            out.update(_dist_stats(probs, gold))
+        return out
     if qtype == "noul":
         p = float(answer["noul"])
         lo, hi = NOUL_BAND
         decided = (p >= hi and gold == "yes") or (p <= lo and gold == "no")
-        return {"top1": (p >= 0.5) == (gold == "yes"), "metric": float(decided), "chance": 0.5}
+        return {"top1": (p >= 0.5) == (gold == "yes"), "metric": float(decided), "chance": 0.5, "p_yes": p,
+                **_dist_stats({"no": 1 - p, "yes": p}, gold)}
     probs = {int(level): float(p) for level, p in answer["probabilities"].items()}
     top = max(probs, key=probs.get)
-    return {"top1": top == int(gold), "metric": 1 - abs(float(answer["score"]) - int(gold)) / (k - 1), "chance": None}
+    return {"top1": top == int(gold), "metric": 1 - abs(float(answer["score"]) - int(gold)) / (k - 1), "chance": None,
+            **_dist_stats(probs, int(gold))}
 
 
 def summarize(results: list[dict]) -> dict[str, dict]:
     """结果行 (每行一条请求: scores 或 error) 按 set 汇总: n 条请求, errors, top1, 每种题型的 metric."""
-    acc = collections.defaultdict(lambda: {"n": 0, "errors": 0, "top1": [], "choice": [], "chance": [], "noul": [], "score": []})
+    acc = collections.defaultdict(lambda: {"n": 0, "errors": 0, "top1": [], "choice": [], "chance": [], "noul": [], "score": [],
+                                           "conf": [], "conf_ok": [], "nll": [], "brier": [], "p_yes": []})
     for r in results:
         s = acc[r["set"]]
         s["n"] += 1
@@ -112,6 +130,11 @@ def summarize(results: list[dict]) -> dict[str, dict]:
             s[sc["type"]].append(sc["metric"])
             if sc["type"] == "choice":
                 s["chance"].append(sc["chance"])
+            if "conf" in sc:
+                s["conf"].append(sc["conf"]); s["conf_ok"].append(sc["top1"])
+                s["nll"].append(sc["nll"]); s["brier"].append(sc["brier"])
+            if "p_yes" in sc:
+                s["p_yes"].append((sc["p_yes"], sc["metric"]))
     out = {}
     for name, s in acc.items():
         row = {"n": s["n"], "errors": s["errors"], "top1": sum(s["top1"]) / len(s["top1"]) if s["top1"] else None}
@@ -123,6 +146,13 @@ def summarize(results: list[dict]) -> dict[str, dict]:
         for t in ("noul", "score"):
             row[t] = sum(s[t]) / len(s[t]) if s[t] else None
         row["questions"] = {t: len(s[t]) for t in ("choice", "noul", "score")}
+        mean = lambda xs: sum(xs) / len(xs) if xs else None  # noqa: E731
+        row.update(conf=mean(s["conf"]), nll=mean(s["nll"]), brier=mean(s["brier"]),
+                   ece=ece(s["conf"], s["conf_ok"]) if s["conf"] else None)
+        lo, hi = NOUL_BAND
+        decisive = [m for p, m in s["p_yes"] if p <= lo or p >= hi]
+        row["noul_decisive"] = len(decisive) / len(s["p_yes"]) if s["p_yes"] else None
+        row["noul_decisive_acc"] = mean(decisive)
         out[name] = row
     return out
 

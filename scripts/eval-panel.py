@@ -123,20 +123,28 @@ def cmd_run(args) -> None:
 
 
 def _fmt(v) -> str:
-    return f"{100 * v:6.1f}" if v is not None else f"{'-':>6}"
+    return f"{100 * v:.1f}" if v is not None else "-"
 
 
 def _print_table(paths: list[pathlib.Path]) -> None:
+    """两张表: 准确率 (top1 与各题型的 metric, 百分数) 和校准 (ECE、Brier、NLL、平均置信度, noul 决断率与决断题正确率)."""
     tables = [summarize(load_results(p)) for p in paths]
     names = list(dict.fromkeys(n for t in tables for n in t))
-    cols = ("top1", "choice", "noul", "score")
-    print(f"{'set':20}{'model':24}{'n':>6}{'err':>5}" + "".join(f"{c:>8}" for c in cols))
-    for name in names:
-        for p, t in zip(paths, tables):
-            row = t.get(name)
-            if row is None:
-                continue
-            print(f"{name:20}{p.stem[:23]:24}{row['n']:6}{row['errors']:5}" + "".join(f"  {_fmt(row[c])}" for c in cols))
+    views = [("accuracy (%)", ("top1", "choice", "noul", "score"), _fmt),
+             ("calibration", ("ece", "brier", "nll", "conf", "noul_decisive", "noul_decisive_acc"), _fmt3)]
+    for title, cols, fmt in views:
+        print(f"\n[{title}]")
+        print(f"{'set':20}{'model':24}{'n':>6}{'err':>5}" + "".join(f"{c[:10]:>11}" for c in cols))
+        for name in names:
+            for p, t in zip(paths, tables):
+                row = t.get(name)
+                if row is None:
+                    continue
+                print(f"{name:20}{p.stem[:23]:24}{row['n']:6}{row['errors']:5}" + "".join(f"{fmt(row.get(c)):>11}" for c in cols))
+
+
+def _fmt3(v) -> str:
+    return f"{v:.3f}" if v is not None else "-"
 
 
 def cmd_report(args) -> None:

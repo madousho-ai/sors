@@ -71,3 +71,5 @@ def test_export_run_report_against_a_local_server(tmp_path, capsys):
     table = capsys.readouterr().out
     line = next(x for x in table.splitlines() if x.startswith("mini"))
     assert line.split()[2:] == ["3", "0", "100.0", "100.0", "100.0", "100.0"]
+    calib = [x for x in table.splitlines() if x.startswith("mini")][1].split()
+    assert calib[-2:] == ["1.000", "1.000"]  # 唯一一道 noul P(yes)=0.1、标准答案 no: 决断且答对

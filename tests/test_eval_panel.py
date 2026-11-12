@@ -87,7 +87,7 @@ def test_a_decision_index_row_keeps_every_question_and_its_gold():
 
 def test_choice_is_right_when_the_chosen_key_is_gold():
     s = score_question("choice", 4, {"choice": "B", "probabilities": {"A": .1, "B": .7, "C": .1, "D": .1}}, "B")
-    assert s == {"top1": True, "metric": 1.0, "chance": 0.25}
+    assert {k: s[k] for k in ("top1", "metric", "chance")} == {"top1": True, "metric": 1.0, "chance": 0.25}
     assert score_question("choice", 4, {"choice": "A", "probabilities": {}}, "B")["metric"] == 0.0
 
 
@@ -180,3 +180,35 @@ def test_report_reads_the_last_done_line_of_each_item(tmp_path):
     run_items(_items(1), lambda r: {"answers": {"q": {"choice": "option_b", "probabilities": {}}}}, out, workers=1)
     rows = load_results(out)
     assert len(rows) == 1 and "error" not in rows[0]
+
+
+def test_each_question_records_confidence_nll_and_brier_of_its_distribution():
+    s = score_question("choice", 3, {"choice": "B", "probabilities": {"A": .2, "B": .5, "C": .3}}, "A")
+    assert s["conf"] == pytest.approx(.5) and s["nll"] == pytest.approx(-__import__("math").log(.2))
+    assert s["brier"] == pytest.approx(.8 ** 2 + .5 ** 2 + .3 ** 2)
+    n = score_question("noul", 2, {"noul": 0.9}, "no")
+    assert n["conf"] == pytest.approx(.9) and n["p_yes"] == pytest.approx(.9)
+    assert n["brier"] == pytest.approx(.9 ** 2 + .9 ** 2)
+    sc = score_question("score", 3, {"score": 1.5, "probabilities": {"0": .1, "1": .3, "2": .6}}, 2)
+    assert sc["conf"] == pytest.approx(.6) and sc["nll"] == pytest.approx(-__import__("math").log(.6))
+
+
+def test_summarize_reports_calibration_and_the_noul_decision_rate():
+    def q(t, top1, conf, nll, brier, p_yes=None):
+        d = {"type": t, "top1": top1, "metric": float(top1), "chance": .5, "conf": conf, "nll": nll, "brier": brier}
+        if p_yes is not None:
+            d["p_yes"] = p_yes
+        return d
+    rows = [{"set": "s", "family": None, "scores": {"q": q("noul", True, .95, .05, .005, .95)}},
+            {"set": "s", "family": None, "scores": {"q": q("noul", False, .9, 2.3, 1.62, .1)}},
+            {"set": "s", "family": None, "scores": {"q": q("noul", True, .6, .5, .32, .6)}},
+            {"set": "s", "family": None, "scores": {"q": q("choice", True, .7, .36, .14)}}]
+    out = summarize(rows)["s"]
+    assert out["noul_decisive"] == pytest.approx(2 / 3)          # 0.95 和 0.1 落在 0.2..0.8 之外
+    assert out["noul_decisive_acc"] == pytest.approx(1 / 2)      # 决断的两道里对一道
+    assert out["conf"] == pytest.approx((.95 + .9 + .6 + .7) / 4)
+    assert out["nll"] == pytest.approx((.05 + 2.3 + .5 + .36) / 4)
+    assert out["brier"] == pytest.approx((.005 + 1.62 + .32 + .14) / 4)
+    # ECE: 10 个等宽置信度分箱 (sors.evaluation.metrics.ece), |箱内正确率 - 箱内平均置信度| 按题数加权;
+    # 0.95 与 0.9 同在 0.9..1.0 箱: 正确率 0.5, 平均置信度 0.925
+    assert out["ece"] == pytest.approx((2 * abs(.5 - .925) + abs(1 - .6) + abs(1 - .7)) / 4)
