@@ -11,6 +11,7 @@
 官方 SDK 也能直接连: TYPESAFE_BASE_URL=http://127.0.0.1:8000, TYPESAFE_DEFAULT_MODEL=<服务名>.
 服务名默认取模型目录名、HF 仓库名或存档的 run 目录名；--model-name 可覆盖，请求的 model 必须匹配.
 训练存档的基模默认读 run 目录里的 result.json，也可用 --base-model 指定；完整目录自带权重.
+--log FILE 把每个答出来的请求与各项概率追加成 JSONL, 格式见 sors.serve.app.
 --demo 把仓库的 demos/ 挂在 /demo/ 下, 默认不挂. 手填请求: http://127.0.0.1:8000/demo/playground/,
 左边表单右边 JSON, 发送后显示每项概率与模型读到的提示 (见 demos/playground/). 贪吃蛇: /demo/snake/,
 每一步由服务里的模型决定往哪走 (见 demos/snake/).
@@ -57,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="单张图缩到不超过这么多像素; 32x32 像素是一个 token, 默认 1024x1024 即每张图至多 1024 个 token")
     ap.add_argument("--api-key", default=None, help="给了就要求 Authorization: Bearer <key>. 不给 = 读 SORS_API_KEY, 也没有就不查")
     ap.add_argument("--demo", action="store_true", help="把 demos/ 下的演示页挂在 /demo/ (手填请求在 /demo/playground/, 贪吃蛇在 /demo/snake/)")
+    ap.add_argument("--log", default=None, metavar="FILE",
+                    help="给了就把每个答出来的请求连同模型给出的各项概率追加到这个 JSONL 文件, 一请求一行. 不给 = 不记")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--device", default="cuda")
@@ -172,10 +175,11 @@ def main() -> None:
     released = datetime.date.fromtimestamp(pathlib.Path(args.init).stat().st_mtime).isoformat()
     source = base or "self-contained model weights"
     app = create_app(engine, name, api_key=api_key(args), description=f"{pathlib.Path(args.init).name} on {source}",
-                     release_date=released, demo_dir=demo_dir(args))
+                     release_date=released, demo_dir=demo_dir(args), log_path=args.log)
     print(f"serving {args.init} on {source} as {name!r}, type_marker={engine.type_marker}, "
           f"context_marker={engine.context_marker}, "
-          f"context label {repr(args.context_label) if args.context_label else 'none'}, auth {'on' if api_key(args) else 'off'}", flush=True)
+          f"context label {repr(args.context_label) if args.context_label else 'none'}, auth {'on' if api_key(args) else 'off'}, "
+          f"request log {args.log or 'off'}", flush=True)
     if args.demo:
         for page in ("playground", "snake"):
             print(f"demo: http://{args.host}:{args.port}/demo/{page}/", flush=True)

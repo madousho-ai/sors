@@ -171,3 +171,41 @@ def test_prompts_checks_the_model_and_the_key_like_the_api_and_is_off_without_th
     assert c.post("/demo/prompts", json={**BODY, "model": "jev-latest"}, headers=ok).status_code == 422
     assert c.post("/demo/prompts", json=BODY, headers=ok).status_code == 200
     assert _client().post("/demo/prompts", json=BODY).status_code == 404
+
+
+def _logged(path):
+    import json
+    return [json.loads(line) for line in pathlib.Path(path).read_text().splitlines()]
+
+
+def test_with_a_log_file_each_answered_request_appends_one_line_with_the_request_and_the_probabilities():
+    log = pathlib.Path(tempfile.mkdtemp()) / "requests.jsonl"
+    c = TestClient(create_app(FakeEngine(), NAME, log_path=log))
+    assert c.post("/v1/systemone", json=BODY).status_code == 200
+    assert c.post("/v1/systemone", json={**BODY, "state": "second"}).status_code == 200
+    first, second = _logged(log)
+    assert first["request"]["state"] == BODY["state"] and second["request"]["state"] == "second"
+    assert first["request"]["questions"]["is_urgent"] == {"type": "noul", "instructions": "Does this convey urgency?"}
+    assert first["probabilities"] == {"department": {"billing": 0.88, "technical": 0.12, "sales": 0.0},
+                                      "is_urgent": {"false": 0.05, "true": 0.95},
+                                      "frustration": {"0": 0.0, "1": 0.95, "2": 0.05}}
+    assert "time" in first
+
+
+def test_the_log_keeps_a_digest_of_each_image_in_place_of_its_bytes():
+    import base64, hashlib
+    data = base64.b64encode(b"not really a png").decode()
+    from sors.serve import app as app_module
+    req = app_module.SystemOneRequest.model_validate(
+        {**BODY, "assets": {"img": {"type": "image", "data_base64": data, "format": "png"}}})
+    logged = app_module.logged_request(req)
+    assert logged["assets"]["img"] == {"type": "image", "format": "png", "bytes": len(b"not really a png"),
+                                       "sha256": hashlib.sha256(b"not really a png").hexdigest()}
+
+
+def test_refused_requests_and_servers_without_a_log_file_write_nothing():
+    log = pathlib.Path(tempfile.mkdtemp()) / "requests.jsonl"
+    c = TestClient(create_app(FakeEngine(), NAME, log_path=log))
+    assert c.post("/v1/systemone", json={**BODY, "model": "other"}).status_code == 422
+    assert not log.exists() or log.read_text() == ""
+    assert _client().post("/v1/systemone", json=BODY).status_code == 200

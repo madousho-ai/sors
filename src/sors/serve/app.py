@@ -13,12 +13,20 @@ demo_dir 给了才把这个目录当静态文件挂在 /demo/ 下 (如 demos/sna
 演示页本身不要 key, 页面调 API 时照常鉴权. 演示开着时另有 POST /demo/prompts: 请求体同 /v1/systemone,
 回 {prompts: {问题 id: {state, question}}}, 即模型读到的提示原文 (引擎的 prompts, 不跑模型).
 它不在 System One 规范里, 只给演示页显示提示用, 所以跟着 demo_dir 一起开关.
+log_path 给了就把每个答出来的 /v1/systemone 请求追加成 JSONL 的一行: {time, request, probabilities}.
+request 是解析后的请求体, 图只留 {type, format, bytes, sha256}, 不存原图; probabilities 是 {问题 id: {选项: 概率}},
+选项名照响应: choice 用 criteria 的键, score 用 "0".."k-1", noul 用 "false"/"true". 被拒的请求不记. 每行写完即 flush.
 """
 
 from __future__ import annotations
 
+import base64
+import datetime
+import hashlib
 import hmac
+import json
 import os
+import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -46,6 +54,46 @@ def _resolved(req: SystemOneRequest) -> tuple:
         raise _unprocessable("questions", str(e)) from None
     except UnsupportedInput as e:
         raise _unprocessable("state", str(e)) from None
+
+
+def logged_request(req: SystemOneRequest) -> dict:
+    """请求体照原样, 只把每张图的 base64 换成字节数与 sha256, 免得日志随图膨胀."""
+    out = req.model_dump(mode="json", exclude_none=True)
+    for ref, a in (req.assets or {}).items():
+        entry = {k: v for k, v in out["assets"][ref].items() if k != "data_base64"}
+        if a.data_base64 is not None:
+            data = base64.b64decode(a.data_base64)
+            entry.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        out["assets"][ref] = entry
+    return out
+
+
+def _option_names(q) -> list[str]:
+    """菜单各行的名字, 行序同 Evaluation.probs (见 serve.menus)."""
+    if q.type == "noul":
+        return ["false", "true"]
+    if q.type == "choice":
+        return list(q.criteria)
+    return [str(i) for i in range(len(q.criteria))]
+
+
+class _RequestLog:
+    """追加写 JSONL; 端点在线程池里并发, 一把锁保证行不交错."""
+
+    def __init__(self, path: str | os.PathLike):
+        self.file = open(path, "a", encoding="utf-8")
+        self.lock = threading.Lock()
+
+    def write(self, req: SystemOneRequest, probs: dict[str, list[float]]) -> None:
+        line = json.dumps({
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds"),
+            "request": logged_request(req),
+            "probabilities": {qid: dict(zip(_option_names(q), map(float, probs[qid])))
+                              for qid, q in req.questions.items()},
+        }, ensure_ascii=False)
+        with self.lock:
+            self.file.write(line + "\n")
+            self.file.flush()
 
 
 class _BodyLimit:
@@ -89,7 +137,9 @@ class _BodyLimit:
 
 
 def create_app(engine, model_name: str, api_key: str | None = None, description: str = "",
-               release_date: str = "", demo_dir: str | os.PathLike | None = None) -> FastAPI:
+               release_date: str = "", demo_dir: str | os.PathLike | None = None,
+               log_path: str | os.PathLike | None = None) -> FastAPI:
+    request_log = _RequestLog(log_path) if log_path is not None else None
     app = FastAPI(title="SORS", summary="State-conditioned Option Ranking System — TypeSafe System One-compatible API")
 
     def authorized(authorization: str | None = Header(default=None)) -> None:
@@ -113,6 +163,8 @@ def create_app(engine, model_name: str, api_key: str | None = None, description:
             raise _unprocessable("questions", f"request exceeds this server's context window: {e}") from None
         except UnsupportedInput as e:
             raise _unprocessable("state", str(e)) from None
+        if request_log is not None:
+            request_log.write(req, ev.probs)
         return {"model": model_name,
                 "answers": {qid: answer(q, ev.probs[qid]) for qid, q in req.questions.items()},
                 "usage": {"input_tokens": ev.input_tokens, "output_tokens": len(req.questions)}}

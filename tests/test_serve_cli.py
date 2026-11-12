@@ -121,3 +121,8 @@ def test_complete_model_directory_sets_its_own_name_and_needs_no_base_model():
             assert "--base-model" in str(exc)
         else:
             raise AssertionError("a complete model accepted a separate base model")
+
+
+def test_requests_are_logged_only_when_the_log_flag_names_a_file():
+    assert _args("--init", "x").log is None
+    assert _args("--init", "x", "--log", "/tmp/r.jsonl").log == "/tmp/r.jsonl"
