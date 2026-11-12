@@ -197,6 +197,37 @@ its text-length callback must use the run tokenizer with
 write an allowlist before training, preserving complete evidence within the
 configured token budget.
 
+## Evaluation panel
+
+`scripts/eval-panel.py` scores any `/v1/systemone` endpoint on one fixed panel, so checkpoints, code
+revisions and stock models are compared on the same items. Each set is exported once into
+`data/panel/<set>.jsonl` (a request plus the gold of each of its questions) with `manifest.json`
+recording counts and sha256. Paths come from the command line; the code names no held-out directory.
+
+| Set | Source | Items |
+|---|---|---:|
+| `sors` | the data repository's held-out decision set, v2 | 2,000 |
+| `json` | `json-eval/json-eval-v1.jsonl` | 630 |
+| `zh` | `zh-eval/zh-eval-v1.jsonl` | 600 |
+| `tg_spam` | `tg-spam-heldout/tg-spam-heldout-v1.jsonl` (drawn from v5.25, which still trains on it) | 600 |
+| `jevbench_easy` / `_original` / `_hard` | the JevBench public tiers in `data/jevbench/` | 48 / 72 / 111 |
+| `simple` | `synth-simple-eval/synth-simple-eval.jsonl` | 80 |
+| `massive` / `boolq` | hash-ordered 1,000 of MASSIVE test and BoolQ validation, full menus | 1,000 each |
+| `dindex` (optional) | rows of the rebuilt Decision Index public suite, `--suite dindex=<rows>` | as given |
+
+Scoring is JevBench v1.5 section 3: chance-corrected accuracy for choice, noul wrong when
+0.2 < P(yes) < 0.8, one minus the normalized distance of the expected level for score; `top1` is
+reported for every type. A request that errors counts all its questions wrong.
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/eval-panel.py run --panel data/panel \
+  --base-url http://127.0.0.1:8000 --model <served name> --out runs/panel/<name>.jsonl
+PYTHONPATH=src .venv/bin/python scripts/eval-panel.py report runs/panel/a.jsonl runs/panel/b.jsonl
+```
+
+A `tg_spam` score counts only for checkpoints trained on data without those materials: v5.24 and
+earlier, or a later version that removes them.
+
 ## Reproduce and resume
 
 Training records the resolved asset path, both repositories' revisions and their
