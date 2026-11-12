@@ -20,6 +20,11 @@
 from __future__ import annotations
 
 import collections
+import json
+import pathlib
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from sors.core.menu import LabeledSet
 
@@ -120,3 +125,56 @@ def summarize(results: list[dict]) -> dict[str, dict]:
         row["questions"] = {t: len(s[t]) for t in ("choice", "noul", "score")}
         out[name] = row
     return out
+
+
+def _key(row: dict) -> tuple[str, str]:
+    return row["set"], row["id"]
+
+
+def load_results(path) -> list[dict]:
+    """结果文件里每道题最后一行 done (续跑会追加, 后写的算数)."""
+    last = {}
+    p = pathlib.Path(path)
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").split("\n"):
+            if line.strip():
+                r = json.loads(line)
+                if r.get("event") == "done":
+                    last[_key(r)] = r
+    return list(last.values())
+
+
+def run_items(items: list[dict], post, out_path, workers: int = 4) -> None:
+    """逐条发 item 的 request (post(request) -> 服务的响应体), 结果追加到 out_path.
+    每条先写一行 start 再写一行 done, 卡住时看最后的 start 就知道停在哪条. 已经答出的跳过, 报错的重发.
+    一条报错不停整批: done 行记 error 与这条的题型, 汇总时它的题都算答错."""
+    out_path = pathlib.Path(out_path)
+    answered = {_key(r) for r in load_results(out_path) if "error" not in r}
+    todo = [it for it in items if _key(it) not in answered]
+    lock = threading.Lock()
+    with out_path.open("a", encoding="utf-8") as fh:
+        def write(rec):
+            with lock:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                fh.flush()
+
+        def one(it):
+            base = {"set": it["set"], "id": it["id"], "family": it["family"]}
+            write({"event": "start", **base, "t": time.time()})
+            t0 = time.perf_counter()
+            rec = {"event": "done", **base, "type": it["type"], "k": it["k"]}
+            try:
+                answers = post(it["request"])["answers"]
+                rec["scores"] = {q: {"type": t, **score_question(t, it["k"][q], answers[q], it["gold"][q])}
+                                 for q, t in it["type"].items()}
+            except Exception as e:  # noqa: BLE001 - 一条的失败记下来, 不打断整批
+                rec["error"] = f"{type(e).__name__}: {e}"[:500]
+            rec["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            write(rec)
+
+        if workers <= 1:
+            for it in todo:
+                one(it)
+        else:
+            with ThreadPoolExecutor(workers) as ex:
+                list(ex.map(one, todo))

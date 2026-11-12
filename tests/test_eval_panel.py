@@ -10,7 +10,7 @@ import pytest
 
 from sors.core.menu import LabeledSet
 from sors.evaluation.panel import (item_from_simple, item_from_suite_row, item_from_task, items_from_labeled,
-                                   score_question, summarize)
+                                   run_items, score_question, summarize)
 
 
 def _task(qtype="choice", expected="option_b"):
@@ -119,3 +119,64 @@ def test_summarize_reports_each_type_and_chance_corrects_choice():
     assert out["choice"] == pytest.approx((1 / 3 - 0.25) / 0.75)
     assert out["noul"] == 1.0 and out["score"] == 0.75
     assert out["top1"] == pytest.approx(2 / 5)
+
+
+def _items(n):
+    return [item_from_task("sors", {**_task(), "id": f"t-{i}"}) for i in range(n)]
+
+
+def _lines(path):
+    import json
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_run_writes_a_start_line_before_and_a_done_line_after_each_request(tmp_path):
+    out = tmp_path / "results.jsonl"
+    seen = []
+
+    def post(request):
+        seen.append(request)
+        return {"answers": {"q": {"choice": "option_b", "probabilities": {}}}}
+
+    run_items(_items(2), post, out, workers=1)
+    lines = _lines(out)
+    assert [(x["event"], x["id"]) for x in lines] == [("start", "t-0"), ("done", "t-0"), ("start", "t-1"), ("done", "t-1")]
+    done = lines[1]
+    assert done["set"] == "sors" and done["scores"]["q"]["top1"] is True and done["scores"]["q"]["type"] == "choice"
+    assert "ms" in done and seen[0] == _items(1)[0]["request"]
+
+
+def test_a_failed_request_is_recorded_with_its_types_and_the_run_goes_on(tmp_path):
+    out = tmp_path / "results.jsonl"
+
+    def post(request):
+        raise RuntimeError("HTTP 422: too long")
+
+    run_items(_items(2), post, out, workers=1)
+    done = [x for x in _lines(out) if x["event"] == "done"]
+    assert len(done) == 2 and "HTTP 422" in done[0]["error"] and done[0]["type"] == {"q": "choice"}
+    assert summarize(done)["sors"]["errors"] == 2
+
+
+def test_rerun_skips_answered_items_and_retries_failed_ones(tmp_path):
+    out = tmp_path / "results.jsonl"
+    calls = []
+    run_items(_items(2), lambda r: (_ for _ in ()).throw(RuntimeError("down")), out, workers=1)
+
+    def post(request):
+        calls.append(request)
+        return {"answers": {"q": {"choice": "option_a", "probabilities": {}}}}
+
+    run_items(_items(3), post, out, workers=1)
+    assert len(calls) == 3  # 两条报错的重试, 一条新的
+    run_items(_items(3), post, out, workers=1)
+    assert len(calls) == 3  # 都答过了, 不再发
+
+
+def test_report_reads_the_last_done_line_of_each_item(tmp_path):
+    from sors.evaluation.panel import load_results
+    out = tmp_path / "results.jsonl"
+    run_items(_items(1), lambda r: (_ for _ in ()).throw(RuntimeError("down")), out, workers=1)
+    run_items(_items(1), lambda r: {"answers": {"q": {"choice": "option_b", "probabilities": {}}}}, out, workers=1)
+    rows = load_results(out)
+    assert len(rows) == 1 and "error" not in rows[0]
