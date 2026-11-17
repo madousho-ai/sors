@@ -3,7 +3,7 @@
 SORS training, serving, dataset adapters and sampling live in this repository. Authored
 datasets, validation schemas and authoring tools live in the separate
 `decidophobia-dataset` repository. Its root directly contains
-`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.25/`,
+`synth-intents-v2.5/`, `synth-intents-v3/`, `synth-intents-v5.25/`, `synth-intents-v6/`,
 `synth-simple-eval/`, `label-descriptions/` and `public-decisions/`.
 
 ## Select a checkout
@@ -108,6 +108,15 @@ bindings over 32 domains; v5.23 is retained.
 state reasoning (`rq`), long policies (`lp`), minimal-edit pairs (`cf`), semantic scoring (`ss`) and code judging
 (`jd`), plus the Chinese Telegram anti-spam domain `tg_spam` (6,000, usernames and links written as `[redact]`).
 516,464 bindings over 33 domains; v5.24 is retained.
+`synth-intents-v6` (data README `synth-intents-v6/README.md`) stores no materials: `selection.json` lists
+56,990 bindings of v5.25 chosen per data family, with the sha256 of every v5.25 file. `--dataset synth-v6`
+reads v5.25 through the same loader and keeps the listed bindings; it fails when a v5.25 file changed or a
+listed binding is missing, and it cannot be combined with `synth-v5` / `synth-v5.25`. The selection leaves out
+213 `jsonvalue` materials over 16,384 tokens and the `tg-spam-heldout` materials, and holds out about 300
+bindings per family class for per-class evaluation. Rebuild or check it with
+`scripts/build-synth-v6.py --datasets-dir ../decidophobia-dataset [--check]`. The v6 model was trained one
+pass from `Qwen/Qwen3.5-2B-Base`: `--dataset synth-v6 --passes breadth=1 --lr-lora 5e-6`, the other settings
+as v83 (batch 72, scorer readout); 845 steps.
 `--dataset synth-v5.1` through `synth-v5.24` are rejected with a pointer to the new name; `synth-v5`
 remains an alias of the current data. Complete states saved on older data fail the
 resume fingerprint check against v5.25. A `--mix` written for v5.2 must add a
