@@ -29,7 +29,7 @@ def _assets(keys, sha=None):
     v6 = root / "synth-intents-v6"
     v6.mkdir()
     sel = {"source": "synth-intents-v5.25", "source_sha256": sha or source_sha256(root / "synth-intents-v5.25"),
-           "bindings": [list(k) for k in keys]}
+           "spec": {"note": "fixture"}, "bindings": [list(k) for k in keys]}
     (v6 / "selection.json").write_text(json.dumps(sel))
     return root
 
@@ -94,3 +94,32 @@ def test_build_selection_takes_n_per_class_after_holding_out_each_class_and_drop
     assert 3 <= len(keys) <= 4 and len(set(keys)) == len(keys)
     assert not any(c == "telecom_rule_1" for _, c, _ in keys)
     assert keys == build_selection(full, spec, drop={"telecom_rule_1"})
+
+
+# ---- --dataset synth-v6
+
+def test_synth_v6_is_its_own_selector_and_does_not_combine_with_v5():
+    from test_train_cli import _mod
+    assert _mod.parse_datasets("synth-v6") == ["synth-v6"]
+    for both in ("synth-v6+synth-v5", "synth-v6+synth-v5.25"):
+        with pytest.raises(SystemExit, match="synth-v6"):
+            _mod.parse_datasets(both)
+
+
+def test_training_on_synth_v6_reads_only_the_selection_and_records_it():
+    import random
+    from test_train_cli import _args, _mod
+    full = load_synth_v5(_data(telecom=(TELECOM_Q, [*TELECOM_C, EDITED])))
+    want = [_key(it) for it in full[:4]]
+    root = _assets(want)
+    from sors.data.paths import asset_path
+    shutil.copytree(asset_path("synth-simple-eval"), root / "synth-simple-eval")
+    try:
+        sample, _, info = _mod.build_data(_args("synth-v6", eval="simple", datasets_dir=str(root),
+                                                passes=f"{full[0].goal}=1"))
+    finally:
+        shutil.rmtree(root)
+    assert info["synth_v5_items"] == 4 and info["synth_v6_selection"]["bindings"] == 4
+    assert len(sample(4, random.Random(0))) == 4
+    parser = _mod.build_parser()
+    assert "-fallback0.5" in _mod.run_tag(parser.parse_args(["--dataset", "synth-v6"]))

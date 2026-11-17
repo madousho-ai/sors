@@ -22,6 +22,9 @@
               列出的目标多出几遍. --mask-descriptions 按比例遮掉可遮的题的选项说明;
               --consistency 下材料有几种说法时, 配对的第二份读另一种说法. --fallback-rate 默认 0.5,
               随机加入题目标记的 Other / 信息不足选项；既有 other 配对每次随机选一版，一次抽取出一道题
+  synth-v6    外部资产 synth-intents-v6: v5.25 里按数据家族挑出的 56,990 条绑定 (selection.json 逐条列出, 记着
+              v5.25 每个文件的 sha256, 对不上就报错). 抽法与 synth-v5.25 相同 (--passes、--mix、--fallback-rate ...);
+              v6 的模型用 --passes breadth=1 训一轮、--lr-lora 5e-6. 不与 synth-v5 / synth-v5.25 并用
   massive     MASSIVE 的 train 分区, 60 个语音助手意图
   contractnli / maud / legalbench / sharc / conditionalqa / mind2web / toolace / xlam / quality / reclor / logiqa2
               官方决策子任务，从 --public-manifest 声明的本地 train 文件读取；全量菜单、硬标签，
@@ -84,7 +87,8 @@ from sors.training.prefetch import validate_data_preparation
 from sors.training.loss import LOSSES
 from sors.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.25", "synth-v5", "massive") + PUBLIC_DATASETS
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.25", "synth-v5", "synth-v6", "massive")
+V5_FAMILY = ("synth-v5", "synth-v6")  # 同一种绑定格式、同一套抽法; 选了谁, 下面 v5 的那些开关就管谁 + PUBLIC_DATASETS
 RETIRED = {"synth-v5.1": "synth-v5.1 was renamed synth-v5.2 through synth-v5.16; use --dataset synth-v5.16",
            "synth-v5.2": "synth-v5.2 was renamed synth-v5.3 when the contrast goal was added, then up to synth-v5.10; "
                          "use --dataset synth-v5.16",
@@ -171,6 +175,8 @@ def parse_datasets(spec: str) -> list[str]:
         raise SystemExit("--dataset: synth-v5.25 and synth-v5 refer to the same dataset; pick one")
     if {"synth", "synth-menu"} <= set(names):
         raise SystemExit("--dataset: synth already includes synth-menu's menu questions; pick one")
+    if set(V5_FAMILY) <= set(names):
+        raise SystemExit("--dataset: synth-v6 is a selection of synth-v5.25's bindings; pick one")
     return names
 
 
@@ -318,10 +324,11 @@ def build_data(args):
     fallback_rate = 0.5 if requested_fallback is None else requested_fallback
     if not 0.0 <= fallback_rate <= 1.0:
         raise SystemExit(f"--fallback-rate must be a probability in 0..1; got {fallback_rate}")
-    if requested_fallback is not None and "synth-v5" not in datasets:
+    v5_name = next((n for n in V5_FAMILY if n in datasets), None)
+    if requested_fallback is not None and v5_name is None:
         raise SystemExit("--fallback-rate only applies to --dataset synth-v5.25 (legacy alias: synth-v5)")
     balance = getattr(args, "contrast_balance", False)
-    if "synth-v5" not in datasets and (args.mix or args.mask_descriptions or args.passes or balance):
+    if v5_name is None and (args.mix or args.mask_descriptions or args.passes or balance):
         raise SystemExit("--mix, --passes, --mask-descriptions and --contrast-balance only apply to --dataset synth-v5.25 "
                          "(legacy alias: synth-v5)")
     if args.mix and args.passes:
@@ -365,13 +372,22 @@ def build_data(args):
         samplers.append(lambda n, rng: sample_synth_v3(v3, n, rng))
         sampler_names.append("synth-v3")
         split_info["synth_v3_items"] = sum(len(v) for v in v3.values())
-    if "synth-v5" in datasets:
+    if v5_name is not None:
         # 两种抽法. --passes: 按轮抽, 一轮把每个绑定出一遍 (列出的目标出那么多遍), 一个绑定都不漏.
         # 否则按 --mix 的配比 (可随步数分段) 挑目标, 目标内领域、题型、材料各自均分. sampler 每调一次算一步.
         from sors.data.synth_v5 import (V5Rounds, V5Sampler, V5Strata, V5TypeStrata, drop_categories, load_synth_v5,
                                         parse_mix, parse_passes, parse_type_quota)
 
-        v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
+        if v5_name == "synth-v6":
+            from sors.data.synth_v6 import NAME as V6_NAME, load_synth_v6
+            from sors.data.paths import asset_path
+            v5 = load_synth_v6(datasets_dir=getattr(args, "datasets_dir", None))
+            with open(asset_path(V6_NAME, getattr(args, "datasets_dir", None)) / "selection.json") as stream:
+                sel = json.load(stream)
+            split_info["synth_v6_selection"] = {"source": sel["source"], "bindings": len(sel["bindings"]),
+                                                "spec": sel["spec"], "source_sha256": sel["source_sha256"]}
+        else:
+            v5 = load_synth_v5(datasets_dir=getattr(args, "datasets_dir", None))
         excluded = sorted(set(args.exclude_categories.split(","))) if getattr(args, "exclude_categories", None) else []
         if excluded:
             try:
@@ -435,7 +451,7 @@ def build_data(args):
                 split_info["synth_v5_mix"] = mix
         except ValueError as e:
             raise SystemExit(str(e)) from None
-        sampler_names.append("synth-v5")
+        sampler_names.append(v5_name)
     if "massive" in datasets:
         # MASSIVE 的 train 分区 (11514 条, 60 意图). 上下文标签是 Voice command, 不与 banking77 并池:
         # 各自全量菜单 60 项. 它的 test 分区留给 scripts/eval-massive.py.
@@ -917,7 +933,7 @@ def run_tag(args) -> str:
         + (f"-js{args.consistency:g}" if args.consistency > 0 else "") \
         + (f"-cw{args.contrast_weight:g}-cm{args.contrast_margin:g}" if getattr(args, "contrast_weight", 0.0) > 0 else "") \
         + (f"-mask{args.mask_descriptions:g}" if args.mask_descriptions > 0 else "") \
-        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.25"} & set(args.dataset.split("+")) else "") \
+        + (f"-fallback{0.5 if args.fallback_rate is None else args.fallback_rate:g}" if {"synth-v5", "synth-v5.25", "synth-v6"} & set(args.dataset.split("+")) else "") \
         + (f"-mix{hashlib.sha1(args.mix.encode()).hexdigest()[:6]}" if args.mix else "") \
         + (f"-pass{hashlib.sha1(args.passes.encode()).hexdigest()[:6]}" if args.passes else "") \
         + (f"-cotp{args.cot_passes}" if getattr(args, "cot_passes", None) else "") \
