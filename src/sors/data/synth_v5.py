@@ -30,11 +30,13 @@ fallback_rate 默认 0.5，每次抽取出一个菜单版本。既有 other_of �
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import itertools
 import os
 import pathlib
 import random
+import re
 from dataclasses import dataclass, replace
 
 from sors.core.menu import MenuExample, reorder_menu
@@ -207,6 +209,77 @@ def drop_categories(items: list[V5Item], excluded: set[str]) -> list[V5Item]:
     keep = [i for i, it in enumerate(items) if not set(excluded) & set(it.categories)]
     new = {old: k for k, old in enumerate(keep)}
     return [replace(items[i], pair=new.get(items[i].pair), contrast=new.get(items[i].contrast)) for i in keep]
+
+
+FAMILIES = ("r17", "jsonwrap", "jsonvalue", "jsonscope", "judge", "edit", "curric", "contrast", "more", "hard_a",
+            "hard_b", "jevhard", "long", "factread", "scoresem", "yn", "amb", "v4", "repair")
+
+
+def family_of(it: V5Item) -> str:
+    """材料来自哪个数据家族: 材料 id 第一段去掉领域名前缀后的标签 (r17、jsonwrap、xrq、xtg ...); 不是已知家族的是 base
+    (v5 最早的各领域意图材料, id 第一段是意图名)."""
+    head = it.context_id.split("/", 1)[0]
+    tag = head[len(it.domain):].strip("_") if head.startswith(it.domain) else head
+    return tag if (tag in FAMILIES or re.fullmatch(r"x[a-z]+", tag)) else "base"
+
+
+def _roots(items: list[V5Item]) -> list[int]:
+    """每个绑定沿 contrast 一路追到的原材料绑定下标 (改动材料与它的原材料同组)."""
+    out = []
+    for i in range(len(items)):
+        seen, j = set(), i
+        while items[j].contrast is not None and j not in seen:
+            seen.add(j)
+            j = items[j].contrast
+        out.append(j)
+    return out
+
+
+def ladder_split(items: list[V5Item], classes: dict[str, list[str]], eval_n: int = 300, drop: set[str] = frozenset(),
+                 salt: str = "v6-ladder-v1:") -> dict:
+    """数据量阶梯的固定划分. classes: {类名: [数据家族]} (family_of 的值). drop 里的材料连同改动材料去掉.
+    每类的材料组 (材料与它的改动材料) 按 sha256(salt + 领域/材料) 排好: 前面的组凑够 eval_n 个绑定作这一类的留出题,
+    其余的组按 sha256(salt + "train:" + ...) 排成训练顺序. 返回 {"items", "eval": {类: [下标]}, "order": {类: [[下标]]}}."""
+    fam_class = {f: c for c, fs in classes.items() for f in fs}
+    roots = _roots(items)
+    gone = {i for i in range(len(items)) if items[i].context_id in drop or items[roots[i]].context_id in drop}
+    groups: dict = {c: {} for c in classes}
+    for i in range(len(items)):
+        c = fam_class.get(family_of(items[i]))
+        if c is None or i in gone:
+            continue
+        r = items[roots[i]]
+        groups[c].setdefault((r.domain, r.context_id), []).append(i)
+    ev, order = {}, {}
+    for c, gs in groups.items():
+        keys = sorted(gs, key=lambda g: hashlib.sha256((salt + "/".join(g)).encode()).hexdigest())
+        held, k = [], 0
+        while k < len(keys) and len(held) < eval_n:
+            held += gs[keys[k]]
+            k += 1
+        ev[c] = held
+        rest = sorted(keys[k:], key=lambda g: hashlib.sha256((salt + "train:" + "/".join(g)).encode()).hexdigest())
+        order[c] = [gs[g] for g in rest]
+    return {"items": items, "eval": ev, "order": order, "salt": salt, "eval_n": eval_n}
+
+
+def ladder_pool(split: dict, n: dict[str, int]) -> tuple[list[V5Item], dict]:
+    """一档的训练池: 每类按 split 的训练顺序取前面的组, 直到绑定数 >= n[类] (不够就全取, 记 exhausted).
+    下标 (pair、contrast) 重新编号. 返回 (池子, 统计)."""
+    items = split["items"]
+    keep, per = [], {}
+    for c, groups in split["order"].items():
+        want, got, k = n.get(c, 0), [], 0
+        while k < len(groups) and len(got) < want:
+            got += groups[k]
+            k += 1
+        keep += got
+        per[c] = {"n": want, "bindings": len(got), "exhausted": k == len(groups) and len(got) < want}
+    keep.sort()
+    new = {old: j for j, old in enumerate(keep)}
+    pool = [replace(items[i], pair=new.get(items[i].pair), contrast=new.get(items[i].contrast)) for i in keep]
+    return pool, {"per_class": per, "pool_items": len(pool), "salt": split["salt"], "eval_n": split["eval_n"]}
+
 
 
 def _link_contrasts(out: list[V5Item], contexts: list[dict], domain: str) -> None:
