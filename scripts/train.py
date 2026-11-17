@@ -87,8 +87,9 @@ from sors.training.prefetch import validate_data_preparation
 from sors.training.loss import LOSSES
 from sors.training.thermal import ThermalGuard
 
-KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.25", "synth-v5", "synth-v6", "massive")
-V5_FAMILY = ("synth-v5", "synth-v6")  # 同一种绑定格式、同一套抽法; 选了谁, 下面 v5 的那些开关就管谁 + PUBLIC_DATASETS
+KNOWN = ("banking77", "boolq", "synth", "synth-menu", "synth-v3", "synth-v5.25", "synth-v5", "synth-v6",
+         "massive") + PUBLIC_DATASETS
+V5_FAMILY = ("synth-v5", "synth-v6")  # 同一种绑定格式、同一套抽法; 选了谁, 下面 v5 的那些开关就管谁
 RETIRED = {"synth-v5.1": "synth-v5.1 was renamed synth-v5.2 through synth-v5.16; use --dataset synth-v5.16",
            "synth-v5.2": "synth-v5.2 was renamed synth-v5.3 when the contrast goal was added, then up to synth-v5.10; "
                          "use --dataset synth-v5.16",
