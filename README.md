@@ -53,7 +53,7 @@ Numbers are accuracy (%), except the Decision Index public index.
 - Public JevBench is JevBench's public question set, scored with the official JevBench CLI and its `typesafe` adapter. Its tiers have only 48 / 72 / 111 questions, so differences of a few points there are noise; "overall" is accuracy over all 231 questions (197 correct).
 - The Decision Index public index is our own run of the public Decision Index kit (edition 0.3, HTTP engine), not a leaderboard submission; 243 requests longer than the server's context count as wrong, as the kit prescribes.
 - On the [JevBench leaderboard](https://benchmarkheaven.com/jev-models), the previous weights (2026-10-29) rank 165 of 261 overall, with intelligence 31.4 and calibration 76.5. The current weights have not been measured there yet.
-- These are the weights released on 2026-11-18. Earlier weights remain available as Hugging Face revisions `v78-2026-10-29` (synth-intents-v5.17) and `v5.3-2026-10-08` (synth-intents-v5.3).
+- These are the weights released on 2026-11-18, Hugging Face revision `v6-2026-11-18`, with the vision encoder packed in. Earlier weights remain available as Hugging Face revisions `v78-2026-10-29` (synth-intents-v5.17) and `v5.3-2026-10-08` (synth-intents-v5.3).
 
 ## Deployment
 
@@ -121,7 +121,37 @@ Response (probabilities are illustrative):
 
 There are three question types. `choice` picks one of the caller's options (2–255, each with an optional description); `noul` is a yes/no question
 and returns the probability of "yes"; `score` is an ordered scale.
-`state`, `instructions` and option descriptions can each be a string or JSON.
+`state`, `instructions` and option descriptions can each be a string or JSON, and `state` can also carry images.
+
+### Images
+
+Sors-2B reads images in `state`. The model directory carries the frozen vision encoder of Qwen3.5-2B-Base and its image
+preprocessor, so `serve.py` accepts images with no extra flag. Requests follow TypeSafe System One's
+[images](https://docs.typesafe.ai/images) format: list each image under a top-level `assets` key, keyed by a reference
+string, and write that string where the image belongs in `state`.
+
+```bash
+curl -s http://127.0.0.1:8000/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Sors-2B",
+    "state": {"screenshot": "img-1", "note": "The user wants to check out."},
+    "assets": {"img-1": {"type": "image", "format": "png", "data_base64": "<base64 PNG>"}},
+    "questions": {
+      "next": {
+        "type": "choice",
+        "instructions": "Which button should be clicked next?",
+        "criteria": {"Add to cart": null, "Checkout": null, "Sign in": null}
+      }
+    }
+  }'
+```
+
+- Images are read only in `state`; a reference in `instructions` or `criteria` is rejected.
+- PNG or JPEG, each side 280–1568 pixels, up to 16 MiB per image; the server downsizes each image to at most
+  `--max-image-pixels` (default 1024×1024, one token per 32×32 pixels).
+- The vision encoder is the base model's, packed as-is; synth-intents-v6 is text only, so accuracy on image questions has
+  not been measured yet. `--no-vision` on `scripts/export-model.py` exports a text-only model directory.
 
 ### Docker
 

@@ -50,7 +50,7 @@ Sors-2B 只用我们自己合成的数据集 synth-intents-v6 训练（数据集
 - Public JevBench 是 JevBench 的公开题集，用 JevBench 官方 CLI 和它的 `typesafe` adapter 评测；三档分别只有 48 / 72 / 111 题，几个点以内的差距属于噪声；「合计」是全部 231 题的准确率（197 题答对）。
 - Decision Index 公开分是我们自己用公开的 Decision Index kit（0.3 版，HTTP 引擎）跑的，没有提交到榜单；超出服务上下文长度的 243 个请求按 kit 的规定记为答错。
 - 在 [JevBench 榜单](https://benchmarkheaven.com/jev-models)上，上一版权重（2026-10-29）综合排名 261 个模型中的第 165，能力分 31.4，校准分 76.5；当前权重还没有上榜。
-- 这是 2026-11-18 发布的权重。之前的权重仍可通过 Hugging Face revision 获取：`v78-2026-10-29`（synth-intents-v5.17）和 `v5.3-2026-10-08`（synth-intents-v5.3）。
+- 这是 2026-11-18 发布的权重，Hugging Face revision 为 `v6-2026-11-18`，已打包视觉编码器。之前的权重仍可通过 Hugging Face revision 获取：`v78-2026-10-29`（synth-intents-v5.17）和 `v5.3-2026-10-08`（synth-intents-v5.3）。
 
 ## 部署
 
@@ -116,7 +116,35 @@ curl -s http://127.0.0.1:8000/v1/systemone \
 ```
 
 问题有三种类型：`choice` 在调用方给的选项里选一个（2–255 项，每个选项可以附一段说明）；`noul` 是是非题，返回答「是」的概率；
-`score` 是有序等级。`state`、`instructions` 和选项说明都可以是字符串或 JSON。
+`score` 是有序等级。`state`、`instructions` 和选项说明都可以是字符串或 JSON，`state` 里还可以放图片。
+
+### 图片
+
+Sors-2B 能读 `state` 里的图片。模型目录自带 Qwen3.5-2B-Base 的冻结视觉编码器和图像预处理器，`serve.py` 不加任何参数就收图片。
+请求格式沿用 TypeSafe System One 的 [images](https://docs.typesafe.ai/images) 规范：图片列在请求顶层的 `assets` 里，键是调用方取的引用串，
+引用串写在 `state` 的哪里，图片就在哪里。
+
+```bash
+curl -s http://127.0.0.1:8000/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Sors-2B",
+    "state": {"screenshot": "img-1", "note": "The user wants to check out."},
+    "assets": {"img-1": {"type": "image", "format": "png", "data_base64": "<base64 PNG>"}},
+    "questions": {
+      "next": {
+        "type": "choice",
+        "instructions": "Which button should be clicked next?",
+        "criteria": {"Add to cart": null, "Checkout": null, "Sign in": null}
+      }
+    }
+  }'
+```
+
+- 只在 `state` 里读图，`instructions` 或 `criteria` 里出现引用串会被拒收。
+- 支持 PNG 或 JPEG，宽高各 280–1568 像素，单张不超过 16 MiB；服务会把每张图缩到不超过 `--max-image-pixels`
+  （默认 1024×1024，每 32×32 像素一个 token）。
+- 视觉编码器是底座原样的权重；synth-intents-v6 只有文字题，图片题的准确率还没有测过。`scripts/export-model.py` 加 `--no-vision` 可导出纯文字模型目录。
 
 ### Docker
 
