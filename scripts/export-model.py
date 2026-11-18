@@ -8,9 +8,35 @@ from pathlib import Path
 import torch
 
 from sors.core.attention import add_attention_arguments
-from sors.core.checkpoint import read_checkpoint
+from sors.core.checkpoint import checkpoint_architecture, read_checkpoint
 from sors.core.pretrained import save_pretrained
 from sors.serve.engine import load_engine, recorded_base_model
+
+
+def export_vision(init: Path, base: str | None, *, vision_model: str | None = None,
+                  no_vision: bool = False) -> str | None:
+    """导出时从哪个多模态底座挂冻结的视觉编码器; None 是不挂.
+
+    默认挂: 只有 candidate 模型能读图, 其余架构照旧导出纯文字模型. 训练存档默认用它的基模 (Qwen3.5 底座
+    自带视觉编码器); 完整模型目录不记基模, 没带视觉编码器时得明说 --vision-model 或 --no-vision.
+    已经带视觉编码器的完整目录原样保留.
+    """
+    if no_vision:
+        if vision_model is not None:
+            raise ValueError("--no-vision and --vision-model contradict each other; give one")
+        return None
+    init = Path(init)
+    if init.is_dir():
+        record = json.loads((init / "config.json").read_text())
+        if record.get("architecture", {}).get("kind") != "candidate" or "vision" in record:
+            return None
+        if vision_model is None:
+            raise ValueError(f"{init} records no base model to take a vision encoder from; "
+                             "give --vision-model (e.g. Qwen/Qwen3.5-2B-Base) or --no-vision")
+        return vision_model
+    if checkpoint_architecture(init)["kind"] != "candidate":
+        return None
+    return vision_model or base
 
 
 def main():
@@ -23,7 +49,9 @@ def main():
                         help="旧存档加载基模时的精度；完整模型目录保留已保存的混合精度")
     parser.add_argument("--vision-model", default=None,
                         help="多模态底座 (如 Qwen/Qwen3.5-2B-Base): 把它的冻结视觉编码器与图像预处理器一起打进导出目录, "
-                             "之后 serve.py 不用再给 --vision-model. 只有 candidate 模型能挂")
+                             "之后 serve.py 不用再给 --vision-model. 默认就挂: 训练存档取它的基模, 完整模型目录"
+                             "没带视觉编码器时必须给. 只有 candidate 模型能挂, 其余架构导出纯文字模型")
+    parser.add_argument("--no-vision", action="store_true", help="不打包视觉编码器, 导出纯文字模型")
     parser.add_argument("--local-files-only", action="store_true")
     add_attention_arguments(parser)
     parser.set_defaults(attn_implementation="sdpa", allow_kernel_download=False)
@@ -40,10 +68,14 @@ def main():
         if base is None:
             parser.error("the training checkpoint needs --base-model or a run result.json")
         config = read_checkpoint(args.init)["config"]
+    try:
+        vision = export_vision(args.init, base, vision_model=args.vision_model, no_vision=args.no_vision)
+    except ValueError as exc:
+        parser.error(str(exc))
     engine = load_engine(args.init, base, device=args.device, dtype=getattr(torch, args.dtype),
                          attn_implementation=args.attn_implementation,
                          allow_kernel_download=args.allow_kernel_download, local_files_only=args.local_files_only,
-                         vision_model=args.vision_model)
+                         vision_model=vision)
     save_pretrained(engine.lm, engine.tok, config, args.out, processor=engine.processor)
     size = (args.out / "model.safetensors").stat().st_size
     print(f"exported complete model: {args.out} ({size:,} weight bytes)", flush=True)
