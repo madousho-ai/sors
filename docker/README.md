@@ -51,7 +51,9 @@ PYTHONPATH=src .venv/bin/python scripts/export-model.py \
   --out /absolute/path/model-payload --device cpu --dtype bfloat16 --local-files-only
 ```
 
-输出目录必须尚未存在。运行镜像使用导出后的目录：
+输出目录必须尚未存在。candidate 模型默认把基模的冻结视觉编码器与图像预处理器一起打进目录
+（`--vision-model` 换底座，`--no-vision` 导出纯文字模型）；从没带视觉编码器的完整模型目录再导出时，
+目录里没记基模，须给 `--vision-model` 或 `--no-vision`。运行镜像使用导出后的目录：
 
 ```text
 model-payload/
@@ -59,6 +61,7 @@ model-payload/
   config.json            # 架构、token ID、混合精度和训练配置
   tokenizer.json
   tokenizer_config.json
+  preprocessor_config.json  # 带视觉编码器时的图像预处理器
   ...                    # tokenizer 附件、模型说明和许可证
 ```
 
