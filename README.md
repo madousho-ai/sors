@@ -19,40 +19,41 @@ plus a short suffix per option. The fully fine-tuned Qwen3.5 backbone reads each
 names and how many there are, up to 255 per menu; a new set of options needs no retraining.
 
 Because no branch sees another option, reordering the menu only reorders the scores, and an option's score does not depend on what else is on
-the menu. The scalar head starts as the language model's log-odds that the next token is `<|D1|>` ("this option fits") rather than `<|D2|>`
-("it does not"). Training first teaches the backbone that next-token choice for every option on its own, then switches the head on and trains
-the softmax over the menu together with the same per-option term. Ambiguous questions train toward a probability distribution instead of a single
-answer, half the questions hide option descriptions, and half the menus add a "none of these" option.
+the menu. The scalar head reads the normalised final hidden state and trains with the backbone from the first step on the softmax over each
+question's menu. Ambiguous questions train toward a probability distribution instead of a single answer, half the questions hide option
+descriptions, and half the menus add a "none of these" option.
 
 ## Benchmarks
 
-Sors-2B is trained only on our own synthetic dataset, synth-intents-v5.17 (370,639 questions in 26 domains; to be open-sourced once it is cleaned up);
-none of the evaluation sets below take part in training. We wrote the synthetic data from scratch and it contains no content from existing datasets.
-It deliberately stays out of Banking77's banking domain and MASSIVE's voice-assistant scenarios, and an automatic check blocks vocabulary from those domains.
-We compared the training material (167,759 distinct texts) against every evaluation set below: no text is identical after normalisation;
-no MASSIVE, BoolQ or JevBench item shares a run of 8 consecutive words with it; 5 of Banking77's 3,080 items share 8 words,
-all of them everyday phrases such as "I don't want to be charged for".
+Sors-2B is trained only on our own synthetic dataset, synth-intents-v6 (to be open-sourced once it is cleaned up): 56,990 questions in 33 domains,
+English and Chinese, chosen family by family from the 516,464 questions of synth-intents-v5.25 and each seen once (845 steps at batch 72; see
+[DATASETS.md](DATASETS.md)). None of the evaluation sets below take part in training. We wrote the synthetic data from scratch and it contains no
+content from existing datasets. We compared the training material (37,354 distinct texts) against every evaluation set below: no text is identical
+after normalisation; a run of 8 consecutive words is shared by no MASSIVE item, 3 of Banking77's 3,080 items, 4 of BoolQ's 3,270 and 1 public
+JevBench item, all of them everyday phrases or lists such as "I don't want to be charged for" or a list of public holidays.
 
-| Benchmark | Questions | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) |
-|---|---:|---:|
-| Banking77 | 3,080 | 67.0 |
-| Banking77 + descriptions | 3,080 | 79.7 |
-| MASSIVE | 2,974 | 68.6 |
-| MASSIVE + descriptions | 2,974 | 80.4 |
-| BoolQ | 3,270 | 81.1 |
-| Public JevBench easy | 48 | 100.0 |
-| Public JevBench original | 72 | 97.2 |
-| Public JevBench hard | 111 | 66.7 |
-| Public JevBench overall | 231 | 83.1 |
+| Benchmark | Questions | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) | previous (2026-10-29) |
+|---|---:|---:|---:|
+| Banking77 | 3,080 | 67.5 | 67.0 |
+| Banking77 + descriptions | 3,080 | 79.0 | 79.7 |
+| MASSIVE | 2,974 | 71.9 | 68.6 |
+| MASSIVE + descriptions | 2,974 | 81.9 | 80.4 |
+| BoolQ | 3,270 | 84.9 | 81.1 |
+| Public JevBench easy | 48 | 100.0 | 100.0 |
+| Public JevBench original | 72 | 97.2 | 97.2 |
+| Public JevBench hard | 111 | 71.2 | 66.7 |
+| Public JevBench overall | 231 | 85.3 | 83.1 |
+| Decision Index 0.3, public index | 140,620 | 27.68 | 21.22 |
 
-Numbers are accuracy (%).
+Numbers are accuracy (%), except the Decision Index public index.
 
 - **Banking77 and MASSIVE are answered against the full intent menu.** Every Banking77 question shows all 77 intents and every MASSIVE question shows all 60;
   no retriever or other model narrows them to a top-K shortlist first. "+ descriptions" adds a one-line description after each intent name.
-- Option order: the same questions answered with their options shuffled into 5 random orders stay within 0.1 points of the table for Sors-2B,
-  and the 5 orders pick the same option on 99.7–99.8% of Banking77 and MASSIVE questions and on every BoolQ question.
-- Public JevBench is JevBench's public question set, scored with the official JevBench CLI and its `typesafe` adapter. Its tiers have only 48 / 72 / 111 questions, so differences of a few points there are noise; "overall" is accuracy over all 231 questions (192 correct). Results from the JevBench leaderboard will be added once available.
-- These are the weights released on 2026-10-29. The 2026-10-08 weights, trained on synth-intents-v5.3, remain available as Hugging Face revision `v5.3-2026-10-08`.
+- Calibration improved with the shorter training: expected calibration error on MASSIVE fell from 0.14 to 0.08 and on BoolQ from 0.064 to 0.043.
+- Public JevBench is JevBench's public question set, scored with the official JevBench CLI and its `typesafe` adapter. Its tiers have only 48 / 72 / 111 questions, so differences of a few points there are noise; "overall" is accuracy over all 231 questions (197 correct).
+- The Decision Index public index is our own run of the public Decision Index kit (edition 0.3, HTTP engine), not a leaderboard submission; 243 requests longer than the server's context count as wrong, as the kit prescribes.
+- On the [JevBench leaderboard](https://benchmarkheaven.com/jev-models), the previous weights (2026-10-29) rank 165 of 261 overall, with intelligence 31.4 and calibration 76.5. The current weights have not been measured there yet.
+- These are the weights released on 2026-11-18. Earlier weights remain available as Hugging Face revisions `v78-2026-10-29` (synth-intents-v5.17) and `v5.3-2026-10-08` (synth-intents-v5.3).
 
 ## Deployment
 
@@ -63,7 +64,7 @@ You need Python 3.13, [uv](https://docs.astral.sh/uv/) and a CUDA GPU.
 ```bash
 uv sync
 PYTHONPATH=src .venv/bin/python scripts/serve.py \
-  --init SakuraYuyuko/Sors-2B --warmup --port 8000
+  --init SakuraYuyuko/Sors-2B --max-tokens 16384 --warmup --port 8000
 ```
 
 When `--init` names a Hugging Face repository, the first start downloads the model into the standard HF cache (`~/.cache/huggingface`)

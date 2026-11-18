@@ -18,38 +18,39 @@ SORS 对每个选项单独打分。每道题按选项拆成若干分支：共享
 选项的名称和数量都由调用方在请求里决定，一个菜单最多 255 项，换一组选项不用重新训练。
 
 每个分支都看不到别的选项，所以打乱菜单只会打乱分数的顺序，一个选项的分数也不受菜单上其他选项影响。
-标量头的初始值是语言模型对下一个词的对数几率：是 `<|D1|>`（这个选项合适）还是 `<|D2|>`（不合适）。
-训练先让主干对每个选项单独学会这个下一词判断，再打开标量头，在菜单上训练 softmax，同时保留逐选项的那一项。
+标量头读最后一层归一化后的隐状态，从第一步起和主干一起在每道题的菜单上训练 softmax。
 有歧义的题训练目标是一个概率分布，不是单一答案；一半的题隐藏选项说明，一半的菜单加一个「以上都不是」选项。
 
 ## 跑分
 
-Sors-2B 只用我们自己合成的数据集 synth-intents-v5.17 训练（26 个领域共 370,639 道题，数据集整理完成后开源），
-下表里的评估集都不参与训练。合成数据由我们从零编写，不包含任何现有数据集的内容，生成时刻意避开了 Banking77 的银行业务
-和 MASSIVE 的语音助手场景，并有自动检查拦截这些领域的用词。我们拿训练材料（167,759 段不同的文本）逐条比对了下表的全部评估集：
-归一化后完全相同的文本为 0；与 MASSIVE、BoolQ、JevBench 共享连续 8 个词的条目为 0；
-Banking77 的 3,080 条里有 5 条与训练材料共享 8 个词，都是「I don't want to be charged for」这类日常短语。
+Sors-2B 只用我们自己合成的数据集 synth-intents-v6 训练（数据集整理完成后开源）：33 个领域、中英文共 56,990 道题，
+按数据家族从 synth-intents-v5.25 的 516,464 道题里挑出，每道题只训一遍（batch 72 共 845 步，见 [DATASETS.md](DATASETS.md)）。
+下表里的评估集都不参与训练。合成数据由我们从零编写，不包含任何现有数据集的内容。我们拿训练材料（37,354 段不同的文本）逐条比对了下表的全部评估集：
+归一化后完全相同的文本为 0；共享连续 8 个词的条目，MASSIVE 为 0，Banking77 的 3,080 条里有 3 条，BoolQ 的 3,270 条里有 4 条，
+公开 JevBench 有 1 条，都是「I don't want to be charged for」、节假日列表这类日常短语或列举。
 
-| 评估集 | 题数 | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) |
-|---|---:|---:|
-| Banking77 | 3,080 | 67.0 |
-| Banking77 + 描述 | 3,080 | 79.7 |
-| MASSIVE | 2,974 | 68.6 |
-| MASSIVE + 描述 | 2,974 | 80.4 |
-| BoolQ | 3,270 | 81.1 |
-| Public JevBench easy | 48 | 100.0 |
-| Public JevBench original | 72 | 97.2 |
-| Public JevBench hard | 111 | 66.7 |
-| Public JevBench 合计 | 231 | 83.1 |
+| 评估集 | 题数 | [Sors-2B](https://huggingface.co/SakuraYuyuko/Sors-2B) | 上一版（2026-10-29） |
+|---|---:|---:|---:|
+| Banking77 | 3,080 | 67.5 | 67.0 |
+| Banking77 + 描述 | 3,080 | 79.0 | 79.7 |
+| MASSIVE | 2,974 | 71.9 | 68.6 |
+| MASSIVE + 描述 | 2,974 | 81.9 | 80.4 |
+| BoolQ | 3,270 | 84.9 | 81.1 |
+| Public JevBench easy | 48 | 100.0 | 100.0 |
+| Public JevBench original | 72 | 97.2 | 97.2 |
+| Public JevBench hard | 111 | 71.2 | 66.7 |
+| Public JevBench 合计 | 231 | 85.3 | 83.1 |
+| Decision Index 0.3 公开分 | 140,620 | 27.68 | 21.22 |
 
-数值是准确率（%）。
+除 Decision Index 公开分外，数值是准确率（%）。
 
 - **Banking77 和 MASSIVE 每道题都在完整的意图菜单上作答**：Banking77 一次给出全部 77 个意图，MASSIVE 一次给出全部 60 个意图，
   没有先用检索或其他模型挑出 top-K 候选再让模型选。「+ 描述」是在每个意图名后面附一句说明。
-- 选项顺序：同一批题把选项随机打乱成 5 种顺序分别作答，Sors-2B 的平均准确率与上表相差不超过 0.1 个点，
-  5 种顺序选中同一选项的比例在 Banking77 和 MASSIVE 上是 99.7–99.8%，BoolQ 上是全部。
-- Public JevBench 是 JevBench 的公开题集，用 JevBench 官方 CLI 和它的 `typesafe` adapter 评测；三档分别只有 48 / 72 / 111 题，几个点以内的差距属于噪声；「合计」是全部 231 题的准确率（192 题答对）。JevBench 榜单的成绩出来后会更新到这里。
-- 这是 2026-10-29 发布的权重。2026-10-08 发布、用 synth-intents-v5.3 训练的权重仍可通过 Hugging Face revision `v5.3-2026-10-08` 获取。
+- 训练变短后校准更好：期望校准误差在 MASSIVE 上从 0.14 降到 0.08，在 BoolQ 上从 0.064 降到 0.043。
+- Public JevBench 是 JevBench 的公开题集，用 JevBench 官方 CLI 和它的 `typesafe` adapter 评测；三档分别只有 48 / 72 / 111 题，几个点以内的差距属于噪声；「合计」是全部 231 题的准确率（197 题答对）。
+- Decision Index 公开分是我们自己用公开的 Decision Index kit（0.3 版，HTTP 引擎）跑的，没有提交到榜单；超出服务上下文长度的 243 个请求按 kit 的规定记为答错。
+- 在 [JevBench 榜单](https://benchmarkheaven.com/jev-models)上，上一版权重（2026-10-29）综合排名 261 个模型中的第 165，能力分 31.4，校准分 76.5；当前权重还没有上榜。
+- 这是 2026-11-18 发布的权重。之前的权重仍可通过 Hugging Face revision 获取：`v78-2026-10-29`（synth-intents-v5.17）和 `v5.3-2026-10-08`（synth-intents-v5.3）。
 
 ## 部署
 
@@ -60,7 +61,7 @@ Banking77 的 3,080 条里有 5 条与训练材料共享 8 个词，都是「I d
 ```bash
 uv sync
 PYTHONPATH=src .venv/bin/python scripts/serve.py \
-  --init SakuraYuyuko/Sors-2B --warmup --port 8000
+  --init SakuraYuyuko/Sors-2B --max-tokens 16384 --warmup --port 8000
 ```
 
 `--init` 写 HF 仓库名时，第一次启动会把模型下载进标准 HF 缓存（`~/.cache/huggingface`），之后直接从缓存加载；
